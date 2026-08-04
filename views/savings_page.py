@@ -11,9 +11,6 @@ changing. Flagging the accounts instead means the column follows when a pot is a
 
 from __future__ import annotations
 
-from decimal import Decimal
-
-import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -49,14 +46,14 @@ latest = series.iloc[-1]
 
 cols = st.columns(4)
 cols[0].metric(
-    "Savings", ui.money(latest["savings"]),
+    "Savings", ui.money(latest["savings_eom"]),
     help="Every account flagged as savings",
 )
 cols[1].metric(
-    "Available", ui.money(latest["savings_available"]),
+    "Available", ui.money(latest["available_eom"]),
     help="Savings less the earmarked pots below",
 )
-cols[2].metric("Investments", ui.money(latest["investments"]))
+cols[2].metric("Investments", ui.money(latest["investments_eom"]))
 cols[3].metric(
     "Combined", ui.money(latest["combined"]),
     help="Savings and investments together",
@@ -78,58 +75,58 @@ st.divider()
 
 # ---------------------------------------------------------------------------- savings
 
-MONEY_LABELS = {
+# Opening and closing side by side, so a month reads across in one line. The workbook gave
+# closing balances only, which meant 'Added' could only be checked by finding the row above.
+LABELS = {
     "month": "Month",
-    "point": "",
-    "savings": "Total",
-    "savings_available": "Available",
+    "savings_bom": "Total — BoM",
+    "available_bom": "Available — BoM",
     "savings_added": "Added",
-    "savings_target": "Target",
+    "savings_eom": "Total — EoM",
+    "available_eom": "Available — EoM",
+    "savings_target": "Monthly target",
+    "savings_target_eom": "Target — EoM",
     "savings_required": "Required",
-    "investments": "Total",
+    "investments_bom": "Total — BoM",
     "investments_added": "Added",
-    "investments_target": "Target",
+    "investments_eom": "Total — EoM",
+    "investments_target": "Monthly target",
+    "investments_target_eom": "Target — EoM",
     "investments_required": "Required",
 }
 
-left, right = st.columns(2)
+st.subheader("Savings")
+savings_columns = [
+    "savings_bom", "available_bom", "savings_added", "savings_eom", "available_eom",
+    "savings_target", "savings_target_eom", "savings_required",
+]
+st.dataframe(
+    ui.money_table(series[["month"] + savings_columns], savings_columns, labels=LABELS),
+    use_container_width=True,
+    hide_index=True,
+)
 
-with left:
-    st.subheader("Savings")
-    savings_columns = [
-        "savings", "savings_available", "savings_added", "savings_target",
-        "savings_required",
-    ]
-    st.dataframe(
-        ui.money_table(
-            series[["month", "point"] + savings_columns],
-            savings_columns,
-            labels=MONEY_LABELS,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-with right:
-    st.subheader("Investments")
-    investment_columns = [
-        "investments", "investments_added", "investments_target", "investments_required",
-    ]
-    st.dataframe(
-        ui.money_table(
-            series[["month", "point"] + investment_columns],
-            investment_columns,
-            labels=MONEY_LABELS,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+st.subheader("Investments")
+investment_columns = [
+    "investments_bom", "investments_added", "investments_eom", "investments_target",
+    "investments_target_eom", "investments_required",
+]
+st.dataframe(
+    ui.money_table(
+        series[["month"] + investment_columns], investment_columns, labels=LABELS
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
 
 st.caption(
-    "'Added' is the change in the balance over the month, not a deposit total — a month "
-    "that spends out of savings shows a negative. 'Required' accumulates: this month's "
-    "target less what was added, plus whatever was still outstanding, so falling short "
-    "raises the bar for the next month rather than being forgotten."
+    "**Added** is the change in the total balance over the month, not a deposit total — a "
+    "month that spends out of savings shows a negative. **Target — EoM** is the monthly "
+    "targets summed to date, and **Required** is that cumulative target less what is "
+    "available at the month end, so a positive figure is money still to find. It measures a "
+    "running total of contributions against a balance, which only lines up from the month "
+    "the targets start in. Note that 'available' excludes the earmarked pots while 'total' "
+    "does not, so the two can move by different amounts in a month that touches one."
 )
 
 st.divider()
@@ -138,11 +135,10 @@ st.divider()
 
 st.subheader("Balances over the year")
 
-months = series[series["point"] == "Month end"].copy()
-plot = ui.to_float(months, ["savings_available", "investments", "combined"]).rename(
+plot = ui.to_float(series, ["available_eom", "investments_eom", "combined"]).rename(
     columns={
-        "savings_available": "Savings (available)",
-        "investments": "Investments",
+        "available_eom": "Savings (available)",
+        "investments_eom": "Investments",
         "combined": "Combined",
     }
 )
@@ -152,37 +148,33 @@ fig = px.line(
     labels={"value": "Balance (£)", "month": "", "variable": ""},
 )
 fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
 st.subheader("Added against target")
 
-contributions = months.dropna(subset=["savings_added"]).copy()
-if contributions.empty:
-    st.caption("Nothing added yet.")
-else:
-    chart = ui.to_float(
-        contributions, ["savings_added", "savings_target", "investments_added",
-                        "investments_target"]
-    ).melt(
-        id_vars="month",
-        value_vars=["savings_added", "savings_target", "investments_added",
-                    "investments_target"],
-        var_name="series", value_name="amount",
-    )
-    chart["series"] = chart["series"].map(
-        {
-            "savings_added": "Savings added",
-            "savings_target": "Savings target",
-            "investments_added": "Investments added",
-            "investments_target": "Investments target",
-        }
-    )
-    fig = px.bar(
-        chart.dropna(subset=["amount"]), x="month", y="amount", color="series",
-        barmode="group", labels={"amount": "£", "month": "", "series": ""},
-    )
-    fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
+chart = ui.to_float(
+    series,
+    ["savings_added", "savings_target", "investments_added", "investments_target"],
+).melt(
+    id_vars="month",
+    value_vars=["savings_added", "savings_target", "investments_added",
+                "investments_target"],
+    var_name="series", value_name="amount",
+)
+chart["series"] = chart["series"].map(
+    {
+        "savings_added": "Savings added",
+        "savings_target": "Savings target",
+        "investments_added": "Investments added",
+        "investments_target": "Investments target",
+    }
+)
+fig = px.bar(
+    chart.dropna(subset=["amount"]), x="month", y="amount", color="series",
+    barmode="group", labels={"amount": "£", "month": "", "series": ""},
+)
+fig.update_layout(margin=dict(t=10))
+st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
 st.divider()
 

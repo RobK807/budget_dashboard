@@ -103,10 +103,11 @@ st.divider()
 
 st.subheader("Credit cards outstanding")
 st.caption(
-    "Month-tab B42:E52. The balance on the card less whatever has already been billed — so "
-    "what is left is the spending that has not yet reached a statement, owed on top of the "
-    "next direct debit. Before the payment day the opening statement is still owed; once "
-    "the closing statement has been issued that is what is owed instead."
+    "What is owed on a card *on top of* the bill it is about to pay. The card's own two "
+    "dates decide which of three states it is in: before the statement is issued the whole "
+    "balance is outstanding; between the statement and the direct debit the balance less "
+    "that bill is outstanding, because the bill is already spoken for; once it has been "
+    "paid the balance is outstanding again, building towards the next statement."
 )
 
 card_accounts = data["accounts"][data["accounts"]["type"] == "credit_card"]
@@ -117,22 +118,31 @@ else:
     outstanding = repo.card_outstanding(
         balances, data["card_statements"], data["accounts"], period
     )
+    as_of = outstanding["as_of"].iloc[0] if not outstanding.empty else None
     st.dataframe(
         ui.money_table(
-            outstanding,
-            ["closing", "bill_bom", "bill_eom", "billed", "outstanding"],
+            outstanding.drop(columns="as_of"),
+            ["closing", "statement", "awaiting", "outstanding"],
             labels={
                 "account": "Card",
                 "closing": "Balance",
-                "bill_bom": "Bill at start",
-                "bill_eom": "Bill at end",
-                "billed": "Already billed",
+                "statement": "This month's bill",
+                "awaiting": "Awaiting payment",
                 "outstanding": "Outstanding",
+                "position": "Where in the cycle",
             },
         ),
         use_container_width=True,
         hide_index=True,
     )
+    if as_of is not None:
+        st.caption(
+            f"Read as at {as_of:%d %B %Y} — today for the current month, the month end for "
+            "any other, so a past month's answer stops moving. **This month's bill** is the "
+            "statement figure entered for this month; **awaiting payment** is whichever bill "
+            "is actually standing right now, which for a card collected the following month "
+            "is the previous month's — that is why the two can differ."
+        )
 
     missing = [
         row["name"] for _, row in card_accounts.iterrows()
@@ -146,12 +156,12 @@ else:
             "outstanding figure cannot tell which bill applies."
         )
 
-    with st.expander(f"Enter the closing bills for {repo.period_label(period)}"):
+    with st.expander(f"Enter the bills for {repo.period_label(period)}"):
         st.caption(
-            "The bill at the start of a month is the previous month's closing bill, so only "
-            "the closing figure is entered. That held exactly for BA Amex and Mastercard in "
-            "every month of the workbook; Platinum Amex's July opening had been adjusted by "
-            "hand and differed by £76.05."
+            "Bills arrive at different times through the month, so fill them in as they "
+            "come. A blank is left blank rather than stored as zero, and saving only writes "
+            "what is filled in — entering one card today and another next week is fine, and "
+            "clearing a figure removes it."
         )
         statements = data["card_statements"]
         here = statements[statements["period"] == period]
@@ -163,13 +173,21 @@ else:
                     {
                         "id": int(row["id"]),
                         "card": row["name"],
-                        "bill": float(stored.get(int(row["id"]), 0) or 0),
+                        "bill": (
+                            float(stored[int(row["id"])])
+                            if int(row["id"]) in stored
+                            else None
+                        ),
                     }
                     for _, row in card_accounts.iterrows()
                 ]
             ),
             by="card",
         )
+        # Nullable, so an unentered bill stays visibly empty. A plain float column would
+        # coerce the blanks to NaN and then render them as 0.00, which reads as 'no bill
+        # this month' rather than 'not told yet'.
+        bill_frame["bill"] = bill_frame["bill"].astype("Float64")
 
         read_only = ui.read_only()
         edited_bills = st.data_editor(
@@ -180,19 +198,29 @@ else:
             column_order=["card", "bill"],
             column_config={
                 "card": "Card",
-                "bill": ui.editable_money("Credit card bill EoM"),
+                "bill": ui.editable_money(
+                    "Bill at end of month", "Leave blank until the statement arrives"
+                ),
             },
             key=f"bill_editor_{period}",
         )
         if st.button("Save bills", type="primary", disabled=read_only, key="save_bills"):
+            saved = cleared = 0
             with ui.session() as session, session.begin():
                 for _, row in edited_bills.iterrows():
-                    amount = Decimal(str(row["bill"] or 0))
+                    blank = row["bill"] is None or pd.isna(row["bill"])
                     reference.set_card_statement(
-                        session, period, int(row["id"]), amount if amount else None
+                        session, period, int(row["id"]),
+                        None if blank else Decimal(str(row["bill"])),
                     )
+                    if blank:
+                        cleared += int(int(row["id"]) in stored)
+                    else:
+                        saved += 1
                 outcome = reference.Outcome(
-                    True, f"Bills for {repo.period_label(period)} saved."
+                    True,
+                    f"{saved} bill(s) saved for {repo.period_label(period)}"
+                    + (f", {cleared} cleared." if cleared else "."),
                 )
             ui.show_outcome(outcome, "the card bills")
 
@@ -262,7 +290,7 @@ else:
             labels={"total": "£", "date": "", "classification": ""},
         )
         fig.update_layout(hovermode="x unified", margin=dict(t=10), barmode="relative")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
     with tab_cumulative:
         wide = (
@@ -275,7 +303,7 @@ else:
         )
         fig = px.line(wide, labels={"value": "£", "date": "", "variable": ""})
         fig.update_layout(hovermode="x unified", margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
         st.caption(
             "Cumulative within this month only. For balances carried across months under "
             "each classification's rollover rule, see **Trends**."

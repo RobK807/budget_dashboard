@@ -128,14 +128,14 @@ if not projection.empty:
         labels={"balance": "Balance (£)", "date": "", "card": ""},
     )
     fig.update_layout(hovermode="x unified", margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
     fig = px.bar(
         projection, x="date", y="payment", color="card",
         labels={"payment": "Total payment (£)", "date": "", "card": ""},
     )
     fig.update_layout(margin=dict(t=10), barmode="stack", hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
     st.caption(
         "Segmented by card, so a spike can be read back to the card causing it — the end of "
         "a promotional term, where the remaining balance is settled in one payment."

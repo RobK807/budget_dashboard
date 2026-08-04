@@ -150,13 +150,34 @@ def load_all() -> dict:
             "account_targets": repo.load_account_targets(session),
             "savings_targets": repo.load_savings_targets(session),
         }
-    full_year = repo.fiscal_periods(tax_year)
-    # `periods` is what most pages offer; `all_periods` keeps the full fiscal year for the
-    # things that genuinely need it -- year-end projections, and setting a future month's
-    # parameters before it arrives.
-    data["all_periods"] = full_year
-    data["periods"] = repo.periods_to_date(full_year)
+    # Every month dropdown used to be repo.fiscal_periods(tax_year) -- April 2026 to March
+    # 2027 and no further, because that is how many months a workbook had. Here the range
+    # starts at the first month anything is recorded against and ends at today, so a second
+    # year of history extends the lists rather than falling outside them.
     data["tax_year"] = tax_year
+    data["earliest_period"] = repo.earliest_period(
+        data["postings"]["period"] if not data["postings"].empty else None,
+        data["openings"]["period"] if not data["openings"].empty else None,
+        data["budgets"]["period"] if not data["budgets"].empty else None,
+        data["allowances"]["period"] if not data["allowances"].empty else None,
+        data["class_openings"]["period"] if not data["class_openings"].empty else None,
+        data["payslips"]["period"] if not data["payslips"].empty else None,
+        data["bonuses"]["period"] if not data["bonuses"].empty else None,
+        data["card_statements"]["period"] if not data["card_statements"].empty else None,
+        data["account_targets"]["period"] if not data["account_targets"].empty else None,
+        data["savings_targets"]["period"] if not data["savings_targets"].empty else None,
+        (
+            data["projections"]["date"].map(repo.period_of)
+            if not data["projections"].empty
+            else None
+        ),
+        default=repo.fiscal_periods(tax_year)[0],
+    )
+    # `periods` is what most pages offer; `all_periods` runs on past the current month for
+    # the things that plan ahead -- next month's targets, a projection, a future payslip.
+    data["look_forward"] = int(data["settings"].get("look_forward_months", 12) or 0)
+    data["periods"] = repo.span(data["earliest_period"])
+    data["all_periods"] = repo.span(data["earliest_period"], data["look_forward"])
     return data
 
 
@@ -204,6 +225,25 @@ def money(value) -> str:
     return f"£{Decimal(str(value)):,.2f}"
 
 
+def percent(value, places: int = 2) -> str:
+    """A rate as it is quoted -- 80.00, not 0.8.
+
+    Fractions belong in the arithmetic, not on the screen. Everything stored as a fraction
+    (retention, a card's minimum payment) is multiplied out at the point of display; anything
+    already held as a percentage (the tax rates) is passed straight through.
+    """
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{Decimal(str(value)):,.{places}f}"
+
+
+# printf-style, which is what st.column_config takes. sprintf-js treats ',' as a thousands
+# flag, so an editable money column can carry the separator that Styler formats already had
+# -- '£%.2f' gave £39255.98 in every data_editor in the app.
+MONEY_FORMAT = "£%,.2f"
+PLAIN_MONEY_FORMAT = "%,.2f"
+
+
 def to_float(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Decimal is right for storage and sums; float is what charts and column_config want."""
     out = df.copy()
@@ -248,13 +288,55 @@ def money_table(df: pd.DataFrame, money_columns: list[str], labels: dict[str, st
 
 def currency_columns(*names: str) -> dict:
     return {
-        n: st.column_config.NumberColumn(n.replace("_", " ").title(), format="£%.2f")
+        n: st.column_config.NumberColumn(n.replace("_", " ").title(), format=MONEY_FORMAT)
         for n in names
     }
 
 
-def running_totals(data: dict):
-    """Daily running totals and month-end closes from the rollover engine (DESIGN.md 6a)."""
+def money_axis(fig, axis: str = "y", label: str | None = None):
+    """Thousands separators on a chart's value axis and in its hover text.
+
+    Plotly's default tick format is SI-prefixed, so £10,000 is drawn as '10.00000k' -- a
+    notation nobody reading a bank balance wants. `,.2f` is the same format the tables use,
+    so a figure means the same thing wherever it appears.
+    """
+    settings = {"tickformat": ",.2f", "hoverformat": ",.2f"}
+    if label is not None:
+        settings["title_text"] = label
+    if axis == "y":
+        fig.update_yaxes(**settings)
+    else:
+        fig.update_xaxes(**settings)
+    return fig
+
+
+def default_range(
+    days: int = 90, earliest=None, latest=None
+) -> tuple["dt.date", "dt.date"]:
+    """A date filter's opening position: the last `days` days, ending today.
+
+    Relative to today rather than to the extent of the data, so the default does not silently
+    widen as history accumulates. Clamped to what actually exists where bounds are given,
+    since a date_input rejects a value outside its own min/max.
+    """
+    import datetime as dt
+
+    end = dt.date.today()
+    if latest is not None:
+        end = min(end, latest) if earliest is None else max(min(end, latest), earliest)
+    start = end - dt.timedelta(days=days)
+    if earliest is not None:
+        start = max(start, earliest)
+    return start, end
+
+
+def running_totals(data: dict, periods: list[str] | None = None):
+    """Daily running totals and month-end closes from the rollover engine (DESIGN.md 6a).
+
+    `periods` overrides how far ahead to carry the chain. It has to be an argument rather
+    than a fixed year: the balances are cumulative, so a look-forward of six months and one
+    of eighteen are different calculations, not the same one truncated.
+    """
     from decimal import Decimal
 
     retention = Decimal(str(data["settings"].get("excess_retention", 1)))
@@ -263,7 +345,7 @@ def running_totals(data: dict):
         data["projections"],
         data["allowances"],
         data["classifications"],
-        data["all_periods"],
+        periods or data["all_periods"],
         retention,
         openings=data["class_openings"],
     )
@@ -358,12 +440,70 @@ def show_outcome(outcome, label: str = "the change") -> None:
 
 
 def editable_money(label: str, help_text: str | None = None):
-    """A money column for st.data_editor.
-
-    NumberColumn takes a printf format and printf has no thousands separator, so editable
-    money is shown to two decimal places without one -- the separator is only available
-    through a Styler, which a data_editor cannot use.
-    """
+    """A money column for st.data_editor, with the pound sign and thousands separator."""
     import streamlit as st
 
-    return st.column_config.NumberColumn(label, format="%.2f", step=0.01, help=help_text)
+    return st.column_config.NumberColumn(
+        label, format=MONEY_FORMAT, step=0.01, help=help_text
+    )
+
+
+def editable_percent(label: str, help_text: str | None = None):
+    """A rate column for st.data_editor, quoted as a percentage rather than a fraction."""
+    import streamlit as st
+
+    return st.column_config.NumberColumn(
+        label, format="%.2f", step=0.01, min_value=0.0, max_value=100.0, help=help_text
+    )
+
+
+TRANSFER_LABEL = "Transfer"
+
+
+def name_blanks(df: pd.DataFrame, columns, *, transfers: str | None = "type") -> pd.DataFrame:
+    """Replace missing text with something a reader can act on.
+
+    A transfer carries no category or classification -- New_entry never wrote one -- so those
+    cells are genuinely empty rather than merely unfilled. pandas renders that as 'nan',
+    which reads like a broken row; naming it 'Transfer' says what it actually is.
+
+    `transfers` names the column holding the transaction type. Where it is absent, or the row
+    is not a transfer, a blank is shown as an em dash instead.
+    """
+    out = df.copy()
+    is_transfer = (
+        out[transfers].astype("string").str.lower().eq(TRANSFER_LABEL.lower())
+        if transfers and transfers in out.columns
+        else pd.Series(False, index=out.index)
+    )
+    for column in columns:
+        if column not in out.columns:
+            continue
+        text = out[column].astype("string")
+        out[column] = text.where(text.notna(), is_transfer.map({True: TRANSFER_LABEL,
+                                                               False: "—"}))
+    return out
+
+
+def describe_txn(row) -> str:
+    """One transaction, in the form the remove and restore pickers show it.
+
+    Shared so the two cannot drift, and because the obvious spelling of it -- `category or
+    type` -- is wrong: a missing category arrives as float NaN, which is truthy, so every
+    transfer was labelled 'nan'.
+    """
+
+    def text(value, fallback: str = "") -> str:
+        if value is None or (not isinstance(value, str) and pd.isna(value)):
+            return fallback
+        return str(value)
+
+    kind = text(getattr(row, "type", None), "")
+    label = text(getattr(row, "category", None)) or text(
+        getattr(row, "classification", None)
+    ) or kind or TRANSFER_LABEL
+    to = text(getattr(row, "account_to", None))
+    route = f"{text(getattr(row, 'account_from', None))}" + (f" → {to}" if to else "")
+    return (
+        f"#{int(row.id)} · {row.date:%d %b %Y} · {money(row.amount)} · {route} · {label}"
+    )

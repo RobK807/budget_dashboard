@@ -25,9 +25,15 @@ if txns.empty:
 with st.container(border=True):
     row1 = st.columns([2, 1, 1])
 
+    # Bounds come from the data; the opening position is the last ninety days, so the
+    # default does not silently widen as history accumulates.
     min_date, max_date = txns["date"].min().date(), txns["date"].max().date()
     date_range = row1[0].date_input(
-        "Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date
+        "Date range",
+        value=ui.default_range(90, min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        format="DD/MM/YYYY",
     )
     types = row1[1].multiselect("Type", ui.alphabetical(txns["type"]))
     show_deleted = row1[2].selectbox(
@@ -89,6 +95,12 @@ display = view[
      "classification", "comment", "deleted"]
 ].copy()
 display["date"] = display["date"].dt.date
+# A transfer carries no category or classification -- New_entry never wrote one -- so those
+# cells arrive as NaN and pandas renders them 'nan', which reads like a broken row. Naming
+# them says what they actually are.
+display = ui.name_blanks(
+    display, ["account_to", "category", "classification", "comment"]
+)
 
 st.dataframe(
     ui.money_table(
@@ -129,8 +141,44 @@ st.caption(
     "Deleted filter above."
 )
 
-live = view[~view["deleted"]]
-gone = view[view["deleted"]]
+# A second, narrower filter rather than reusing the one at the top of the page. Picking the
+# right row out of a dropdown is the hard part of removing one, and the list above is
+# usually left wide open for reading -- five hundred entries in a selectbox is not a list
+# anyone can pick from accurately.
+with st.container(border=True):
+    st.caption("Narrow the lists below.")
+    picker = st.columns([2, 2, 1])
+    pick_range = picker[0].date_input(
+        "Date range",
+        value=ui.default_range(90, min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        format="DD/MM/YYYY",
+        key="rm_range",
+        help="Defaults to the last ninety days.",
+    )
+    pick_accounts = picker[1].multiselect("Account", all_accounts, key="rm_accounts")
+    pick_search = picker[2].text_input("Comment contains", key="rm_search")
+
+selection = view.copy()
+if isinstance(pick_range, tuple) and len(pick_range) == 2:
+    pick_start, pick_end = (pd.Timestamp(d) for d in pick_range)
+    selection = selection[
+        (selection["date"] >= pick_start) & (selection["date"] <= pick_end)
+    ]
+if pick_accounts:
+    selection = selection[
+        selection["account_from"].isin(pick_accounts)
+        | selection["account_to"].isin(pick_accounts)
+    ]
+if pick_search:
+    text = (
+        selection["comment"].fillna("") + " " + selection["category_comment"].fillna("")
+    ).str.lower()
+    selection = selection[text.str.contains(pick_search.lower(), regex=False)]
+
+live = selection[~selection["deleted"]]
+gone = selection[selection["deleted"]]
 
 remove_col, restore_col = st.columns(2)
 
@@ -139,11 +187,8 @@ with remove_col:
     if live.empty:
         st.caption("Nothing in the current selection to remove.")
     else:
-        options = {
-            int(r.id): f"#{r.id} · {r.date:%d %b} · {ui.money(r.amount)} · "
-            f"{r.account_from} · {r.category or r.type}"
-            for r in live.head(500).itertuples()
-        }
+        options = {int(r.id): ui.describe_txn(r) for r in live.head(500).itertuples()}
+        st.caption(f"{len(live):,} matching; the {len(options)} most recent are listed.")
         target = st.selectbox(
             "Transaction", list(options), format_func=lambda i: options[i], key="rm_target"
         )
@@ -165,8 +210,8 @@ with restore_col:
         st.caption("Nothing removed in the current selection. Set Deleted to Show or Only.")
     else:
         options = {
-            int(r.id): f"#{r.id} · {r.date:%d %b} · {ui.money(r.amount)} · "
-            f"{r.account_from} · {r.deleted_reason or 'no reason given'}"
+            int(r.id): ui.describe_txn(r)
+            + f" · {r.deleted_reason or 'no reason given'}"
             for r in gone.head(500).itertuples()
         }
         target = st.selectbox(

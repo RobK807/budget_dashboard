@@ -578,9 +578,22 @@ def remove_salary_profile(session: Session, profile_id: int) -> Outcome:
     return Outcome(True, "Salary record removed.")
 
 
+BONUS_ACTUALS = ("gross", "ni", "paye", "net")
+
+
 def set_bonus(
-    session: Session, period: str, amount: Decimal, note: str | None = None
+    session: Session,
+    period: str,
+    amount: Decimal,
+    note: str | None = None,
+    **actuals,
 ) -> Outcome:
+    """A bonus for a month: the expected amount, and optionally what was actually paid.
+
+    The actual figures live here rather than on the payslip because a bonus usually arrives
+    on its own day. `payslip` is keyed by period, so putting them there would have meant the
+    second payment of a month overwriting the first.
+    """
     existing = session.get(Bonus, period)
     if amount is None or Decimal(amount) == 0:
         if existing:
@@ -589,14 +602,49 @@ def set_bonus(
             bump_revision(session)
             return Outcome(True, f"Bonus for {period} removed.")
         return Outcome(True, "No bonus to record.")
-    if existing:
-        existing.amount = Decimal(amount)
-        existing.note = note
+
+    if existing is None:
+        existing = Bonus(period=period, amount=Decimal(amount))
+        session.add(existing)
     else:
-        session.add(Bonus(period=period, amount=Decimal(amount), note=note))
+        existing.amount = Decimal(amount)
+    existing.note = note
+
+    for key in BONUS_ACTUALS:
+        if key in actuals:
+            value = actuals[key]
+            setattr(existing, key, Decimal(str(value)) if value is not None else None)
+    if "payday" in actuals:
+        existing.payday = int(actuals["payday"]) if actuals["payday"] else None
+
     session.flush()
     bump_revision(session)
     return Outcome(True, f"Bonus for {period} saved.")
+
+
+def remove_bonus(session: Session, period: str) -> Outcome:
+    existing = session.get(Bonus, period)
+    if existing is None:
+        return Outcome(False, f"No bonus recorded for {period}.")
+    session.delete(existing)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Bonus for {period} removed.")
+
+
+def remove_payslip(session: Session, period: str) -> Outcome:
+    """Delete a payslip outright, for when the wrong month was filled in.
+
+    A real delete rather than a soft one: a payslip carries nothing else and is re-enterable
+    from the paper copy, so there is no history to preserve.
+    """
+    existing = session.get(Payslip, period)
+    if existing is None:
+        return Outcome(False, f"No payslip recorded for {period}.")
+    session.delete(existing)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Payslip for {period} removed.")
 
 
 def set_payslip(session: Session, period: str, **fields) -> Outcome:
@@ -875,19 +923,27 @@ def set_projection(
     return Outcome(True, f"Projection for {proj_date:%d %b %Y} saved.")
 
 
-def clear_projections(session: Session, period: str) -> int:
+def clear_projections(
+    session: Session, period: str, classification_ids: list[int] | None = None
+) -> int:
     """Wipe a month's projections before re-entering them, so a shorter replacement does not
-    leave orphans from the longer version it replaced."""
+    leave orphans from the longer version it replaced.
+
+    `classification_ids` narrows it to the ones being rewritten. That matters once the entry
+    grid can be filtered: saving a screen showing only Bills must not silently delete the
+    Excess rows that the filter happened to be hiding.
+    """
     year, month = (int(p) for p in period.split("-"))
     start = dt.date(year, month, 1)
     end = dt.date(year + (month == 12), month % 12 + 1, 1)
-    rows = list(
-        session.scalars(
-            select(Projection).where(
-                Projection.proj_date >= start, Projection.proj_date < end
-            )
-        )
+    statement = select(Projection).where(
+        Projection.proj_date >= start, Projection.proj_date < end
     )
+    if classification_ids is not None:
+        statement = statement.where(
+            Projection.classification_id.in_(list(classification_ids))
+        )
+    rows = list(session.scalars(statement))
     for row in rows:
         session.delete(row)
     session.flush()

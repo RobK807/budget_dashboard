@@ -371,6 +371,12 @@ class Bonus(Base):
     May's expected gross was `ROUND(O5/12,2)+29028.48` -- the bonus welded into the formula,
     which is why expected gross could not simply be derived. Held as data, the derivation
     works again: expected gross = salary in force / 12 + any bonus for the month.
+
+    The actual columns are here rather than on `payslip` because a bonus is frequently paid
+    on its own day, as its own payment with its own deductions. `payslip` is keyed by period,
+    so recording the bonus there would have overwritten the month's salary -- two payments in
+    one month is exactly the case a single row per month cannot hold. The Salary page adds
+    the two together.
     """
 
     __tablename__ = "bonus"
@@ -378,6 +384,11 @@ class Bonus(Base):
     period: Mapped[str] = mapped_column(String(7), primary_key=True)
     amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
+    payday: Mapped[int | None] = mapped_column(Integer)
+    gross: Mapped[Decimal | None] = mapped_column(Money)
+    ni: Mapped[Decimal | None] = mapped_column(Money)
+    paye: Mapped[Decimal | None] = mapped_column(Money)
+    net: Mapped[Decimal | None] = mapped_column(Money)
 
 
 class Card(Base):

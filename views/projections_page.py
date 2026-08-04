@@ -105,7 +105,7 @@ fig = px.bar(
     labels={"amount": "£", "classification": "", "series": ""},
 )
 fig.update_layout(margin=dict(t=10))
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
 st.divider()
 
@@ -114,7 +114,7 @@ st.divider()
 st.subheader("Day by day")
 
 chosen = st.multiselect(
-    "Classification", ui.alphabetical(projections["classification"]),
+    "Classification", ui.alphabetical(classifications),
     default=[c for c in ["Excess", "Bills"] if c in classifications],
 )
 
@@ -171,8 +171,8 @@ if READ_ONLY:
 st.caption(
     "Same shape as the Import page, minus the account and category — a projection is a "
     "day's expected spend against a classification, which is all the workbook's Projected "
-    "Costs grid held. Rows are keyed by date and classification, so re-entering a day "
-    "replaces it."
+    "Costs grid held. The grid opens with every day of the month against every "
+    "classification, so planning is filling figures in rather than building the rows first."
 )
 
 first_day = repo.period_start(period)
@@ -180,78 +180,155 @@ last_day = repo.month_end(period)
 class_names = ui.alphabetical(data["classifications"]["name"])
 class_ids = dict(zip(data["classifications"]["name"], data["classifications"]["id"]))
 
-existing = month_proj[["date", "classification", "amount", "comment"]].copy()
-if not existing.empty:
-    existing["date"] = pd.to_datetime(existing["date"]).dt.date
-    existing = existing.sort_values(["date", "classification"])
-    existing["amount"] = existing["amount"].astype(float)
-else:
-    existing = pd.DataFrame(
-        {
-            "date": pd.Series(dtype="object"),
-            "classification": pd.Series(dtype="str"),
-            "amount": pd.Series(dtype="float"),
-            "comment": pd.Series(dtype="str"),
-        }
+plan_for = st.multiselect(
+    "Plan which classifications",
+    class_names,
+    default=class_names,
+    key=f"plan_filter_{period}",
+    help="Only the ones shown are saved, so a filtered screen cannot wipe the rest.",
+)
+
+if not plan_for:
+    st.caption("Pick at least one classification to plan.")
+    st.stop()
+
+# ---- copy a previous month ---------------------------------------------------------
+
+earlier_months = [p for p in selectable if p < period]
+if earlier_months:
+    copy_left, copy_right = st.columns([3, 1])
+    source = copy_left.selectbox(
+        "Copy from",
+        options=list(reversed(earlier_months)),
+        format_func=repo.period_label,
+        key=f"copy_source_{period}",
+        help="Copies by day of the month, for the classifications selected above. Bills "
+             "that repeat on the same date each month need entering once.",
     )
+    copy_right.write("")
+    if copy_right.button(
+        "Copy across", disabled=READ_ONLY, key=f"do_copy_{period}",
+        use_container_width=True,
+    ):
+        source_rows = projections[projections["period"] == source]
+        source_rows = source_rows[source_rows["classification"].isin(plan_for)]
+        copied = out_of_range = 0
+        with ui.session() as session, session.begin():
+            reference.clear_projections(
+                session, period, [int(class_ids[n]) for n in plan_for]
+            )
+            for _, row in source_rows.iterrows():
+                day = pd.to_datetime(row["date"]).day
+                # A 31-day month copied onto a 30-day one has a day with nowhere to go.
+                # Dropping it is the honest outcome; shifting it to the 30th would invent a
+                # payment date that was never planned.
+                if day > last_day.day:
+                    out_of_range += 1
+                    continue
+                reference.set_projection(
+                    session, first_day.replace(day=day), int(class_ids[row["classification"]]),
+                    Decimal(str(row["amount"])),
+                    None if pd.isna(row["comment"]) else row["comment"],
+                )
+                copied += 1
+            outcome = reference.Outcome(
+                True,
+                f"Copied {copied} projection(s) from {repo.period_label(source)} into "
+                f"{repo.period_label(period)}.",
+                [f"{out_of_range} row(s) dropped — that day does not exist in this month."]
+                if out_of_range
+                else [],
+            )
+        ui.show_outcome(outcome, "the copied projections")
+        st.rerun()
+
+# ---- the grid ----------------------------------------------------------------------
+
+# Pre-populated with the full month rather than only what is stored: the workbook's grid was
+# a fixed block of dates down the side, and starting from a blank editor meant typing a date
+# and picking a classification before a figure could go anywhere.
+stored = (
+    month_proj.set_index(
+        [pd.to_datetime(month_proj["date"]).dt.date, month_proj["classification"]]
+    )
+    if not month_proj.empty
+    else None
+)
+
+grid = pd.DataFrame(
+    [
+        {
+            "date": day.date(),
+            "classification": name,
+            "amount": (
+                float(stored.loc[(day.date(), name), "amount"])
+                if stored is not None and (day.date(), name) in stored.index
+                else 0.0
+            ),
+            "comment": (
+                stored.loc[(day.date(), name), "comment"]
+                if stored is not None and (day.date(), name) in stored.index
+                else None
+            ),
+        }
+        for day in pd.date_range(first_day, last_day, freq="D")
+        for name in plan_for
+    ]
+)
+grid["comment"] = grid["comment"].astype("string")
 
 edited = st.data_editor(
-    existing,
+    grid,
     use_container_width=True,
     hide_index=True,
-    num_rows="fixed" if READ_ONLY else "dynamic",
+    num_rows="fixed",
+    disabled=["date", "classification"] if not READ_ONLY else True,
     column_config={
-        "date": st.column_config.DateColumn(
-            "Date", format="DD/MM/YYYY", min_value=first_day, max_value=last_day
-        ),
-        "classification": st.column_config.SelectboxColumn(
-            "Classification", options=class_names, required=True
-        ),
+        "date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+        "classification": st.column_config.TextColumn("Classification"),
         "amount": ui.editable_money("Amount"),
         "comment": st.column_config.TextColumn("Note"),
     },
-    key=f"projection_editor_{period}",
-    height=420,
+    key=f"projection_editor_{period}_{'|'.join(plan_for)}",
+    height=520,
 )
 
 st.caption(
-    f"Dates must fall within {first_day:%d %b} – {last_day:%d %b %Y}. Anything outside the "
-    "month is ignored, since it would belong to a different month's plan."
+    f"{first_day:%d %b} – {last_day:%d %b %Y}. A day left at zero is not stored — a zero "
+    "projection and no projection are the same thing to the running totals, and keeping "
+    "every empty cell would mean writing several hundred rows a month for nothing."
 )
 
 if st.button(
     f"Save {repo.period_label(period)}", type="primary", disabled=READ_ONLY,
     key="save_projections",
 ):
-    rows, skipped = [], 0
-    for _, row in edited.iterrows():
-        when, name = row["date"], row["classification"]
-        if when is None or pd.isna(when) or not name or pd.isna(name):
-            skipped += 1
-            continue
-        when = pd.to_datetime(when).date()
-        if not (first_day <= when <= last_day) or name not in class_ids:
-            skipped += 1
-            continue
-        rows.append((when, int(class_ids[name]), Decimal(str(row["amount"] or 0)),
-                     None if pd.isna(row["comment"]) else row["comment"]))
+    rows = [
+        (
+            row["date"],
+            int(class_ids[row["classification"]]),
+            Decimal(str(row["amount"])),
+            None if pd.isna(row["comment"]) else row["comment"],
+        )
+        for _, row in edited.iterrows()
+        if row["amount"] is not None
+        and not pd.isna(row["amount"])
+        and Decimal(str(row["amount"])) != 0
+    ]
 
-    if not rows and not skipped:
-        st.info("Nothing to save.")
-    else:
-        with ui.session() as session, session.begin():
-            # Cleared and rewritten rather than merged: a shorter replacement must not
-            # leave behind days from the longer version it replaced.
-            removed = reference.clear_projections(session, period)
-            for when, class_id, amount, comment in rows:
-                reference.set_projection(session, when, class_id, amount, comment)
-            outcome = reference.Outcome(
-                True,
-                f"Saved {len(rows)} projection(s) for {repo.period_label(period)}"
-                + (f", replacing {removed}." if removed else "."),
-                [f"{skipped} row(s) skipped — outside the month or incomplete."]
-                if skipped
-                else [],
-            )
-        ui.show_outcome(outcome, "the projections")
-        st.rerun()
+    with ui.session() as session, session.begin():
+        # Cleared and rewritten rather than merged, but only for the classifications on
+        # screen: a shorter replacement must not leave behind days from the longer version,
+        # and a filtered screen must not delete what the filter is hiding.
+        removed = reference.clear_projections(
+            session, period, [int(class_ids[n]) for n in plan_for]
+        )
+        for when, class_id, amount, comment in rows:
+            reference.set_projection(session, when, class_id, amount, comment)
+        outcome = reference.Outcome(
+            True,
+            f"Saved {len(rows)} projection(s) for {repo.period_label(period)}"
+            + (f", replacing {removed}." if removed else "."),
+        )
+    ui.show_outcome(outcome, "the projections")
+    st.rerun()

@@ -238,6 +238,12 @@ def fiscal_periods(tax_year: int) -> list[str]:
     return out
 
 
+def tax_year_of(period: str) -> int:
+    """The tax year a month falls in -- the April it started from."""
+    year, month = (int(p) for p in period.split("-"))
+    return year if month >= FISCAL_START_MONTH else year - 1
+
+
 def period_label(period: str) -> str:
     year, month = (int(p) for p in period.split("-"))
     return dt.date(year, month, 1).strftime("%B %Y")
@@ -258,6 +264,72 @@ def periods_to_date(periods: list[str], today: dt.date | None = None) -> list[st
     trimmed = [p for p in periods if p <= current]
     # Guard against a year that has not begun: better to show it all than nothing.
     return trimmed or list(periods)
+
+
+# --------------------------------------------------------------- periods from the data
+#
+# The month dropdowns were built from `fiscal_periods(tax_year)`, so every one of them ran
+# April 2026 to March 2027 and no further. That is a property of the workbook -- one file per
+# year -- not of a database that will hold several. These build the range from what is
+# actually stored plus where today falls, so the lists extend on their own.
+
+
+def period_of(value) -> str:
+    """The period a date belongs to."""
+    date = pd.to_datetime(value).date() if not isinstance(value, dt.date) else value
+    return f"{date.year:04d}-{date.month:02d}"
+
+
+def month_add(period: str, months: int) -> str:
+    """Shift a period by a number of months, either direction."""
+    year, month = (int(p) for p in period.split("-"))
+    index = year * 12 + (month - 1) + months
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def months_between(start: str, end: str) -> int:
+    sy, sm = (int(p) for p in start.split("-"))
+    ey, em = (int(p) for p in end.split("-"))
+    return (ey * 12 + em) - (sy * 12 + sm)
+
+
+def period_range(start: str, end: str) -> list[str]:
+    """Every month from start to end inclusive, in order. Empty if end precedes start."""
+    count = months_between(start, end)
+    if count < 0:
+        return []
+    return [month_add(start, i) for i in range(count + 1)]
+
+
+def earliest_period(*sources, default: str) -> str:
+    """The first month anything is recorded against, across however many frames.
+
+    Falls back to `default` when the database is empty -- a fresh install still needs a
+    month to select.
+    """
+    seen: set[str] = set()
+    for source in sources:
+        if source is None:
+            continue
+        values = source.dropna() if hasattr(source, "dropna") else source
+        seen.update(str(v) for v in values if v)
+    return min(seen) if seen else default
+
+
+def span(
+    earliest: str, look_forward: int = 0, today: dt.date | None = None
+) -> list[str]:
+    """The months a dropdown should offer: earliest recorded through to today, plus a
+    look-forward for the ones that plan ahead.
+
+    A month that has not begun is still worth selecting where a figure is being *set* for it
+    -- next month's savings target, or a projection -- which is why the look-forward exists
+    rather than every list stopping dead at the current month.
+    """
+    today = today or dt.date.today()
+    current = f"{today.year:04d}-{today.month:02d}"
+    start = min(earliest, current)
+    return period_range(start, month_add(max(current, earliest), look_forward))
 
 
 # --------------------------------------------------------------------------- aggregations
@@ -483,29 +555,53 @@ def assumption_tax_years(session: Session) -> list[int]:
     )
 
 
-def salary_bands(session: Session, tax_year: int) -> tax.Bands:
-    """Assemble the PAYE/NI bands for a tax year from stored assumptions.
+ADJUSTMENT_KEY = "personal_allowance_adjustment"
+
+
+def assumption_dates(assumptions: pd.DataFrame) -> list[dt.date]:
+    """Every date on which a threshold or rate changed, most recent last.
+
+    The allowance steps are excluded: those are a taper within a year, not a revision of the
+    bands, and they are already handled inside tax.Bands.allowance_for.
+    """
+    if assumptions.empty:
+        return []
+    rows = assumptions[assumptions["key"] != ADJUSTMENT_KEY]
+    return sorted({pd.to_datetime(d).date() for d in rows["effective_from"]})
+
+
+def bands_from(assumptions: pd.DataFrame, on: dt.date | None = None) -> tax.Bands:
+    """Assemble the PAYE/NI bands from stored assumptions, as they stood on a date.
+
+    Every threshold and rate is effective-dated, so a rate change part-way through a year is
+    a new row rather than an edit that quietly rewrites what earlier months were taxed at.
+    For each key the row in force is the last one starting on or before `on`; `on` of None
+    takes the most recent of all, which is what an editor showing 'current' wants.
 
     `basic_band` is derived rather than read: the workbook's D36 is `=D28 - D22`, the basic
     rate threshold less the personal allowance. Storing it as well as its two inputs would
     let the three drift apart the moment one was edited, so the stored value is only a
     fallback for a database that predates the inputs being kept.
     """
-    rows = list(
-        session.scalars(
-            select(SalaryAssumption).where(SalaryAssumption.tax_year == tax_year)
-        )
-    )
-    simple = {
-        r.key: (r.value / HUNDRED if r.key in RATE_KEYS else r.value)
-        for r in rows
-        if r.key != "personal_allowance_adjustment"
-    }
-    steps = tuple(
-        (r.effective_from, r.value)
-        for r in rows
-        if r.key == "personal_allowance_adjustment"
-    )
+    simple: dict[str, Decimal] = {}
+    steps: tuple = ()
+
+    if not assumptions.empty:
+        frame = assumptions.copy()
+        frame["effective_from"] = pd.to_datetime(frame["effective_from"]).dt.date
+        for key, group in frame.groupby("key"):
+            group = group.sort_values("effective_from")
+            if key == ADJUSTMENT_KEY:
+                steps = tuple(
+                    (row["effective_from"], row["value"]) for _, row in group.iterrows()
+                )
+                continue
+            applicable = group if on is None else group[group["effective_from"] <= on]
+            # Before the first stored set there is nothing in force. Reaching forward to the
+            # earliest one is a better answer than zero, which would silently model a 0% tax
+            # rate rather than admitting the year has no bands yet.
+            row = applicable.iloc[-1] if not applicable.empty else group.iloc[0]
+            simple[key] = row["value"] / HUNDRED if key in RATE_KEYS else row["value"]
 
     threshold = simple.get("basic_rate_threshold")
     allowance = simple.get("personal_allowance")
@@ -528,6 +624,13 @@ def salary_bands(session: Session, tax_year: int) -> tax.Bands:
         additional_rate=simple.get("additional_rate", Decimal("0")),
         allowance_steps=steps,
     )
+
+
+def salary_bands(
+    session: Session, tax_year: int, on: dt.date | None = None
+) -> tax.Bands:
+    """The bands for a tax year, as they stood on a date. See bands_from."""
+    return bands_from(load_salary_assumptions(session, tax_year), on)
 
 
 def load_cards(session: Session) -> pd.DataFrame:
@@ -912,11 +1015,12 @@ def load_salary_profiles(session: Session) -> pd.DataFrame:
 
 
 def load_bonuses(session: Session) -> pd.DataFrame:
+    columns = ["period", "amount", "note", "payday", "gross", "ni", "paye", "net"]
     rows = [
-        {"period": b.period, "amount": b.amount, "note": b.note}
+        {c: getattr(b, c) for c in columns}
         for b in session.scalars(select(Bonus).order_by(Bonus.period))
     ]
-    return pd.DataFrame(rows, columns=["period", "amount", "note"])
+    return pd.DataFrame(rows, columns=columns)
 
 
 def load_cycling_rates(session: Session) -> pd.DataFrame:
@@ -1051,6 +1155,48 @@ def month_end(period: str) -> dt.date:
     return dt.date(year, month, calendar.monthrange(year, month)[1])
 
 
+def _clamp_day(year: int, month: int, day: int) -> dt.date:
+    """A day-of-month that exists: the 31st of a card's cycle lands on the 30th in April."""
+    return dt.date(year, month, min(int(day), calendar.monthrange(year, month)[1]))
+
+
+def billing_cycle(statement_day, payment_day, on: dt.date):
+    """Which statement stands against a card on a date, when it was issued and when it is due.
+
+    A card bills on the same day each month and collects on another. Where the payment day
+    falls after the statement day the two sit inside one month -- Platinum Amex issues on the
+    16th and is paid on the 30th. Where it falls before, the bill is settled the *following*
+    month: BA Amex issues on the 26th and is not collected until the 9th, so the balance
+    stands net of that bill from the 26th of one month to the 9th of the next.
+
+    Returns (period of the bill, issue date, due date), or None when either day is unset --
+    without both there is no way to say whether what is owed has been billed yet.
+    """
+    if (
+        statement_day is None
+        or payment_day is None
+        or pd.isna(statement_day)
+        or pd.isna(payment_day)
+    ):
+        return None
+    statement_day, payment_day = int(statement_day), int(payment_day)
+
+    issued = _clamp_day(on.year, on.month, statement_day)
+    if issued > on:
+        earlier = month_add(f"{on.year:04d}-{on.month:02d}", -1)
+        year, month = (int(p) for p in earlier.split("-"))
+        issued = _clamp_day(year, month, statement_day)
+
+    if payment_day > statement_day:
+        due = _clamp_day(issued.year, issued.month, payment_day)
+    else:
+        later = month_add(f"{issued.year:04d}-{issued.month:02d}", 1)
+        year, month = (int(p) for p in later.split("-"))
+        due = _clamp_day(year, month, payment_day)
+
+    return f"{issued.year:04d}-{issued.month:02d}", issued, due
+
+
 def card_outstanding(
     balances: pd.DataFrame,
     statements: pd.DataFrame,
@@ -1058,32 +1204,33 @@ def card_outstanding(
     period: str,
     today: dt.date | None = None,
 ) -> pd.DataFrame:
-    """Month-tab B42:E52 -- what is owed on a card beyond the bill already issued.
+    """Month-tab B42:E52 -- what is owed on a card on top of the bill it is about to pay.
 
-    The workbook's D52, in words:
+    Three states, which the card's own two dates decide:
 
-        balance
-          less, if this month and today is before the payment day, the opening statement
-          less, if a later month or today is on/after the statement day, the closing one
-          less nothing in the window between the two
+        before the statement is issued   outstanding = balance
+        after it is issued, before it is paid   outstanding = balance - bill
+        after it is paid                 outstanding = balance
 
-    Before the direct debit goes out the opening statement is still owed; once the closing
-    statement has been issued that is what is owed instead; in between, nothing has been
-    billed. Subtracting it leaves the spending that has not yet reached a statement -- what
-    is owed on top of the next payment.
+    So the figure is the spending that has not yet reached a statement. The bill subtracted
+    is whichever one is currently standing, which for a card paid the following month is the
+    *previous* month's -- not the one in this month's column. The workbook's D52 tried to
+    reach the same answer from the month tab alone and could not: it took whichever bill the
+    day of the month suggested without ever asking when the payment actually left, so a card
+    settled mid-month still showed its bill deducted at the month end.
 
-    The opening bill is the previous month's closing bill rather than a second stored
-    figure. That holds exactly for BA Amex and Mastercard in every month of the workbook;
-    Platinum Amex's July opening was hand-adjusted and differs by 76.05.
+    The position is read as at today for the current month, and as at the month end for any
+    other -- a past month's answer should not keep moving.
     """
     today = today or dt.date.today()
     cards = accounts[accounts["type"] == "credit_card"]
     if cards.empty:
         return pd.DataFrame(
-            columns=["account", "closing", "bill_bom", "bill_eom", "billed", "outstanding"]
+            columns=["account", "closing", "statement", "awaiting", "outstanding",
+                     "position", "as_of"]
         )
 
-    earlier = previous_period(period)
+    as_of = today if period_of(today) == period else month_end(period)
     by_account = balances.set_index("account") if not balances.empty else None
 
     def bill(account_id: int, for_period: str | None) -> Decimal:
@@ -1094,39 +1241,37 @@ def card_outstanding(
         ]
         return Decimal(match["bill_eom"].iloc[0]) if not match.empty else Decimal("0")
 
-    in_this_month = f"{today.year:04d}-{today.month:02d}" == period
-
     rows = []
     for _, card in cards.iterrows():
         name = card["name"]
-        if by_account is not None and name in by_account.index:
-            closing = by_account.loc[name, "closing"]
+        closing = (
+            by_account.loc[name, "closing"]
+            if by_account is not None and name in by_account.index
+            else Decimal("0")
+        )
+
+        cycle = billing_cycle(card["statement_day"], card["payment_day"], as_of)
+        if cycle is None:
+            awaiting = Decimal("0")
+            position = "No statement or payment day set"
         else:
-            closing = Decimal("0")
-
-        bom = bill(int(card["id"]), earlier)
-        eom = bill(int(card["id"]), period)
-
-        statement_day = card["statement_day"]
-        payment_day = card["payment_day"]
-
-        if in_this_month and payment_day is not None and today.day < int(payment_day):
-            billed = bom
-        elif not in_this_month or (
-            statement_day is not None and today.day >= int(statement_day)
-        ):
-            billed = eom
-        else:
-            billed = Decimal("0")
+            bill_period, issued, due = cycle
+            if as_of < due:
+                awaiting = bill(int(card["id"]), bill_period)
+                position = f"Billed {issued:%d %b}, due {due:%d %b}"
+            else:
+                awaiting = Decimal("0")
+                position = f"Paid {due:%d %b} — next bill not yet issued"
 
         rows.append(
             {
                 "account": name,
                 "closing": closing,
-                "bill_bom": bom,
-                "bill_eom": eom,
-                "billed": billed,
-                "outstanding": Decimal(closing) - Decimal(billed),
+                "statement": bill(int(card["id"]), period),
+                "awaiting": awaiting,
+                "outstanding": Decimal(closing) - Decimal(awaiting),
+                "position": position,
+                "as_of": as_of,
             }
         )
     return sort_human(pd.DataFrame(rows), by="account")
@@ -1182,12 +1327,19 @@ def savings_series(
 ) -> pd.DataFrame:
     """Summary B2:O15 -- savings and investments month by month.
 
-    The workbook opens with the year's starting balances and then gives one row per month
-    end, which is reproduced by prepending an opening row.
+    One row per month, opening and closing side by side, so a month can be read across
+    without holding the previous row in your head. The workbook instead led with a standalone
+    opening row and then gave closing balances only, which is why 'Added' had to be inferred
+    by subtracting the row above.
 
-    `required` accumulates: this month's target less what was added, plus whatever was still
-    outstanding from last month. A month that falls short raises the bar for the next one,
-    which is the whole point of the column.
+    Two accumulating figures:
+
+        target_eom    the monthly targets summed to date
+        required      that cumulative target less what is actually available
+
+    `required` is positive when the target is ahead of the balance, so a positive number is
+    money still to find. It compares a running total of contributions against a balance, so
+    it is only meaningful measured from the month the targets start in.
     """
     today = today or dt.date.today()
     flag = accounts["exclude_from_savings"]
@@ -1195,17 +1347,16 @@ def savings_series(
 
     lookup = targets.set_index("period") if not targets.empty else None
 
-    def target_for(period: str, column: str) -> Decimal | None:
+    def target_for(period: str, column: str) -> Decimal:
         if lookup is None or period not in lookup.index:
-            return None
+            return Decimal("0")
         value = lookup.loc[period, column]
-        return None if pd.isna(value) else Decimal(value)
+        return Decimal("0") if pd.isna(value) else Decimal(value)
 
     rows: list[dict] = []
-    previous_savings = previous_investments = None
-    outstanding_savings = outstanding_investments = Decimal("0")
+    savings_to_date = investments_to_date = Decimal("0")
 
-    for index, period in enumerate(periods):
+    for period in periods:
         balances = account_balances(postings, openings, period, accounts)
         if balances.empty:
             continue
@@ -1213,79 +1364,44 @@ def savings_series(
         invest_rows = balances[balances["is_investment"]]
         available = savings_rows[~savings_rows["account"].isin(excluded_names)]
 
-        if index == 0:
-            rows.append(
-                {
-                    "period": period,
-                    "date": period_start(period),
-                    "month": period_label(period),
-                    "point": "Opening",
-                    "savings": savings_rows["opening"].sum() or Decimal("0"),
-                    "savings_available": available["opening"].sum() or Decimal("0"),
-                    "savings_added": None,
-                    "savings_target": None,
-                    "savings_required": None,
-                    "investments": invest_rows["opening"].sum() or Decimal("0"),
-                    "investments_added": None,
-                    "investments_target": None,
-                    "investments_required": None,
-                    "combined": (savings_rows["opening"].sum() or Decimal("0"))
-                    + (invest_rows["opening"].sum() or Decimal("0")),
-                }
-            )
-            previous_savings = rows[-1]["savings_available"]
-            previous_investments = rows[-1]["investments"]
+        def total(frame: pd.DataFrame, column: str) -> Decimal:
+            return Decimal(frame[column].sum() or 0)
 
-        started = period_start(period) <= today
-        savings_total = savings_rows["closing"].sum() or Decimal("0")
-        savings_available = available["closing"].sum() or Decimal("0")
-        investments_total = invest_rows["closing"].sum() or Decimal("0")
-
-        added_savings = (
-            savings_available - previous_savings
-            if started and previous_savings is not None
-            else None
-        )
-        added_investments = (
-            investments_total - previous_investments
-            if started and previous_investments is not None
-            else None
-        )
+        savings_bom = total(savings_rows, "opening")
+        savings_eom = total(savings_rows, "closing")
+        available_bom = total(available, "opening")
+        available_eom = total(available, "closing")
+        investments_bom = total(invest_rows, "opening")
+        investments_eom = total(invest_rows, "closing")
 
         savings_target = target_for(period, "savings")
         investments_target = target_for(period, "investments")
-
-        if added_savings is not None and savings_target is not None:
-            outstanding_savings += savings_target - added_savings
-            savings_required = outstanding_savings
-        else:
-            savings_required = None
-        if added_investments is not None and investments_target is not None:
-            outstanding_investments += investments_target - added_investments
-            investments_required = outstanding_investments
-        else:
-            investments_required = None
+        savings_to_date += savings_target
+        investments_to_date += investments_target
 
         rows.append(
             {
                 "period": period,
                 "date": month_end(period),
                 "month": period_label(period),
-                "point": "Month end",
-                "savings": savings_total,
-                "savings_available": savings_available,
-                "savings_added": added_savings,
+                "started": period_start(period) <= today,
+                "savings_bom": savings_bom,
+                "available_bom": available_bom,
+                "savings_added": savings_eom - savings_bom,
+                "savings_eom": savings_eom,
+                "available_eom": available_eom,
                 "savings_target": savings_target,
-                "savings_required": savings_required,
-                "investments": investments_total,
-                "investments_added": added_investments,
+                "savings_target_eom": savings_to_date,
+                "savings_required": savings_to_date - available_eom,
+                "investments_bom": investments_bom,
+                "investments_added": investments_eom - investments_bom,
+                "investments_eom": investments_eom,
                 "investments_target": investments_target,
-                "investments_required": investments_required,
-                "combined": savings_total + investments_total,
+                "investments_target_eom": investments_to_date,
+                "investments_required": investments_to_date - investments_eom,
+                "combined": savings_eom + investments_eom,
             }
         )
-        previous_savings = savings_available
-        previous_investments = investments_total
 
     return pd.DataFrame(rows)
 

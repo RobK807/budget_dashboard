@@ -8,7 +8,6 @@ worth -- and does not mean editing every historic row either.
 
 from __future__ import annotations
 
-import datetime as dt
 from decimal import Decimal
 
 import pandas as pd
@@ -77,7 +76,7 @@ if not savings.empty:
         labels={"cumulative": "Net saving (£)", "date": ""},
     )
     fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
     st.subheader("Days by kind")
     by_kind = (
@@ -100,7 +99,7 @@ if not savings.empty:
         labels={"saved": "£", "kind": ""},
     )
     fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
 st.divider()
 
@@ -135,12 +134,13 @@ with right:
 
         span = st.date_input(
             "Date range",
-            value=(max(earliest, latest - dt.timedelta(days=59)), latest),
+            value=ui.default_range(90, earliest, latest),
             min_value=earliest,
             max_value=latest,
             format="DD/MM/YYYY",
             key="ridden_range",
-            help="Both the table and the totals beneath it follow this range.",
+            help="Defaults to the last ninety days. Both the table and the totals beneath "
+                 "it follow this range.",
         )
         # A date_input in range mode returns one date while the second is still being
         # picked, so the range is only applied once both ends are in.

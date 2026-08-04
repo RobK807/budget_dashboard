@@ -70,6 +70,127 @@ for col, (label, key, help_text) in zip(
 
 st.divider()
 
+# ------------------------------------------------------------------------ account detail
+
+st.subheader(f"Accounts at end of {repo.period_label(selected)}")
+st.caption(
+    "Paid in and out are money genuinely entering or leaving. Transfers between your own "
+    "accounts are shown separately — the workbook mixed them into the same totals."
+)
+
+table = balances[
+    (balances["closing"] != 0) | (balances["total_in"] != 0) | (balances["total_out"] != 0)
+].copy()
+table["kind"] = table.apply(
+    lambda r: "Credit card"
+    if r["type"] == "credit_card"
+    else "Investment"
+    if r["is_investment"]
+    else "Savings"
+    if r["is_savings"]
+    else "Current",
+    axis=1,
+)
+
+st.dataframe(
+    ui.money_table(
+        table[["account", "kind"] + ACCOUNT_COLUMNS],
+        ACCOUNT_COLUMNS,
+        labels={"account": "Account", "kind": "Type", **ACCOUNT_LABELS},
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.divider()
+
+# ------------------------------------------------------- classification actuals by month
+
+st.subheader("Spend by classification")
+st.caption(
+    "Actual spend per month: direction × (debits − credits), transfers excluded. For the "
+    "same figures with balances rolled forward and future days projected, see **Trends**."
+)
+
+matrix = repo.classification_by_month(postings)
+if not matrix.empty:
+    matrix = matrix.reindex([p for p in periods if p in matrix.index])
+    display = matrix.copy()
+    display.index = [repo.period_label(p) for p in display.index]
+    display = display.astype(float)
+    st.dataframe(ui.heatmap(display), use_container_width=True)
+
+st.divider()
+
+# --------------------------------------------------------------------- account by month
+
+st.subheader("Account by month")
+st.caption("One account across the year, on the same basis as the table above.")
+
+chosen_account = st.selectbox(
+    "Account",
+    options=ui.alphabetical(accounts["name"]),
+    key="summary_account",
+    help="Opening, movements and closing balance for each month so far.",
+)
+
+history = repo.account_history(
+    postings, data["openings"], accounts, chosen_account, periods
+)
+if history.empty:
+    st.info(f"Nothing recorded for {chosen_account}.")
+else:
+    st.dataframe(
+        ui.money_table(
+            history[["month"] + ACCOUNT_COLUMNS],
+            ACCOUNT_COLUMNS,
+            labels={"month": "Month", **ACCOUNT_LABELS},
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.divider()
+
+# --------------------------------------------------------------------- savings over time
+
+left, right = st.columns(2)
+
+with left:
+    st.subheader("Savings and investments")
+    plot = series[series["period"].isin(live_periods)].copy()
+    plot["Month"] = plot["period"].map(repo.period_label)
+    plot = ui.to_float(plot, ["savings", "investments", "isa"])
+    fig = px.line(
+        plot,
+        x="Month",
+        y=["savings", "investments"],
+        markers=True,
+        labels={"value": "Balance (£)", "variable": ""},
+    )
+    fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+
+with right:
+    st.subheader("Net cashflow by month")
+    plot = series[series["period"].isin(live_periods)].copy()
+    plot["Month"] = plot["period"].map(repo.period_label)
+    plot = ui.to_float(plot, ["net_cashflow"])
+    fig = px.bar(plot, x="Month", y="net_cashflow", labels={"net_cashflow": "Net (£)"})
+    fig.update_traces(
+        marker_color=[
+            ui.POSITIVE if v >= 0 else ui.NEGATIVE for v in plot["net_cashflow"]
+        ]
+    )
+    fig.update_layout(margin=dict(t=10))
+    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.caption(
+        "Sum of all signed account movements. Transfers net to zero, so this is money "
+        "genuinely entering or leaving."
+    )
+
+st.divider()
+
 # ------------------------------------------------------------------------ account targets
 
 st.subheader(f"Account targets for {repo.period_label(selected)}")
@@ -105,124 +226,3 @@ else:
         st.warning(
             f"{len(short)} account(s) short by {ui.money(short['required'].sum())} in total."
         )
-
-st.divider()
-
-# --------------------------------------------------------------------- savings over time
-
-left, right = st.columns(2)
-
-with left:
-    st.subheader("Savings and investments")
-    plot = series[series["period"].isin(live_periods)].copy()
-    plot["Month"] = plot["period"].map(repo.period_label)
-    plot = ui.to_float(plot, ["savings", "investments", "isa"])
-    fig = px.line(
-        plot,
-        x="Month",
-        y=["savings", "investments"],
-        markers=True,
-        labels={"value": "Balance (£)", "variable": ""},
-    )
-    fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-with right:
-    st.subheader("Net cashflow by month")
-    plot = series[series["period"].isin(live_periods)].copy()
-    plot["Month"] = plot["period"].map(repo.period_label)
-    plot = ui.to_float(plot, ["net_cashflow"])
-    fig = px.bar(plot, x="Month", y="net_cashflow", labels={"net_cashflow": "Net (£)"})
-    fig.update_traces(
-        marker_color=[
-            ui.POSITIVE if v >= 0 else ui.NEGATIVE for v in plot["net_cashflow"]
-        ]
-    )
-    fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(
-        "Sum of all signed account movements. Transfers net to zero, so this is money "
-        "genuinely entering or leaving."
-    )
-
-st.divider()
-
-# ------------------------------------------------------- classification actuals by month
-
-st.subheader("Spend by classification")
-st.caption(
-    "Actual spend per month: direction × (debits − credits), transfers excluded. For the "
-    "same figures with balances rolled forward and future days projected, see **Trends**."
-)
-
-matrix = repo.classification_by_month(postings)
-if not matrix.empty:
-    matrix = matrix.reindex([p for p in periods if p in matrix.index])
-    display = matrix.copy()
-    display.index = [repo.period_label(p) for p in display.index]
-    display = display.astype(float)
-    st.dataframe(ui.heatmap(display), use_container_width=True)
-
-st.divider()
-
-# --------------------------------------------------------------------- account by month
-
-st.subheader("Account by month")
-st.caption("One account across the year, on the same basis as the table below.")
-
-chosen_account = st.selectbox(
-    "Account",
-    options=ui.alphabetical(accounts["name"]),
-    key="summary_account",
-    help="Opening, movements and closing balance for each month so far.",
-)
-
-history = repo.account_history(
-    postings, data["openings"], accounts, chosen_account, periods
-)
-if history.empty:
-    st.info(f"Nothing recorded for {chosen_account}.")
-else:
-    st.dataframe(
-        ui.money_table(
-            history[["month"] + ACCOUNT_COLUMNS],
-            ACCOUNT_COLUMNS,
-            labels={"month": "Month", **ACCOUNT_LABELS},
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-st.divider()
-
-# ------------------------------------------------------------------------ account detail
-
-st.subheader(f"Accounts at end of {repo.period_label(selected)}")
-st.caption(
-    "Paid in and out are money genuinely entering or leaving. Transfers between your own "
-    "accounts are shown separately — the workbook mixed them into the same totals."
-)
-
-table = balances[
-    (balances["closing"] != 0) | (balances["total_in"] != 0) | (balances["total_out"] != 0)
-].copy()
-table["kind"] = table.apply(
-    lambda r: "Credit card"
-    if r["type"] == "credit_card"
-    else "Investment"
-    if r["is_investment"]
-    else "Savings"
-    if r["is_savings"]
-    else "Current",
-    axis=1,
-)
-
-st.dataframe(
-    ui.money_table(
-        table[["account", "kind"] + ACCOUNT_COLUMNS],
-        ACCOUNT_COLUMNS,
-        labels={"account": "Account", "kind": "Type", **ACCOUNT_LABELS},
-    ),
-    use_container_width=True,
-    hide_index=True,
-)

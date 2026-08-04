@@ -139,8 +139,15 @@ class TestCyclingRates:
 
 
 class TestCardOutstanding:
-    """Month-tab B42:E52. The balance less whatever has already been billed."""
+    """What is owed on a card on top of the bill it is about to pay.
 
+    Three states, decided by the card's own two dates: the whole balance before a statement
+    is issued, the balance less that bill while it is awaiting collection, and the whole
+    balance again once it has been paid.
+    """
+
+    # BA Amex bills on the 26th and is collected on the 9th of the *following* month, so the
+    # payment day being the earlier number is what says the cycle crosses a month boundary.
     ACCOUNTS = pd.DataFrame(
         [
             {"id": 1, "name": "BA Amex", "type": "credit_card", "statement_day": 26,
@@ -175,40 +182,101 @@ class TestCardOutstanding:
         )
         assert list(rows["account"]) == ["BA Amex"]
 
-    def test_a_past_month_is_measured_against_its_closing_bill(self):
+    def test_a_past_month_is_read_as_at_its_month_end(self):
+        """31 July: the statement went out on the 26th and is not collected until 9 August,
+        so it is still standing. Reproduces the workbook's D52 for the same month."""
         row = self.outstanding("2026-07", dt.date(2026, 8, 4))
-        assert row["billed"] == Decimal("1577.54")
-        assert row["outstanding"] == Decimal("75.73")  # the workbook's D52
+        assert row["as_of"] == dt.date(2026, 7, 31)
+        assert row["awaiting"] == Decimal("1577.54")
+        assert row["outstanding"] == Decimal("75.73")
 
-    def test_before_the_payment_day_the_opening_bill_is_still_owed(self):
+    def test_before_the_payment_day_the_previous_bill_is_still_standing(self):
+        """5 July: June's bill was issued on 26 June and is not collected until 9 July."""
         row = self.outstanding("2026-07", dt.date(2026, 7, 5))
-        assert row["bill_bom"] == Decimal("299.66")
-        assert row["billed"] == Decimal("299.66")
+        assert row["awaiting"] == Decimal("299.66")
+        assert row["outstanding"] == Decimal("1353.61")
 
-    def test_after_the_statement_day_the_closing_bill_is_owed_instead(self):
-        row = self.outstanding("2026-07", dt.date(2026, 7, 27))
-        assert row["billed"] == Decimal("1577.54")
-
-    def test_between_the_two_nothing_has_been_billed(self):
-        """Paid on the 9th, next statement on the 26th: in that window the card owes the
-        lot, because none of it has reached a bill yet."""
+    def test_once_paid_the_whole_balance_is_outstanding_again(self):
+        """9 July to 26 July: June's bill has gone out and July's has not been issued, so
+        nothing on the card has reached a statement."""
         row = self.outstanding("2026-07", dt.date(2026, 7, 15))
-        assert row["billed"] == Decimal("0")
+        assert row["awaiting"] == Decimal("0")
         assert row["outstanding"] == Decimal("1653.27")
 
-    def test_the_opening_bill_is_the_previous_months_closing_bill(self):
-        row = self.outstanding("2026-07", dt.date(2026, 7, 5))
-        assert row["bill_bom"] == Decimal("299.66")
+    def test_on_the_payment_day_itself_the_bill_counts_as_paid(self):
+        row = self.outstanding("2026-07", dt.date(2026, 7, 9))
+        assert row["awaiting"] == Decimal("0")
+
+    def test_after_the_statement_day_the_new_bill_stands(self):
+        row = self.outstanding("2026-07", dt.date(2026, 7, 27))
+        assert row["awaiting"] == Decimal("1577.54")
+
+    def test_the_bill_standing_may_not_be_this_months(self):
+        """August, before the 26th: what is awaiting collection is July's bill, not the one
+        in August's own column. That is the distinction the two columns carry."""
+        row = self.outstanding("2026-08", dt.date(2026, 8, 4))
+        assert row["awaiting"] == Decimal("1577.54")
+        assert row["statement"] == Decimal("0")  # nothing stored for August yet
 
     def test_a_month_with_no_stored_bill_treats_it_as_zero(self):
         row = self.outstanding("2026-05", dt.date(2026, 8, 4))
-        assert row["bill_eom"] == Decimal("0")
+        assert row["statement"] == Decimal("0")
+        assert row["outstanding"] == Decimal("1653.27")
+
+    def test_a_card_with_no_dates_set_cannot_say_what_is_billed(self):
+        accounts = self.ACCOUNTS.copy()
+        accounts.loc[accounts["name"] == "BA Amex", "statement_day"] = None
+        row = repo.card_outstanding(
+            self.BALANCES, self.STATEMENTS, accounts, "2026-07",
+            today=dt.date(2026, 8, 4),
+        ).set_index("account").loc["BA Amex"]
+        assert row["awaiting"] == Decimal("0")
+        assert "No statement or payment day" in row["position"]
 
     def test_no_credit_cards_gives_an_empty_frame_with_the_right_columns(self):
         banks = self.ACCOUNTS[self.ACCOUNTS["type"] == "bank"]
         rows = repo.card_outstanding(self.BALANCES, self.STATEMENTS, banks, "2026-07")
         assert rows.empty
         assert "outstanding" in rows.columns
+
+
+class TestBillingCycle:
+    """Which statement stands on a date, and when it falls due."""
+
+    def test_a_card_paid_the_following_month(self):
+        """BA Amex: issued on the 26th, collected on the 9th. The payment day being the
+        smaller number is what says the cycle runs into the next month."""
+        period, issued, due = repo.billing_cycle(26, 9, dt.date(2026, 7, 30))
+        assert (period, issued, due) == (
+            "2026-07", dt.date(2026, 7, 26), dt.date(2026, 8, 9)
+        )
+
+    def test_a_card_paid_within_the_same_month(self):
+        """Platinum Amex: issued on the 16th, collected on the 30th."""
+        period, issued, due = repo.billing_cycle(16, 30, dt.date(2026, 7, 20))
+        assert (period, issued, due) == (
+            "2026-07", dt.date(2026, 7, 16), dt.date(2026, 7, 30)
+        )
+
+    def test_before_this_months_statement_the_previous_one_is_current(self):
+        period, issued, _ = repo.billing_cycle(26, 9, dt.date(2026, 7, 5))
+        assert period == "2026-06"
+        assert issued == dt.date(2026, 6, 26)
+
+    def test_a_day_that_does_not_exist_falls_on_the_month_end(self):
+        """A 31st-of-the-month cycle has nowhere to land in April."""
+        _, issued, _ = repo.billing_cycle(31, 15, dt.date(2026, 4, 30))
+        assert issued == dt.date(2026, 4, 30)
+
+    def test_it_crosses_the_year_boundary(self):
+        period, issued, due = repo.billing_cycle(26, 9, dt.date(2026, 12, 28))
+        assert (period, issued, due) == (
+            "2026-12", dt.date(2026, 12, 26), dt.date(2027, 1, 9)
+        )
+
+    def test_without_both_days_there_is_no_answer(self):
+        assert repo.billing_cycle(None, 9, dt.date(2026, 7, 1)) is None
+        assert repo.billing_cycle(26, None, dt.date(2026, 7, 1)) is None
 
 
 def test_previous_period_crosses_the_year_boundary():
@@ -318,6 +386,8 @@ class TestSpendingCalculation:
 
 
 class TestSavingsSeries:
+    """One row per month, opening and closing side by side."""
+
     ACCOUNTS = pd.DataFrame(
         [
             {"id": 1, "name": "Marcus", "type": "bank", "is_savings": True,
@@ -362,39 +432,52 @@ class TestSavingsSeries:
             ["2026-04", "2026-05"], today=dt.date(2026, 6, 1),
         )
 
-    def test_it_opens_with_the_years_starting_balances(self):
+    def test_one_row_per_month(self):
         rows = self.series()
-        assert rows.iloc[0]["point"] == "Opening"
-        assert rows.iloc[0]["savings"] == Decimal("1500")
+        assert list(rows["period"]) == ["2026-04", "2026-05"]
+
+    def test_a_month_carries_its_own_opening_and_closing(self):
+        april = self.series().iloc[0]
+        assert april["savings_bom"] == Decimal("1500")
+        assert april["savings_eom"] == Decimal("1700")
 
     def test_earmarked_pots_are_excluded_from_available(self):
-        rows = self.series()
-        assert rows.iloc[0]["savings"] == Decimal("1500")
-        assert rows.iloc[0]["savings_available"] == Decimal("1000")
+        april = self.series().iloc[0]
+        assert april["savings_bom"] == Decimal("1500")
+        assert april["available_bom"] == Decimal("1000")
+        assert april["available_eom"] == Decimal("1200")
 
-    def test_added_is_the_change_in_the_available_balance(self):
-        april = self.series().iloc[1]
+    def test_added_is_the_change_in_the_total_balance(self):
+        april = self.series().iloc[0]
         assert april["savings_added"] == Decimal("200")
+        assert april["savings_bom"] + april["savings_added"] == april["savings_eom"]
 
-    def test_required_accumulates_across_months(self):
-        """A month that falls short raises the bar for the next: 300 - 200 = 100 short in
-        April, and nothing added in May leaves 100 + 300 = 400."""
+    def test_the_target_column_accumulates(self):
         rows = self.series()
-        assert rows.iloc[1]["savings_required"] == Decimal("100")
-        assert rows.iloc[2]["savings_required"] == Decimal("400")
+        assert rows.iloc[0]["savings_target_eom"] == Decimal("300")
+        assert rows.iloc[1]["savings_target_eom"] == Decimal("600")
+
+    def test_required_is_the_cumulative_target_less_what_is_available(self):
+        """Positive means money still to find. Here the balance is comfortably ahead of the
+        cumulative target, so it comes out negative throughout."""
+        rows = self.series()
+        assert rows.iloc[0]["savings_required"] == Decimal("300") - Decimal("1200")
+        assert rows.iloc[1]["savings_required"] == Decimal("600") - Decimal("1200")
 
     def test_investments_are_tracked_separately(self):
-        may = self.series().iloc[2]
-        assert may["investments"] == Decimal("2150")
+        may = self.series().iloc[1]
+        assert may["investments_eom"] == Decimal("2150")
         assert may["investments_added"] == Decimal("150")
+        assert may["investments_required"] == Decimal("200") - Decimal("2150")
 
-    def test_a_month_with_no_target_has_no_required_figure(self):
+    def test_a_month_with_no_target_contributes_nothing_to_the_running_total(self):
         rows = repo.savings_series(
             self.POSTINGS, self.OPENINGS, self.ACCOUNTS,
             pd.DataFrame(columns=["period", "savings", "investments"]),
             ["2026-04"], today=dt.date(2026, 6, 1),
         )
-        assert rows.iloc[1]["savings_required"] is None
+        assert rows.iloc[0]["savings_target"] == Decimal("0")
+        assert rows.iloc[0]["savings_target_eom"] == Decimal("0")
 
 
 # ------------------------------------------------------------------------- band storage

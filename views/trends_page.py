@@ -20,15 +20,30 @@ data = ui.page_header(
     "Trends", "Cumulative position across the year, with rollover and projections."
 )
 
-daily, closes = ui.running_totals(data)
+classifications = data["classifications"]
+rollovers = dict(zip(classifications["name"], classifications["rollover"]))
+retention = Decimal(str(data["settings"].get("excess_retention", 1)))
+
+# How far past today to carry the chain. A parameter rather than 'to the end of the fiscal
+# year', which is what it used to be: the balances are cumulative, so six months ahead and
+# eighteen are different calculations rather than the same one truncated. The default comes
+# from Settings → General.
+look_forward = st.slider(
+    "Look forward (months)",
+    min_value=0,
+    max_value=36,
+    value=int(data["look_forward"]),
+    key="trends_look_forward",
+    help="Months beyond the current one to project. Set the default under "
+         "**Settings → General**.",
+)
+periods = repo.span(data["earliest_period"], look_forward)
+
+daily, closes = ui.running_totals(data, periods)
 
 if daily.empty:
     st.info("Nothing to show yet.")
     st.stop()
-
-classifications = data["classifications"]
-rollovers = dict(zip(classifications["name"], classifications["rollover"]))
-retention = Decimal(str(data["settings"].get("excess_retention", 1)))
 
 chosen = st.multiselect(
     "Classification",
@@ -52,7 +67,7 @@ fig = px.line(
 fig.add_vline(x=today.timestamp() * 1000, line_dash="dash", line_color="grey")
 fig.add_annotation(x=today, y=0, text="today", showarrow=False, yshift=10)
 fig.update_layout(hovermode="x unified", margin=dict(t=10))
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
 st.caption(
     "Solid throughout, but everything to the right of the dashed line is built from "
@@ -68,15 +83,18 @@ st.subheader("Month-end position")
 matrix = closes.pivot_table(
     index="period", columns="classification", values="closing", aggfunc="first"
 )
-matrix = matrix.reindex([p for p in data["all_periods"] if p in matrix.index])
+matrix = matrix.reindex([p for p in periods if p in matrix.index])
 matrix = matrix[sorted(matrix.columns, key=lambda c: str(c).casefold())]
 display = matrix.copy()
 display.index = [repo.period_label(p) for p in display.index]
 st.dataframe(ui.heatmap(display.astype(float)), use_container_width=True)
 
 st.caption(
-    "These are the figures Summary!Q19:Y31 reads. They are cumulative, not monthly totals — "
-    "a month's closing balance carries into the next according to its rollover rule."
+    f"{repo.period_label(periods[0])} to {repo.period_label(periods[-1])} — the range starts "
+    "at the first month anything is recorded against and runs to the look-forward set above, "
+    "rather than to the end of a fixed fiscal year. These are the figures Summary!Q19:Y31 "
+    "reads. They are cumulative, not monthly totals — a month's closing balance carries into "
+    "the next according to its rollover rule."
 )
 
 st.divider()
@@ -109,7 +127,7 @@ with st.expander("How the carry-forward works"):
     )
     st.markdown(
         f"""
-**Retention is currently {retention * 100:.0f}%** — the share of a *credit* balance that
+**Retention is currently {ui.percent(retention * 100)}%** — the share of a *credit* balance that
 carries. An overspend always carries in full; retention exists so a surplus is not banked
 twice, not to forgive debt.
 

@@ -7,6 +7,11 @@ and the four tapered personal-allowance steps.
 Everything the model reads is editable here. In the workbook the annual salary was typed into
 all twelve rows of column O, the bonus was welded into May's formula as `+29028.48`, and the
 bands sat in a block of cells with no way in but the cell itself.
+
+Salary and bonus are two payments, not one. A bonus usually lands on its own day with its own
+deductions, so it carries its own actual gross, NI, PAYE and net; the month's actual figures
+are the two added together. Holding both on `payslip`, which is keyed by period, would have
+meant the second payment of a month overwriting the first.
 """
 
 from __future__ import annotations
@@ -25,7 +30,6 @@ data = ui.page_header("Salary", "Payslips against the expected PAYE and NI model
 payslips = data["payslips"]
 profiles = data["salary_profiles"]
 bonuses = data["bonuses"]
-bands = data["bands"]
 READ_ONLY = ui.read_only()
 
 if READ_ONLY:
@@ -34,6 +38,39 @@ if READ_ONLY:
     )
 
 PENCE = Decimal("0.01")
+
+# ------------------------------------------------------------------- bands by tax year
+#
+# A period is taxed under the bands of its own tax year, at the values in force on its first
+# day. Both matter now that the month lists run past the end of one fiscal year: taking the
+# current year's bands for every month would have applied 2026/27 rates to a 2027/28 payslip.
+
+available_years = data["tax_years"]
+with ui.session() as session:
+    assumptions_by_year = {
+        year: repo.load_salary_assumptions(session, year) for year in available_years
+    }
+
+_band_cache: dict[str, tax.Bands] = {}
+
+
+def bands_for(period: str) -> tax.Bands:
+    if period not in _band_cache:
+        wanted = repo.tax_year_of(period)
+        usable = [y for y in available_years if y <= wanted] or available_years
+        _band_cache[period] = repo.bands_from(
+            assumptions_by_year[usable[-1]], repo.period_start(period)
+        )
+    return _band_cache[period]
+
+
+bands = bands_for(repo.period_of(dt.date.today()))
+
+
+def as_decimal(value) -> Decimal:
+    if value is None or pd.isna(value):
+        return Decimal("0")
+    return Decimal(str(value))
 
 
 def expected_for(period: str, row) -> tax.Breakdown | None:
@@ -46,63 +83,85 @@ def expected_for(period: str, row) -> tax.Breakdown | None:
     gross = repo.expected_gross(period, profiles, bonuses)
     if gross is None:
         return None
-    benefits = Decimal(row["benefits"] or 0) if row is not None else Decimal("0")
-    additional = Decimal(row["additional"] or 0) if row is not None else Decimal("0")
-    return tax.expected_pay(gross, bands, repo.period_start(period), benefits, additional)
+    benefits = as_decimal(row["benefits"]) if row is not None else Decimal("0")
+    additional = as_decimal(row["additional"]) if row is not None else Decimal("0")
+    return tax.expected_pay(
+        gross, bands_for(period), repo.period_start(period), benefits, additional
+    )
 
 
 rows = []
 by_period = payslips.set_index("period") if not payslips.empty else None
+bonus_by_period = bonuses.set_index("period") if not bonuses.empty else None
+
 for period in data["all_periods"]:
     actual = (
         by_period.loc[period]
         if by_period is not None and period in by_period.index
         else None
     )
+    bonus = (
+        bonus_by_period.loc[period]
+        if bonus_by_period is not None and period in bonus_by_period.index
+        else None
+    )
     expected = expected_for(period, actual)
+
+    def paid(column: str) -> Decimal | None:
+        """Salary plus bonus, or None where neither has been entered."""
+        salary_part = actual[column] if actual is not None else None
+        bonus_part = bonus[column] if bonus is not None else None
+        if (salary_part is None or pd.isna(salary_part)) and (
+            bonus_part is None or pd.isna(bonus_part)
+        ):
+            return None
+        return as_decimal(salary_part) + as_decimal(bonus_part)
+
     rows.append(
         {
             "period": period,
             "month": repo.period_label(period),
             "payday": actual["payday"] if actual is not None else None,
-            "actual_gross": actual["gross"] if actual is not None else None,
+            "actual_gross": paid("gross"),
             "expected_gross": expected.gross if expected else None,
+            "bonus_gross": bonus["gross"] if bonus is not None else None,
             "holiday_pay": actual["holiday_pay"] if actual is not None else None,
             "benefits": actual["benefits"] if actual is not None else None,
             "additional": actual["additional"] if actual is not None else None,
-            "actual_ni": actual["ni"] if actual is not None else None,
+            "actual_ni": paid("ni"),
             "expected_ni": expected.ni if expected else None,
-            "actual_paye": actual["paye"] if actual is not None else None,
+            "actual_paye": paid("paye"),
             "expected_paye": expected.paye if expected else None,
-            "actual_net": actual["net"] if actual is not None else None,
+            "actual_net": paid("net"),
             "expected_net": expected.net if expected else None,
         }
     )
 
 frame = pd.DataFrame(rows)
-paid = frame[frame["actual_net"].notna()]
+paid_months = frame[frame["actual_net"].notna()]
 
 # --------------------------------------------------------------------------- headline
 
 cols = st.columns(4)
-cols[0].metric("Payslips received", f"{len(paid)} of {len(frame)}")
-cols[1].metric("Gross to date", ui.money(paid["actual_gross"].sum()))
+cols[0].metric("Payslips received", f"{len(paid_months)} of {len(frame)}")
+cols[1].metric("Gross to date", ui.money(paid_months["actual_gross"].sum()))
 cols[2].metric(
-    "Tax and NI to date", ui.money(paid["actual_ni"].sum() + paid["actual_paye"].sum())
+    "Tax and NI to date",
+    ui.money(paid_months["actual_ni"].sum() + paid_months["actual_paye"].sum()),
 )
-cols[3].metric("Net to date", ui.money(paid["actual_net"].sum()))
+cols[3].metric("Net to date", ui.money(paid_months["actual_net"].sum()))
 
-if not paid.empty:
-    difference = (paid["actual_net"] - paid["expected_net"]).sum()
+if not paid_months.empty:
+    difference = (paid_months["actual_net"] - paid_months["expected_net"]).sum()
     if abs(difference) < Decimal("1"):
         st.success(
             f"Actual net pay is within {ui.money(abs(difference))} of the model across "
-            f"{len(paid)} payslip(s)."
+            f"{len(paid_months)} payslip(s)."
         )
     else:
         st.warning(
             f"Actual net pay differs from the model by {ui.money(difference)} across "
-            f"{len(paid)} payslip(s) — worth checking which month diverges below."
+            f"{len(paid_months)} payslip(s) — worth checking which month diverges below."
         )
 
 st.divider()
@@ -115,16 +174,16 @@ tab_compare, tab_inputs, tab_bands, tab_spend = st.tabs(
 
 with tab_compare:
     display = frame[
-        ["month", "payday", "actual_gross", "expected_gross", "holiday_pay", "benefits",
-         "additional", "actual_ni", "expected_ni", "actual_paye", "expected_paye",
-         "actual_net", "expected_net"]
+        ["month", "payday", "actual_gross", "expected_gross", "bonus_gross",
+         "holiday_pay", "benefits", "additional", "actual_ni", "expected_ni",
+         "actual_paye", "expected_paye", "actual_net", "expected_net"]
     ].copy()
     display["net difference"] = display["actual_net"] - display["expected_net"]
 
     money_columns = [
-        "actual_gross", "expected_gross", "holiday_pay", "benefits", "additional",
-        "actual_ni", "expected_ni", "actual_paye", "expected_paye", "actual_net",
-        "expected_net", "net difference",
+        "actual_gross", "expected_gross", "bonus_gross", "holiday_pay", "benefits",
+        "additional", "actual_ni", "expected_ni", "actual_paye", "expected_paye",
+        "actual_net", "expected_net", "net difference",
     ]
     st.dataframe(
         ui.money_table(
@@ -133,6 +192,7 @@ with tab_compare:
             labels={
                 "month": "Month", "payday": "Payday",
                 "actual_gross": "Gross", "expected_gross": "Gross (expected)",
+                "bonus_gross": "of which bonus",
                 "holiday_pay": "Holiday pay", "benefits": "Benefits",
                 "additional": "Additional pay",
                 "actual_ni": "NI", "expected_ni": "NI (model)",
@@ -144,13 +204,17 @@ with tab_compare:
         hide_index=True,
     )
     st.caption(
-        "Benefits are salary sacrifice: deducted before tax and again from net, so the "
-        "amount never reaches the payslip. Additional pay is added after tax. Both feed the "
-        "model — holiday pay does not, because it is already inside actual gross."
+        "The actual columns are salary **plus** bonus, since the two are separate payments "
+        "in the same month; 'of which bonus' shows how much of the gross came from the "
+        "bonus. Enter each under **Salary and bonus** and here, respectively, so neither "
+        "overwrites the other. Benefits are salary sacrifice: deducted before tax and again "
+        "from net, so the amount never reaches the payslip. Additional pay is added after "
+        "tax. Both feed the model — holiday pay does not, because it is already inside "
+        "actual gross."
     )
 
-    if not paid.empty:
-        chart = ui.to_float(paid, ["actual_net", "expected_net"]).melt(
+    if not paid_months.empty:
+        chart = ui.to_float(paid_months, ["actual_net", "expected_net"]).melt(
             id_vars="month", value_vars=["actual_net", "expected_net"],
             var_name="series", value_name="amount",
         )
@@ -159,61 +223,83 @@ with tab_compare:
             labels={"amount": "Net pay (£)", "month": "", "series": ""},
         )
         fig.update_layout(margin=dict(t=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
 
     st.divider()
     st.subheader("Record a payslip")
     st.caption(
-        "The workbook had no way to enter a future month's figures — the actual columns "
-        "were only ever typed over. Benefits and additional pay drive the model, so they "
-        "can be set for months that have not been paid yet."
+        "The salary payment only — a bonus paid separately goes under **Salary and bonus**, "
+        "which keeps its own figures. The workbook had no way to enter a future month at "
+        "all; benefits and additional pay drive the model, so they can be set for months "
+        "that have not been paid yet."
     )
 
     entry_period = st.selectbox(
         "Month", data["all_periods"], index=len(data["periods"]) - 1,
         format_func=repo.period_label, key="payslip_period",
     )
-    current = frame[frame["period"] == entry_period].iloc[0]
+    stored_payslip = (
+        by_period.loc[entry_period]
+        if by_period is not None and entry_period in by_period.index
+        else None
+    )
 
     def as_float(value) -> float:
         return float(value) if value is not None and not pd.isna(value) else 0.0
 
+    def field(column: str) -> float:
+        return as_float(stored_payslip[column]) if stored_payslip is not None else 0.0
+
     with st.form("payslip_entry"):
         row_one = st.columns(5)
         in_gross = row_one[0].number_input(
-            "Gross pay", value=as_float(current["actual_gross"]), step=100.0, format="%.2f"
+            "Gross pay", value=field("gross"), step=100.0, format="%.2f"
         )
         in_ni = row_one[1].number_input(
-            "NI", value=as_float(current["actual_ni"]), step=10.0, format="%.2f"
+            "NI", value=field("ni"), step=10.0, format="%.2f"
         )
         in_paye = row_one[2].number_input(
-            "PAYE", value=as_float(current["actual_paye"]), step=100.0, format="%.2f"
+            "PAYE", value=field("paye"), step=100.0, format="%.2f"
         )
         in_holiday = row_one[3].number_input(
-            "Holiday pay", value=as_float(current["holiday_pay"]), step=10.0, format="%.2f"
+            "Holiday pay", value=field("holiday_pay"), step=10.0, format="%.2f"
         )
         in_net = row_one[4].number_input(
-            "Net pay", value=as_float(current["actual_net"]), step=100.0, format="%.2f"
+            "Net pay", value=field("net"), step=100.0, format="%.2f"
         )
 
         row_two = st.columns(5)
         in_benefits = row_two[0].number_input(
-            "Benefits", value=as_float(current["benefits"]), step=10.0, format="%.2f",
+            "Benefits", value=field("benefits"), step=10.0, format="%.2f",
             help="Salary sacrifice — reduces taxable pay and net pay alike",
         )
         in_additional = row_two[1].number_input(
-            "Additional pay", value=as_float(current["additional"]), step=10.0,
+            "Additional pay", value=field("additional"), step=10.0,
             format="%.2f", help="Added after tax",
         )
         in_payday = row_two[2].number_input(
             "Payday",
-            value=int(current["payday"]) if pd.notna(current["payday"]) else 1,
+            value=(
+                int(stored_payslip["payday"])
+                if stored_payslip is not None and pd.notna(stored_payslip["payday"])
+                else 1
+            ),
             min_value=1, max_value=31, step=1, format="%d",
         )
         row_two[3].write("")
         row_two[4].write("")
 
-        if st.form_submit_button("Save payslip", type="primary", disabled=READ_ONLY):
+        buttons = st.columns([1, 1, 3])
+        save_payslip = buttons[0].form_submit_button(
+            "Save payslip", type="primary", disabled=READ_ONLY
+        )
+        remove_payslip = buttons[1].form_submit_button(
+            "Remove", disabled=READ_ONLY or stored_payslip is None,
+            help="Deletes the month's payslip outright, for when the wrong month was filled "
+                 "in. Re-enterable from the paper copy.",
+        )
+
+        if save_payslip:
             # A zero and a blank mean different things: zero holiday pay is a fact, an
             # untouched field is not. Nothing is stored for a value left at zero.
             def value_or_none(value):
@@ -232,6 +318,11 @@ with tab_compare:
                     payday=in_payday,
                 )
             ui.show_outcome(outcome, "the payslip")
+
+        if remove_payslip:
+            with ui.session() as session, session.begin():
+                outcome = reference.remove_payslip(session, entry_period)
+            ui.show_outcome(outcome, "the payslip removal")
 
         consistency = (
             Decimal(str(in_ni)) + Decimal(str(in_holiday)) + Decimal(str(in_paye))
@@ -304,41 +395,112 @@ with tab_inputs:
     with right:
         st.subheader("Bonus")
         st.caption(
-            "By the month it is paid. May's was `+29028.48` typed into the middle of the "
-            "expected-gross formula, which is why that figure could not be derived."
+            "By the month it is paid, with its own deductions — a bonus usually arrives on "
+            "its own day, so recording it against the payslip would mean the second payment "
+            "of a month overwriting the first. May's was `+29028.48` typed into the middle "
+            "of the expected-gross formula, which is why that figure could not be derived."
         )
         if bonuses.empty:
             st.info("No bonuses recorded.")
         else:
             shown = bonuses.copy()
             shown["month"] = shown["period"].map(repo.period_label)
+            bonus_money = ["amount", "gross", "ni", "paye", "net"]
             st.dataframe(
                 ui.money_table(
-                    shown[["month", "amount", "note"]], ["amount"],
-                    labels={"month": "Month", "amount": "Amount", "note": "Note"},
+                    shown[["month"] + bonus_money + ["payday", "note"]],
+                    bonus_money,
+                    labels={"month": "Month", "amount": "Expected", "gross": "Gross",
+                            "ni": "NI", "paye": "PAYE", "net": "Net",
+                            "payday": "Payday", "note": "Note"},
                 ),
                 use_container_width=True,
                 hide_index=True,
             )
 
+        bonus_period = st.selectbox(
+            "Month", data["all_periods"], format_func=repo.period_label,
+            index=len(data["periods"]) - 1, key="bonus_period",
+        )
+        stored_bonus = (
+            bonus_by_period.loc[bonus_period]
+            if bonus_by_period is not None and bonus_period in bonus_by_period.index
+            else None
+        )
+
+        def bonus_field(column: str) -> float:
+            if stored_bonus is None or pd.isna(stored_bonus[column]):
+                return 0.0
+            return float(stored_bonus[column])
+
         with st.form("bonus_entry"):
-            fields = st.columns([1, 1, 2])
-            bonus_period = fields[0].selectbox(
-                "Month", data["all_periods"], format_func=repo.period_label,
-                key="bonus_period",
+            top = st.columns([1, 2])
+            bonus_amount = top[0].number_input(
+                "Expected amount", min_value=0.0, step=500.0, format="%.2f",
+                value=bonus_field("amount"),
+                help="Feeds expected gross for the month. Saving zero removes the bonus.",
             )
-            bonus_amount = fields[1].number_input(
-                "Amount", min_value=0.0, step=500.0, format="%.2f"
+            bonus_note = top[1].text_input(
+                "Note", value="" if stored_bonus is None else (stored_bonus["note"] or ""),
+                key="bonus_note",
             )
-            bonus_note = fields[2].text_input("Note", key="bonus_note")
-            if st.form_submit_button("Save bonus", type="primary", disabled=READ_ONLY):
+
+            actuals = st.columns(5)
+            bonus_gross = actuals[0].number_input(
+                "Gross pay", min_value=0.0, step=500.0, format="%.2f",
+                value=bonus_field("gross"),
+            )
+            bonus_ni = actuals[1].number_input(
+                "NI", min_value=0.0, step=10.0, format="%.2f", value=bonus_field("ni")
+            )
+            bonus_paye = actuals[2].number_input(
+                "PAYE", min_value=0.0, step=100.0, format="%.2f", value=bonus_field("paye")
+            )
+            bonus_net = actuals[3].number_input(
+                "Net pay", min_value=0.0, step=100.0, format="%.2f", value=bonus_field("net")
+            )
+            bonus_payday = actuals[4].number_input(
+                "Payday", min_value=1, max_value=31, step=1, format="%d",
+                value=(
+                    int(stored_bonus["payday"])
+                    if stored_bonus is not None and pd.notna(stored_bonus["payday"])
+                    else 1
+                ),
+            )
+
+            bonus_buttons = st.columns([1, 1, 3])
+            save_bonus = bonus_buttons[0].form_submit_button(
+                "Save bonus", type="primary", disabled=READ_ONLY
+            )
+            drop_bonus = bonus_buttons[1].form_submit_button(
+                "Remove", disabled=READ_ONLY or stored_bonus is None
+            )
+
+            if save_bonus:
+                def or_none(value):
+                    return Decimal(str(value)) if value else None
+
                 with ui.session() as session, session.begin():
                     outcome = reference.set_bonus(
                         session, bonus_period, Decimal(str(bonus_amount)),
                         bonus_note or None,
+                        gross=or_none(bonus_gross),
+                        ni=or_none(bonus_ni),
+                        paye=or_none(bonus_paye),
+                        net=or_none(bonus_net),
+                        payday=bonus_payday,
                     )
                 ui.show_outcome(outcome, "the bonus")
-            st.caption("Saving zero removes the bonus for that month.")
+
+            if drop_bonus:
+                with ui.session() as session, session.begin():
+                    outcome = reference.remove_bonus(session, bonus_period)
+                ui.show_outcome(outcome, "the bonus removal")
+
+        st.caption(
+            "The expected amount drives 'Gross (expected)'. The four figures beside it are "
+            "what was actually paid, and are added to the payslip's on the comparison tab."
+        )
 
     st.divider()
     st.subheader("Resulting expected gross")
@@ -383,11 +545,12 @@ RATE_LABELS = {
     "higher_rate": "Higher rate (%)",
     "additional_rate": "Additional rate (%)",
 }
-ADJUSTMENT_KEY = "personal_allowance_adjustment"
+ADJUSTMENT_KEY = repo.ADJUSTMENT_KEY
 
 with tab_bands:
+    pickers = st.columns([1, 1, 2])
     tax_years = data["tax_years"]
-    chosen_year = st.selectbox(
+    chosen_year = pickers[0].selectbox(
         "Tax year",
         options=tax_years,
         index=len(tax_years) - 1,
@@ -396,17 +559,52 @@ with tab_bands:
              "that applied to it.",
     )
 
-    if chosen_year != data["tax_year"]:
-        with ui.session() as session:
-            assumptions = repo.load_salary_assumptions(session, chosen_year)
-    else:
-        assumptions = data["assumptions"]
+    assumptions = assumptions_by_year.get(
+        chosen_year,
+        pd.DataFrame(columns=["key", "effective_from", "value", "tax_year"]),
+    )
 
-    stored = {
-        (row["key"], row["effective_from"]): row["value"]
-        for _, row in assumptions.iterrows()
-    }
-    year_start = dt.date(chosen_year, 4, 1)
+    # Every threshold and rate is effective-dated, so a mid-year change is a new set rather
+    # than an edit that quietly rewrites what earlier months were taxed at. The editors below
+    # show the set in force on this date and save against it.
+    stored_dates = repo.assumption_dates(assumptions) or [dt.date(chosen_year, 4, 1)]
+    effective = pickers[1].date_input(
+        "Effective from",
+        value=stored_dates[-1],
+        format="DD/MM/YYYY",
+        key=f"bands_effective_{chosen_year}",
+        help="Saving against a date that has no set yet creates one, leaving the earlier "
+             "figures intact for the months they applied to.",
+    )
+    pickers[2].caption("")
+    pickers[2].caption(
+        f"{len(stored_dates)} set(s) stored for {chosen_year}/{str(chosen_year + 1)[-2:]}: "
+        + ", ".join(f"{d:%d/%m/%Y}" for d in stored_dates)
+    )
+
+    dated = assumptions.copy()
+    if not dated.empty:
+        dated["effective_from"] = pd.to_datetime(dated["effective_from"]).dt.date
+
+
+    def in_force(key: str, on: dt.date):
+        """The stored value for a key as at a date, or None if nothing applies yet."""
+        if dated.empty:
+            return None
+        mine = dated[(dated["key"] == key) & (dated["effective_from"] <= on)]
+        if mine.empty:
+            return None
+        return mine.sort_values("effective_from")["value"].iloc[-1]
+
+
+    def value_set(on: dt.date, labels: dict[str, str]) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"key": key, "band": label, "value": in_force(key, on)}
+                for key, label in labels.items()
+            ]
+        )
+
 
     # ---- thresholds, monthly and annual ------------------------------------------
     st.subheader("Thresholds and allowances")
@@ -416,20 +614,18 @@ with tab_bands:
         "wins, with the monthly recalculated from it."
     )
 
-    threshold_rows = [
-        {
-            "key": key,
-            "band": label,
-            "monthly": stored.get((key, year_start)),
-            "annual": (
-                (stored[(key, year_start)] * 12) if (key, year_start) in stored else None
+    threshold_source = value_set(effective, AMOUNT_LABELS)
+    thresholds = ui.to_float(
+        threshold_source.assign(
+            monthly=threshold_source["value"],
+            annual=threshold_source["value"].map(
+                lambda v: None if v is None or pd.isna(v) else v * 12
             ),
-        }
-        for key, label in AMOUNT_LABELS.items()
-    ]
-    thresholds = ui.to_float(pd.DataFrame(threshold_rows), ["monthly", "annual"])
+        ).drop(columns="value"),
+        ["monthly", "annual"],
+    )
 
-    baseline_key = f"bands_baseline_{chosen_year}"
+    baseline_key = f"bands_baseline_{chosen_year}_{effective}"
     if st.session_state.get(baseline_key) is None:
         st.session_state[baseline_key] = thresholds[["monthly", "annual"]].copy()
 
@@ -444,12 +640,13 @@ with tab_bands:
             "monthly": ui.editable_money("Monthly"),
             "annual": ui.editable_money("Annual"),
         },
-        key=f"bands_editor_{chosen_year}",
+        key=f"bands_editor_{chosen_year}_{effective}",
     )
 
     if st.button("Save thresholds", type="primary", disabled=READ_ONLY):
         baseline = st.session_state[baseline_key]
         saved = 0
+        outcome = reference.Outcome(True, "Nothing changed.")
         with ui.session() as session, session.begin():
             for index, row in edited.iterrows():
                 monthly = repo.reconcile_monthly_annual(
@@ -461,7 +658,7 @@ with tab_bands:
 
                 outcome = reference.set_assumption(
                     session, chosen_year, row["key"],
-                    monthly.quantize(PENCE, rounding=ROUND_HALF_UP), year_start,
+                    monthly.quantize(PENCE, rounding=ROUND_HALF_UP), effective,
                 )
                 saved += 1
         if saved:
@@ -474,20 +671,14 @@ with tab_bands:
     # ---- rates --------------------------------------------------------------------
     st.subheader("Rates")
     st.caption(
-        "Whole percentages, as they are quoted: 20 rather than 0.20. Stored to a hundredth "
-        "of a point, so an 8.5% rate is expressible — as a fraction in a two-decimal column "
-        "it would not have been."
+        "Whole percentages, as they are quoted: 20.00 rather than 0.20. Stored to a "
+        "hundredth of a point, so an 8.50% rate is expressible — as a fraction in a "
+        "two-decimal column it would not have been."
     )
 
-    rate_rows = [
-        {
-            "key": key,
-            "band": label,
-            "rate": stored.get((key, year_start)),
-        }
-        for key, label in RATE_LABELS.items()
-    ]
-    rates_frame = ui.to_float(pd.DataFrame(rate_rows), ["rate"])
+    rates_frame = ui.to_float(
+        value_set(effective, RATE_LABELS).rename(columns={"value": "rate"}), ["rate"]
+    )
 
     edited_rates = st.data_editor(
         rates_frame,
@@ -497,21 +688,20 @@ with tab_bands:
         column_order=["band", "rate"],
         column_config={
             "band": "Rate",
-            "rate": st.column_config.NumberColumn(
-                "Value", format="%.2f", step=0.5, min_value=0.0, max_value=100.0
-            ),
+            "rate": ui.editable_percent("Value"),
         },
-        key=f"rates_editor_{chosen_year}",
+        key=f"rates_editor_{chosen_year}_{effective}",
     )
 
     if st.button("Save rates", type="primary", disabled=READ_ONLY):
+        outcome = reference.Outcome(True, "Nothing changed.")
         with ui.session() as session, session.begin():
             for _, row in edited_rates.iterrows():
                 if row["rate"] is None or pd.isna(row["rate"]):
                     continue
                 outcome = reference.set_assumption(
                     session, chosen_year, row["key"],
-                    Decimal(str(row["rate"])).quantize(PENCE), year_start,
+                    Decimal(str(row["rate"])).quantize(PENCE), effective,
                 )
         ui.show_outcome(outcome, "the rate change")
         st.rerun()
@@ -552,6 +742,7 @@ with tab_bands:
 
     if st.button("Save adjustments", type="primary", disabled=READ_ONLY):
         keep: set[dt.date] = set()
+        outcome = reference.Outcome(True, "Nothing changed.")
         with ui.session() as session, session.begin():
             for _, row in edited_adjustments.iterrows():
                 when = row["effective_from"]
@@ -578,11 +769,81 @@ with tab_bands:
         ui.show_outcome(outcome, "the allowance steps")
         st.rerun()
 
+    current_bands = repo.bands_from(assumptions, effective)
     st.info(
-        f"**Basic rate band: {ui.money(bands.basic_band)} a month.** Derived, not entered — "
-        "the basic rate threshold less the personal allowance, which is what the workbook's "
-        "`=D28-D22` did. Editing either input moves it."
+        f"**Basic rate band: {ui.money(current_bands.basic_band)} a month.** Derived, not "
+        "entered — the basic rate threshold less the personal allowance, which is what the "
+        "workbook's `=D28-D22` did. Editing either input moves it."
     )
+
+    # ---- historic sets ------------------------------------------------------------
+    st.divider()
+    st.subheader("Historic thresholds and rates")
+    st.caption(
+        "The set that applied on a chosen date, read-only. Each figure is stored against the "
+        "date it took effect, so a past month keeps the bands it was actually taxed under "
+        "rather than the ones in force now."
+    )
+
+    as_at = st.selectbox(
+        "As at",
+        options=list(reversed(stored_dates)),
+        format_func=lambda d: d.strftime("%d %B %Y"),
+        key=f"historic_as_at_{chosen_year}",
+    )
+
+    hist_left, hist_right = st.columns(2)
+    with hist_left:
+        st.markdown("**Thresholds and allowances**")
+        historic_amounts = value_set(as_at, AMOUNT_LABELS)
+        historic_amounts["annual"] = historic_amounts["value"].map(
+            lambda v: None if v is None or pd.isna(v) else v * 12
+        )
+        st.dataframe(
+            ui.money_table(
+                historic_amounts[["band", "value", "annual"]], ["value", "annual"],
+                labels={"band": "Band", "value": "Monthly", "annual": "Annual"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with hist_right:
+        st.markdown("**Rates**")
+        historic_rates = ui.to_float(value_set(as_at, RATE_LABELS), ["value"])
+        st.dataframe(
+            historic_rates[["band", "value"]].style.format({"value": "{:,.2f}"}),
+            use_container_width=True,
+            hide_index=True,
+            column_config={"band": "Rate", "value": "Value"},
+        )
+
+    with st.expander("Every stored figure, by effective date"):
+        if assumptions.empty:
+            st.caption("Nothing stored for this tax year.")
+        else:
+            everything = assumptions.copy()
+            everything["band"] = everything["key"].map(
+                {**AMOUNT_LABELS, **RATE_LABELS,
+                 ADJUSTMENT_KEY: "Personal allowance adjustment"}
+            ).fillna(everything["key"])
+            everything["kind"] = everything["key"].map(
+                lambda k: "Rate (%)" if k in RATE_KEYS else "Amount (monthly)"
+            )
+            st.dataframe(
+                repo.sort_human(
+                    everything[["band", "kind", "effective_from", "value"]],
+                    by=["band", "effective_from"],
+                ).style.format({"value": "{:,.2f}"}),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "band": "Band", "kind": "Kind",
+                    "effective_from": st.column_config.DateColumn(
+                        "Effective from", format="DD/MM/YYYY"
+                    ),
+                    "value": "Value",
+                },
+            )
 
 # ------------------------------------------------------------ what's left to spend
 
@@ -595,7 +856,7 @@ with tab_spend:
     )
 
     settings = data["settings"]
-    latest = paid.iloc[-1] if not paid.empty else None
+    latest = paid_months.iloc[-1] if not paid_months.empty else None
     net_salary = (
         Decimal(str(latest["actual_net"])) if latest is not None else Decimal("0")
     )
@@ -607,17 +868,17 @@ with tab_spend:
 
     inputs = st.columns(4)
     rent = inputs[0].number_input(
-        "Rent", value=float(settings.get("spend_rent", 0)), step=50.0, format="%.2f"
+        "Rent (£)", value=float(settings.get("spend_rent", 0)), step=50.0, format="%.2f"
     )
     savings_allowance = inputs[1].number_input(
-        "Savings", value=float(settings.get("spend_savings", 0)), step=100.0,
+        "Savings (£)", value=float(settings.get("spend_savings", 0)), step=100.0,
         format="%.2f", help="Added to the budgeted credit-card repayment",
     )
     food = inputs[2].number_input(
-        "Food", value=float(settings.get("spend_food", 0)), step=50.0, format="%.2f"
+        "Food (£)", value=float(settings.get("spend_food", 0)), step=50.0, format="%.2f"
     )
     essentials = inputs[3].number_input(
-        "Essentials", value=float(settings.get("spend_essentials", 0)), step=10.0,
+        "Essentials (£)", value=float(settings.get("spend_essentials", 0)), step=10.0,
         format="%.2f"
     )
 

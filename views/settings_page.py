@@ -53,18 +53,22 @@ def show_outcome(outcome) -> None:
         st.error(outcome.message)
 
 
+# Alphabetical, case-insensitively, like every other list in the app. The sections had
+# accreted in the order they were built, which meant Cards sat between Cycling and Monthly
+# figures for no reason a reader could infer. Streamlit renders into whichever tab a block
+# is attached to, so the `with` blocks below stay grouped by subject.
 (
     tab_accounts,
+    tab_cards,
     tab_categories,
     tab_classes,
     tab_cycling,
-    tab_cards,
+    tab_general,
     tab_monthly,
     tab_savings,
-    tab_general,
 ) = st.tabs(
-    ["Accounts", "Categories", "Classifications", "Cycling", "Cards", "Monthly figures",
-     "Savings targets", "General"]
+    ["Accounts", "Cards", "Categories", "Classifications", "Cycling", "General",
+     "Monthly figures", "Savings targets"]
 )
 
 # ---------------------------------------------------------------------------- accounts
@@ -841,20 +845,34 @@ with tab_general:
             value=int(settings.get("month_start_day", 1)),
         )
         # Stored as the workbook's fraction (1 = 100%) so any formula carried over still
-        # matches; shown as a whole percentage because that is how it reads.
+        # matches; shown as a percentage because that is how it reads, and to two decimal
+        # places because a retention of 87.5% is as plausible as one of 100%.
         # The unit lives in the label: st.number_input rejects '%%' in a format string.
         excess_pct = row[3].number_input(
-            "Excess retention (%)", min_value=0, max_value=100, step=1, format="%d",
-            value=int(round(float(settings.get("excess_retention", 1)) * 100)),
+            "Excess retention (%)", min_value=0.0, max_value=100.0, step=0.25,
+            format="%.2f",
+            value=round(float(settings.get("excess_retention", 1)) * 100, 2),
             help="Share of a month's excess carried forward. Stored as a fraction, so "
                  "100% is saved as 1.",
         )
+
+        # Month dropdowns run from the first month anything is recorded against to the
+        # current one. This is how far past it they also offer, for the figures that are set
+        # before the month arrives -- next month's savings target, a projection.
+        look_forward = st.number_input(
+            "Look forward (months)", min_value=0, max_value=36, step=1, format="%d",
+            value=int(settings.get("look_forward_months", 12)),
+            help="How many months beyond the current one the month lists and the Trends "
+                 "projection offer.",
+        )
+
         if st.form_submit_button("Save", type="primary", disabled=READ_ONLY):
             with ui.session() as session, session.begin():
                 for key, value in (
                     ("tax_year", tax_year), ("user", user),
                     ("month_start_day", month_start),
                     ("excess_retention", excess_pct / 100),
+                    ("look_forward_months", int(look_forward)),
                 ):
                     outcome = reference.set_setting(session, key, value)
             show_outcome(outcome)

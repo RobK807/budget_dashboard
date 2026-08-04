@@ -3,8 +3,11 @@
 ```bash
 python -m budget.import_phase5   # seeds the new tables from the workbook
 python -m budget.reconcile       # gate: green, all six checks
-python -m pytest tests -q        # 284 passing
+python -m pytest tests -q        # 354 passing
 ```
+
+> A second round of refinements followed a full review of the dashboard. They are at the end
+> of this file, under [After the review](#after-the-review).
 
 Twenty-one refinements across the Salary, Cards, Cycling, Projections, Month and Summary
 pages, one new page, and five new Settings sections.
@@ -119,3 +122,112 @@ under **Settings → Cards**.
 Backfill prior years (`Budget 25-26.xlsm` and earlier) with the same importer, which is what
 turns Trends into genuine multi-year analysis — and makes the tax-year selector on the Salary
 page useful rather than a list of one.
+
+---
+
+# After the review
+
+A read-through of the whole dashboard produced a second list. Most of it is presentation, but
+four items were substantive, and three of those were the same mistake in different clothes:
+**something that was true of a workbook had been carried across as though it were true of the
+database.**
+
+## Nothing is scoped to one fiscal year any more
+
+Every month dropdown was `repo.fiscal_periods(tax_year)` — April 2026 to March 2027, and no
+further. That is one file's worth of months. Backfilling an earlier year would have loaded
+rows that no dropdown could reach, and next April every list would have needed the setting
+changed by hand.
+
+The range is derived instead: from the first month anything is recorded against, through the
+current month, plus a look-forward for the lists that plan ahead. `look_forward_months` is a
+setting (default twelve). Trends also exposes it as a slider, because its balances are
+cumulative — six months ahead and eighteen are different calculations, not the same one
+truncated. `fiscal_periods` remains, used only by the reconciliation gate, which compares
+against a workbook and so genuinely is scoped to a year.
+
+## The credit-card outstanding figure was wrong
+
+Reported: July's Platinum Amex showed a balance of £49.68 and an outstanding of **−£3,400.79**.
+
+The old rule decided which bill was standing from the day of the month, which is all a month
+tab could see. It has no way to express "collected on the 30th", so at a July month end it
+deducted July's bill from every card — including the one that had already paid it.
+
+The cycle is two dates. Where the payment day is the *smaller* number, the bill is collected
+the following month:
+
+| Card | Statement | Payment | Bill standing at 31 July |
+|---|---|---|---|
+| Platinum Amex | 16th | 30th | none — collected on the 30th |
+| BA Amex | 26th | 9th | July's, until 9 August |
+| Mastercard | 12th | 6th | July's, until 6 August |
+
+So outstanding is the balance before a statement is issued, the balance less that bill while
+it awaits collection, and the balance again once it has gone. July now reads £49.68 / £75.73 /
+£272.67 — the last two still matching the workbook's own D52, which happened to be right for
+the two cards whose cycle crossed a month.
+
+The table also lost its duplicate column. **This month's bill** is the statement figure entered
+for the month; **awaiting payment** is whichever bill is actually standing, which for a card
+collected the following month is the previous month's. They looked like duplicates because for
+half the year they are.
+
+Bills can be entered as they arrive: a blank stays blank rather than being stored as zero, and
+saving writes only what is filled in.
+
+## A month can hold two payments
+
+`payslip` is keyed by period, so a bonus paid on its own day had nowhere to go — entering it
+overwrote the salary. `bonus` now carries its own actual gross, NI, PAYE, net and payday, and
+the comparison table adds the two together, with an 'of which bonus' column. Both a bonus and
+a payslip can be removed outright, for when the wrong month was filled in.
+
+The alternative was a surrogate key on `payslip`, which would have turned every lookup into a
+group-by for the sake of one case a year.
+
+## Tax bands are effective-dated for real
+
+`salary_assumption` always had `effective_from` in its primary key, but only the allowance
+taper used it: everything else was written at 1 April and read back without reference to a
+date. `repo.bands_from(assumptions, on)` takes the last set starting on or before `on`, and
+each month is now taxed under the bands of *its own* tax year at the values in force on its
+first day — which matters as soon as the month lists run past a fiscal year end.
+
+The editors write against a chosen effective date, so a mid-year change is a new set rather
+than an edit that silently rewrites what earlier months were taxed at. The existing figures
+keep 01/04/2026. Underneath, read-only tables show the set as at any stored date, and an
+expander lists every stored figure by effective date.
+
+## Presentation
+
+- **Money carries a thousands separator everywhere, including editable cells.** `st.dataframe`
+  had it via a Styler; every `st.data_editor` did not, because printf has no thousands flag —
+  £39255.98. Streamlit parses column formats with sprintf-js, which treats `,` as one, so
+  `"£%,.2f"` works where `"£%.2f"` did not. Chart axes get `,.2f` too: Plotly's default is
+  SI-prefixed, which drew £10,000 as `10.00000k`.
+- **Percentages are quoted, not fractional, to two places** — 80.00, not 0.8 and not 80.
+- **Date filters open on the last ninety days** rather than on the full extent of the data, so
+  the default does not widen as history accumulates.
+- **`nan` is named.** A transfer carries no category or classification, so those cells are
+  genuinely empty and pandas rendered them `nan`. The picker on the Transactions page was worse:
+  it read `category or type`, and a missing category arrives as float NaN, which is *truthy* —
+  so every transfer was labelled `nan` rather than `Transfer`.
+- **Settings sections are in alphabetical order**, like every other list in the app.
+- **Summary is reordered** to position, accounts, spend by classification, account by month,
+  charts, targets.
+- **The remove-a-transaction list has its own date, account and comment filters**, since
+  picking the right row out of five hundred is the hard part.
+- **The projection grid opens pre-populated** with every day of the month against every
+  classification, is filterable by classification, and can copy a previous month across — bills
+  that repeat on the same date need entering once. Saving only touches the classifications on
+  screen, so a filtered view cannot delete what it is hiding, and a day left at zero is not
+  stored.
+- **Savings and investments** now show BoM and EoM side by side, with a cumulative target
+  column and a `Required` that is the cumulative target less what is available. The opening row
+  is gone: with both ends of the month in one row it was saying the same thing twice.
+
+## Schema
+
+Version 4. New columns: `bonus.gross`, `bonus.ni`, `bonus.paye`, `bonus.net`, `bonus.payday`.
+All nullable and additive; the migration is an `ALTER TABLE` per column.

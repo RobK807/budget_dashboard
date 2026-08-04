@@ -47,7 +47,7 @@ with tab_paste:
                 "Type", options=["Debit", "Credit", "Transfer"], required=False
             ),
             "Amount": st.column_config.NumberColumn(
-                "Amount", min_value=0.0, step=0.01, format="%.2f",
+                "Amount", min_value=0.0, step=0.01, format=ui.MONEY_FORMAT,
                 help="Positive; direction comes from Type",
             ),
             "Account From": st.column_config.SelectboxColumn("Account From", options=accounts),
@@ -102,6 +102,13 @@ if candidates:
         1,
         "Status",
         ["✗ error" if not r.ok else ("! check" if r.warnings else "✓ ok") for _, r in results],
+    )
+    # Same convention as the Transactions page: a transfer has no category or purchase
+    # type, so the blank is named rather than left to render as 'nan'.
+    preview = ui.name_blanks(
+        preview,
+        ["Account To", "Category", "Purchase type", "Comment", "Category comment"],
+        transfers="Type",
     )
     st.dataframe(
         ui.money_table(preview, ["Amount"]), use_container_width=True, hide_index=True
@@ -171,12 +178,13 @@ if candidates:
         disabled=["account", "current", "in", "out", "projected"],
         column_config={
             "account": st.column_config.TextColumn("Account"),
-            "current": st.column_config.NumberColumn("Current", format="£%.2f"),
-            "in": st.column_config.NumberColumn("In", format="£%.2f"),
-            "out": st.column_config.NumberColumn("Out", format="£%.2f"),
-            "projected": st.column_config.NumberColumn("Projected", format="£%.2f"),
+            "current": st.column_config.NumberColumn("Current", format=ui.MONEY_FORMAT),
+            "in": st.column_config.NumberColumn("In", format=ui.MONEY_FORMAT),
+            "out": st.column_config.NumberColumn("Out", format=ui.MONEY_FORMAT),
+            "projected": st.column_config.NumberColumn("Projected", format=ui.MONEY_FORMAT),
             "Target": st.column_config.NumberColumn(
-                "Target", format="%.2f", help="The account's real balance right now"
+                "Target", format=ui.PLAIN_MONEY_FORMAT,
+                help="The account's real balance right now",
             ),
         },
     )

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Columns added to tables that already existed. create_all only creates whole tables, so a
 # new column on an existing one needs an explicit ALTER -- cheap in SQLite, unlike a CHECK.
@@ -25,6 +25,15 @@ ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("account", "statement_day", "INTEGER"),
     ("account", "payment_day", "INTEGER"),
     ("card", "credit_limit", "INTEGER"),
+    # v4 -----------------------------------------------------------------------------
+    # A bonus paid separately from salary is its own payment with its own deductions. Held
+    # on the bonus row rather than the payslip so entering it does not overwrite the month's
+    # salary, which a single payslip per period would have forced.
+    ("bonus", "gross", "INTEGER"),
+    ("bonus", "ni", "INTEGER"),
+    ("bonus", "paye", "INTEGER"),
+    ("bonus", "net", "INTEGER"),
+    ("bonus", "payday", "INTEGER"),
 ]
 
 # Rates moved from fractions to percentages (0.08 -> 8.00). The Money column stores two

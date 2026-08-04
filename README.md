@@ -43,16 +43,28 @@ after every write. To get started:
 1. **Install Python 3.11+** if it is not already there, and get the project folder across
    (git clone, or copy the folder — but not `.venv`).
 
-2. **Create the environment:**
+2. **Open a terminal in the project folder**, and stay there for everything below. Every
+   command from here on is relative to it — `.venv` is created in whichever directory you
+   happen to be in, and `.venv\Scripts\python.exe` only resolves from the project root:
+
+   ```bash
+   cd path\to\budget_dashboard
+   ```
+
+   In Explorer, Shift-right-click the folder and choose *Open in Terminal*, or type `cmd`
+   into the address bar.
+
+3. **Create the environment:**
 
    ```bash
    python -m venv .venv
    .venv\Scripts\python.exe -m pip install -r requirements.txt
    ```
 
-3. **Get the database.** Once the laptop has pushed, the desktop should **pull** rather than
-   migrate: run the app, open **Manage → Sync**, and press **Pull now**. That guarantees both
-   machines are on the same revision, which re-running the migration would not.
+4. **Get the database.** Once the laptop has pushed, the desktop should **pull** rather than
+   migrate — double-click `restore.bat`, or run the app, open **Manage → Sync** and press
+   **Pull now**. That guarantees both machines are on the same revision, which re-running the
+   migration would not.
 
    Only if no master exists yet:
 
@@ -60,14 +72,14 @@ after every write. To get started:
    .venv\Scripts\python.exe -m budget.migrate_xlsm
    ```
 
-4. **Check it:**
+5. **Check it:**
 
    ```bash
    .venv\Scripts\python.exe -m budget.reconcile
    .venv\Scripts\python.exe -m pytest tests -q
    ```
 
-5. **Run it:**
+6. **Run it:**
 
    ```bash
    .venv\Scripts\python.exe -m streamlit run app.py
@@ -133,6 +145,11 @@ python -m budget.migrate_xlsm --force   # rebuild the database from scratch
 account-months, ~2,700 daily classification cells, ~490 category figures and the Summary
 position against the workbook, and exits non-zero if anything moved unexpectedly.
 
+It is also the one place still scoped to a single fiscal year, deliberately: it compares
+against `Budget 26-27.xlsm`, so April-to-March is what it should cover. Everywhere else the
+month lists run from the first month anything is recorded against to the current one, plus
+the look-forward set under **Settings → General**.
+
 The test suite includes `tests/test_pages_render.py`, which opens all fourteen pages through
 Streamlit's `AppTest` and fails on any uncaught exception — pages are scripts, so a typo in
 one would otherwise only surface when someone opened it. It runs against a copy of the
@@ -159,8 +176,24 @@ One trap worth knowing: `repo.casefold_key` tests with `pd.api.types.is_string_d
 `dtype == object`. pandas 3 gives string columns a dedicated `str` dtype, so an object check
 silently stops matching and the sort quietly reverts to ASCII with no error.
 
-Months are the exception — they stay in fiscal order (April → March), since alphabetical
-would give "April, August, December".
+Months are the exception — they stay in chronological order, since alphabetical would give
+"April, August, December".
+
+**Money carries a thousands separator, percentages are quoted to two places.** Three places
+need saying explicitly, because each has its own formatter and only the first is obvious:
+
+| Where | How |
+|---|---|
+| `st.dataframe` | `ui.money_table(df, columns)` — a pandas Styler, `£{:,.2f}` |
+| `st.data_editor` | `ui.editable_money(label)` — sprintf-js, `£%,.2f` |
+| A Plotly chart | `ui.money_axis(fig)` — `,.2f` on ticks and hover |
+
+The middle one is the trap. `st.column_config.NumberColumn` takes a printf format and printf
+has no thousands flag, so `"£%.2f"` gives £39255.98. Streamlit parses these with sprintf-js,
+which *does* treat `,` as one. `st.number_input` is the exception: its output must be purely
+numeric, so it stays at `%.2f` with the unit in the label.
+
+Without `ui.money_axis`, Plotly's default SI notation draws £10,000 as `10.00000k`.
 
 ## Layout
 

@@ -926,6 +926,52 @@ would let them drift apart the moment one was edited, and there would be no way 
 was right. The same reasoning applies to `payslip.expected_gross`, now derived from
 `salary_profile` and `bonus` and retained only as a record of what the workbook stated.
 
+## 6c. Nothing is scoped to one fiscal year
+
+Phase 5 left one workbook assumption standing: every month dropdown was built from
+`repo.fiscal_periods(tax_year)`, so all of them ran April 2026 to March 2027 and stopped. That
+is a property of *one file per year*, not of a database that will hold several. Backfilling
+`Budget 25-26.xlsm` would have loaded rows that no dropdown could reach.
+
+The range is now derived:
+
+```
+earliest   the first month anything is recorded against, across every table
+periods    earliest → the current month
+all_periods  earliest → current month + look_forward
+```
+
+`look_forward` is a setting (**Settings → General**, default twelve). It exists because some
+figures are set *before* the month arrives — next month's savings target, a projection — so a
+list that stopped at today would make them unreachable. Trends exposes it as a slider as well,
+since the cumulative balances genuinely differ between a six-month and an eighteen-month
+horizon; it is a parameter of the calculation, not a display filter.
+
+`fiscal_periods` survives for the reconciliation gate, which compares against a workbook and
+therefore *is* scoped to one year.
+
+### Three consequences
+
+**Tax bands are effective-dated for real.** `salary_assumption` always had `effective_from` in
+its primary key, but only the allowance taper used it — everything else was written at 1 April
+and read back without reference to a date. `repo.bands_from(assumptions, on)` now takes the
+last set starting on or before `on`, and each month is taxed under the bands of *its own* tax
+year at the values in force on its first day. A mid-year rate change is a new set rather than
+an edit that silently rewrites what earlier months were taxed at.
+
+**A month can hold two payments.** `payslip` is keyed by period, so a bonus paid on its own day
+had nowhere to go: entering it overwrote the salary. `bonus` therefore carries its own actual
+gross, NI, PAYE and net, and the Salary page adds the two together. The alternative — a
+surrogate key on `payslip` — would have made every lookup a group-by for the sake of one case.
+
+**A card's cycle is two dates, not a month.** `card_outstanding` used to decide which bill was
+standing from the day of the month alone, which is all a month tab could see. It now derives
+the statement and its due date from `statement_day` and `payment_day`: where the payment day is
+the *smaller* number the bill is collected the following month, which is why Platinum Amex (16th
+and 30th) settles inside one month and BA Amex (26th and 9th) does not. The figure subtracted
+is the bill actually awaiting collection, which for BA Amex at a July month end is July's, and
+on 4 August is still July's.
+
 ## 7. Notes
 
 - **The data is sensitive** — salary, account balances, card debt. Keep the app on the LAN: no
