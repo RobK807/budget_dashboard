@@ -1,0 +1,334 @@
+"""Cross-machine sync.
+
+The properties worth pinning are the ones whose failure is silent: a push that believes
+itself successful when it was not, a conflict that goes undetected, or a pull that
+overwrites unpushed work.
+"""
+
+import datetime as dt
+import json
+from decimal import Decimal
+
+import pytest
+
+from budget import config, service, sync
+from budget.db import make_engine, make_session_factory
+from budget.models import DbMeta, Txn
+from budget.validation import Candidate
+
+
+@pytest.fixture
+def nas(tmp_path, monkeypatch):
+    directory = tmp_path / "nas"
+    directory.mkdir()
+    monkeypatch.setattr(config, "NAS_DIR", directory)
+    return directory
+
+
+@pytest.fixture
+def unreachable_nas(tmp_path, monkeypatch):
+    """A drive that is not mounted: neither the folder nor the share above it exists.
+    (Pointing only one level down would now read as reachable, since the share being
+    present is exactly what lets a first push create the folder.)"""
+    monkeypatch.setattr(config, "NAS_DIR", tmp_path / "unmounted-share" / "budget_db")
+    return config.NAS_DIR
+
+
+@pytest.fixture
+def local(session, tmp_path, monkeypatch):
+    """The session fixture's database, wired up as this machine's live database."""
+    db_path = tmp_path / "write.db"
+    monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(config, "BASE_DB_PATH", tmp_path / "budget.base.db")
+    return db_path
+
+
+def add_one(session, amount="10.00"):
+    return service.add_transaction(
+        session,
+        Candidate(
+            txn_date=dt.date(2026, 6, 15), type="Debit", amount=Decimal(amount),
+            account_from="HSBC", category="Food", classification="Food",
+        ),
+    )
+
+
+class TestStatus:
+    def test_unreachable_nas_is_not_an_error_state(self, session, local, unreachable_nas):
+        state = sync.status(session)
+        assert not state.nas.reachable
+        assert state.tone == "warning"  # not 'error' -- this is normal away from home
+
+    def test_a_share_that_exists_is_reachable_before_our_folder_does(
+        self, session, local, tmp_path, monkeypatch
+    ):
+        """First run: the share is mounted but budget_db/ has not been created yet.
+        Testing the folder itself would make the very first push impossible."""
+        monkeypatch.setattr(config, "NAS_DIR", tmp_path / "share_exists" / "budget_db")
+        (tmp_path / "share_exists").mkdir()
+
+        state = sync.read_nas()
+        assert state.reachable
+        assert not state.has_master
+
+    def test_first_push_creates_the_folder(self, session, local, tmp_path, monkeypatch):
+        target = tmp_path / "share_exists" / "budget_db"
+        monkeypatch.setattr(config, "NAS_DIR", target)
+        (tmp_path / "share_exists").mkdir()
+
+        add_one(session)
+        session.commit()
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert result.ok, result.message
+        assert (target / sync.MASTER).exists()
+
+    def test_clean_database_reports_in_sync(self, session, local, nas):
+        meta = session.get(DbMeta, 1)
+        meta.pushed_revision = meta.revision
+        meta.base_revision = meta.revision
+        session.commit()
+        assert not sync.status(session).local.dirty
+
+    def test_a_write_makes_it_dirty(self, session, local, nas):
+        meta = session.get(DbMeta, 1)
+        meta.pushed_revision = meta.revision
+        session.commit()
+        add_one(session)
+        session.commit()
+        assert sync.status(session).local.dirty
+
+
+class TestPush:
+    def test_first_push_creates_the_master_and_sidecar(self, session, local, nas):
+        add_one(session)
+        session.commit()
+
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert result.ok, result.message
+        assert (nas / sync.MASTER).exists()
+        meta = json.loads((nas / sync.META).read_text())
+        assert meta["revision"] == session.get(DbMeta, 1).revision
+        assert meta["sha256"]
+
+    def test_push_advances_pushed_revision_so_it_is_no_longer_dirty(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        assert not sync.status(session).local.dirty
+
+    def test_unreachable_nas_leaves_it_dirty_for_the_next_attempt(
+        self, session, local, unreachable_nas
+    ):
+        add_one(session)
+        session.commit()
+
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert not result.ok
+        # The invariant: pushed_revision only advances on a verified push.
+        assert sync.status(session).local.dirty
+
+    def test_previous_master_is_kept_as_a_backup(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        assert (nas / sync.BACKUP).exists()
+
+    def test_the_ancestor_snapshot_is_refreshed(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        assert config.BASE_DB_PATH.exists()
+
+
+class TestConflictDetection:
+    """The check that turns a lost lock into a refusal instead of silent data loss."""
+
+    def test_push_refuses_when_the_master_has_moved(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        # Another machine pushes: the sidecar revision advances beyond our base.
+        meta = json.loads((nas / sync.META).read_text())
+        meta["revision"] += 5
+        meta["machine"] = "DESKTOP-OTHER"
+        (nas / sync.META).write_text(json.dumps(meta))
+
+        add_one(session)
+        session.commit()
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert not result.ok
+        assert "Conflict" in result.message
+        assert sync.status(session).conflict
+        assert sync.status(session).local.dirty  # still ours to reconcile
+
+    def test_force_overrides_the_conflict_check(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        meta = json.loads((nas / sync.META).read_text())
+        meta["revision"] += 5
+        (nas / sync.META).write_text(json.dumps(meta))
+
+        add_one(session)
+        session.commit()
+        assert sync.push(session, db_path=local, force=True).ok
+
+
+class TestLocking:
+    def test_push_refuses_while_another_machine_holds_the_lock(self, session, local, nas):
+        (nas / sync.LOCK).write_text(
+            json.dumps(
+                {
+                    "machine": "DESKTOP-OTHER",
+                    "mode": "offline",
+                    "taken_at": dt.datetime.now().isoformat(timespec="seconds"),
+                    "expected_return": None,
+                }
+            )
+        )
+        add_one(session)
+        session.commit()
+
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert not result.ok
+        assert "Locked by DESKTOP-OTHER" in result.message
+
+    def test_force_take_transfers_the_lock(self, session, local, nas):
+        (nas / sync.LOCK).write_text(
+            json.dumps(
+                {"machine": "DESKTOP-OTHER", "mode": "online",
+                 "taken_at": dt.datetime.now().isoformat(timespec="seconds")}
+            )
+        )
+        result = sync.force_take(session)
+        assert result.ok
+        assert sync.read_lock().machine == sync.machine_name()
+
+    def test_an_overdue_lease_is_flagged(self):
+        lock = sync.Lock(
+            machine="OTHER", mode="offline",
+            taken_at=(dt.datetime.now() - dt.timedelta(days=10)).isoformat(),
+            expected_return=(dt.date.today() - dt.timedelta(days=3)).isoformat(),
+        )
+        assert lock.overdue
+
+    def test_a_lease_still_within_its_window_is_not_overdue(self):
+        lock = sync.Lock(
+            machine="OTHER", mode="offline",
+            taken_at=dt.datetime.now().isoformat(),
+            expected_return=(dt.date.today() + dt.timedelta(days=3)).isoformat(),
+        )
+        assert not lock.overdue
+
+
+class TestOfflineMode:
+    def test_checkout_requires_being_in_sync(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        result = sync.checkout(session)
+        assert not result.ok
+        assert "unpushed" in result.message
+
+    def test_checkout_records_a_lease_and_the_ancestor(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        result = sync.checkout(session, dt.date.today() + dt.timedelta(days=7))
+        session.commit()
+
+        assert result.ok
+        assert session.get(DbMeta, 1).mode == sync.OFFLINE
+        lock = sync.read_lock()
+        assert lock.mine and lock.mode == sync.OFFLINE and lock.expected_return
+        assert config.BASE_DB_PATH.exists()
+
+    def test_checkin_pushes_and_returns_to_online(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        sync.checkout(session)
+        session.commit()
+
+        add_one(session)
+        session.commit()
+        result = sync.checkin(session)
+        session.commit()
+
+        assert result.ok, result.message
+        assert session.get(DbMeta, 1).mode == sync.ONLINE
+        assert sync.read_lock() is None
+
+
+class TestPull:
+    def test_pull_refuses_to_overwrite_unpushed_work(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        add_one(session)  # unpushed
+        session.commit()
+
+        result = sync.pull(db_path=local)
+        assert not result.ok
+        assert "unpushed" in result.message
+
+    def test_pull_without_a_master_is_refused(self, session, local, nas):
+        assert not sync.pull(db_path=local).ok
+
+
+class TestReconciliation:
+    def test_local_only_finds_rows_absent_from_the_ancestor(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)  # snapshots the ancestor
+        session.commit()
+
+        txn, _ = add_one(session, "99.00")
+        session.commit()
+
+        extra = sync.local_only(session)
+        assert [t.uid for t in extra] == [txn.uid]
+
+    def test_export_frame_is_shaped_for_the_importer(self, session, local, nas):
+        from budget import importer
+
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        add_one(session, "99.00")
+        session.commit()
+
+        frame = sync.local_only_frame(session)
+        candidates, problems = importer.parse(frame)
+
+        assert problems == []
+        assert len(candidates) == 1
+        assert candidates[0].amount == Decimal("99.00")

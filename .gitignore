@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Financial data must never enter the repo. The live database lives outside the project
+# folder entirely (see budget/config.py); these patterns are belt and braces.
+*.db
+*.db-wal
+*.db-shm
+*.xlsm
+*.xlsx

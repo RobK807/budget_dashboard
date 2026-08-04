@@ -1,0 +1,9 @@
+# Bound to loopback deliberately: this app shows salary, account balances and card debt.
+# See DESIGN.md section 7.
+[server]
+headless = true
+address = "127.0.0.1"
+port = 8501
+
+[browser]
+gatherUsageStats = false
