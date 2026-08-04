@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from budget import config
@@ -375,9 +376,21 @@ def pull(db_path: Path | None = None) -> Result:
     if not nas.has_master:
         return Result(False, "No master on the NAS yet. Push from this machine first.")
 
-    factory = make_session_factory(make_engine(db_path))
-    with factory() as session:
-        local = read_local(session)
+    # A machine with no database at all is the ordinary case for a first pull -- setting up
+    # the desktop, or recovering after the local copy is lost. read_local copes with a
+    # missing db_meta *row*, but querying it at all fails when the table has never been
+    # created, so the absence has to be established before opening anything.
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        local = LocalState()
+    else:
+        try:
+            factory = make_session_factory(make_engine(db_path))
+            with factory() as session:
+                local = read_local(session)
+        except OperationalError:
+            # A file that exists but holds no schema: an interrupted earlier attempt.
+            local = LocalState()
+
     if local.dirty:
         return Result(
             False,
@@ -385,6 +398,9 @@ def pull(db_path: Path | None = None) -> Result:
         )
 
     master = nas_dir() / MASTER
+    # Opening an engine used to create this as a side effect; a first pull skips that, so
+    # the directory has to be made explicitly or staging has nowhere to land.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     staging = db_path.with_name("budget.pull.tmp")
     try:
         shutil.copy2(master, staging)

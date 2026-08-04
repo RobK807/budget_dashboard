@@ -332,3 +332,97 @@ class TestReconciliation:
         assert problems == []
         assert len(candidates) == 1
         assert candidates[0].amount == Decimal("99.00")
+
+
+class TestFirstPull:
+    """Pulling onto a machine that has no database at all.
+
+    This is the documented way to set up a second machine, and the only way back after a
+    local copy is lost -- but it was never exercised, because every test started from a
+    database the fixtures had already built. Both failures below were real.
+    """
+
+    def _master(self, tmp_path, monkeypatch):
+        """A NAS with a master on it, and a local path that does not exist yet."""
+        from budget import config, sync
+        from budget.db import create_all, make_engine, make_session_factory
+        from budget.models import DbMeta
+
+        nas = tmp_path / "nas"
+        nas.mkdir()
+        source = tmp_path / "source.db"
+        engine = make_engine(source)
+        create_all(engine)
+        with make_session_factory(engine)() as s, s.begin():
+            s.add(DbMeta(id=1, revision=4, base_revision=4, pushed_revision=4))
+        engine.dispose()
+
+        import hashlib
+        import json
+
+        shutil_copy = __import__("shutil").copy2
+        shutil_copy(source, nas / "budget.db")
+        digest = hashlib.sha256((nas / "budget.db").read_bytes()).hexdigest()
+        (nas / "budget.meta.json").write_text(
+            json.dumps({"revision": 4, "machine": "OTHER", "sha256": digest}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(config, "NAS_DIR", nas)
+        return sync
+
+    def test_pull_creates_the_folder_it_needs(self, tmp_path, monkeypatch):
+        """Opening an engine used to create the directory as a side effect. Once the
+        no-database case skipped that, staging had nowhere to land."""
+        from budget import config
+
+        sync = self._master(tmp_path, monkeypatch)
+        target = tmp_path / "never" / "made" / "budget.db"
+        monkeypatch.setattr(config, "BASE_DB_PATH", target.with_name("budget.base.db"))
+
+        result = sync.pull(target)
+        assert result.ok, result.message
+        assert target.exists()
+
+    def test_pull_onto_a_machine_with_no_database(self, tmp_path, monkeypatch):
+        """read_local copes with a missing db_meta row, but querying it at all raises when
+        the table has never been created."""
+        from budget import config
+
+        sync = self._master(tmp_path, monkeypatch)
+        target = tmp_path / "local" / "budget.db"
+        monkeypatch.setattr(config, "BASE_DB_PATH", target.with_name("budget.base.db"))
+
+        result = sync.pull(target)
+        assert result.ok, result.message
+        assert "revision 4" in result.message
+
+    def test_pull_onto_an_empty_file_left_by_a_failed_attempt(self, tmp_path, monkeypatch):
+        from budget import config
+
+        sync = self._master(tmp_path, monkeypatch)
+        target = tmp_path / "local" / "budget.db"
+        target.parent.mkdir()
+        target.touch()
+        monkeypatch.setattr(config, "BASE_DB_PATH", target.with_name("budget.base.db"))
+
+        assert sync.pull(target).ok
+
+    def test_pull_still_refuses_when_there_is_unpushed_work(self, tmp_path, monkeypatch):
+        """The guard that matters: recovery must never silently discard local changes."""
+        from budget import config
+        from budget.db import create_all, make_engine, make_session_factory
+        from budget.models import DbMeta
+
+        sync = self._master(tmp_path, monkeypatch)
+        target = tmp_path / "local" / "budget.db"
+        target.parent.mkdir()
+        engine = make_engine(target)
+        create_all(engine)
+        with make_session_factory(engine)() as s, s.begin():
+            s.add(DbMeta(id=1, revision=9, base_revision=4, pushed_revision=4))
+        engine.dispose()
+        monkeypatch.setattr(config, "BASE_DB_PATH", target.with_name("budget.base.db"))
+
+        result = sync.pull(target)
+        assert not result.ok
+        assert "unpushed" in result.message
