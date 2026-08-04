@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Columns added to tables that already existed. create_all only creates whole tables, so a
 # new column on an existing one needs an explicit ALTER -- cheap in SQLite, unlike a CHECK.
@@ -34,7 +34,23 @@ ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("bonus", "paye", "INTEGER"),
     ("bonus", "net", "INTEGER"),
     ("bonus", "payday", "INTEGER"),
+    # v5 -----------------------------------------------------------------------------
+    ("salary_profile", "base_salary", "INTEGER"),
 ]
+
+# Splitting the stored annual salary back into its two parts. What was held was base *plus*
+# car allowance, and the allowance is a function of the base:
+#
+#     car  = LOWER% x THRESHOLD + UPPER% x (base - THRESHOLD)
+#     total = base + car = base x (1 + UPPER%) + THRESHOLD x (LOWER% - UPPER%)
+#
+# so base = (total - THRESHOLD x (LOWER% - UPPER%)) / (1 + UPPER%). With the defaults that
+# is (total - 3,500) / 1.05, which recovers 118,905.00 from 128,350.25 and 116,688.00 from
+# 126,022.40 -- both exactly, and both round numbers, which is the check that this is the
+# right inversion rather than a plausible one.
+CAR_THRESHOLD_PENCE = 5_000_000
+CAR_LOWER_RATE = 0.12
+CAR_UPPER_RATE = 0.05
 
 # Rates moved from fractions to percentages (0.08 -> 8.00). The Money column stores two
 # decimal places, so as a fraction a rate could only ever be a whole percentage point --
@@ -126,6 +142,23 @@ def _rescale_rates_to_percentages(cursor) -> int:
     return cursor.rowcount
 
 
+def _split_out_base_salary(cursor) -> int:
+    """Recover the base salary from a stored base-plus-car total.
+
+    Only rows that have no base yet, so it cannot run twice over the same figure. Rounded to
+    the penny: the arithmetic is exact for the salaries actually stored, and a half-penny
+    drift on some future one is better than a truncation that loses a pound.
+    """
+    constant = CAR_THRESHOLD_PENCE * (CAR_LOWER_RATE - CAR_UPPER_RATE)
+    cursor.execute(
+        "UPDATE salary_profile "
+        "SET base_salary = CAST(ROUND((annual_salary - ?) / ?) AS INTEGER) "
+        "WHERE base_salary IS NULL AND annual_salary IS NOT NULL",
+        (constant, 1 + CAR_UPPER_RATE),
+    )
+    return cursor.rowcount
+
+
 def apply_migrations(engine: Engine) -> list[str]:
     """Bring an existing database up to SCHEMA_VERSION. Safe to call on every start."""
     applied: list[str] = []
@@ -176,6 +209,13 @@ def apply_migrations(engine: Engine) -> list[str]:
                 changed = _rescale_rates_to_percentages(cursor)
                 if changed:
                     applied.append(f"rates rescaled to percentages ({changed} row(s))")
+
+            if cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='salary_profile'"
+            ).fetchone():
+                split = _split_out_base_salary(cursor)
+                if split:
+                    applied.append(f"base salary split out of {split} salary record(s)")
 
             cursor.execute(
                 "INSERT INTO setting (key, value) VALUES ('schema_version', ?) "

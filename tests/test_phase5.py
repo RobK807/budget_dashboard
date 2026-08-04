@@ -16,10 +16,19 @@ APRIL = dt.date(2026, 4, 1)
 
 
 def profiles(*rows) -> pd.DataFrame:
+    """Salary records, keyed by *base* salary. The car allowance is derived from it."""
     return pd.DataFrame(
-        [{"id": i, "effective_from": d, "annual_salary": Decimal(s), "note": None}
-         for i, (d, s) in enumerate(rows, start=1)],
-        columns=["id", "effective_from", "annual_salary", "note"],
+        [
+            {
+                "id": i,
+                "effective_from": d,
+                "base_salary": Decimal(s),
+                "annual_salary": Decimal(s) + repo.car_allowance(Decimal(s)),
+                "note": None,
+            }
+            for i, (d, s) in enumerate(rows, start=1)
+        ],
+        columns=["id", "effective_from", "base_salary", "annual_salary", "note"],
     )
 
 
@@ -37,14 +46,24 @@ class TestExpectedGross:
     """Salary tracker column P, which was `ROUND(O/12, 2)` in eleven rows and
     `ROUND(O5/12,2)+29028.48` in the twelfth."""
 
-    PROFILES = profiles((APRIL, "126022.40"), (dt.date(2026, 5, 1), "128350.25"))
+    # Base salaries. The totals they imply -- 126,022.40 and 128,350.25 -- are what the
+    # workbook stored as 'annual salary', which is why that figure never appeared on a
+    # payslip: it already had the car allowance folded into it.
+    PROFILES = profiles((APRIL, "116688"), (dt.date(2026, 5, 1), "118905"))
     BONUSES = bonuses(("2026-05", "29028.48"))
 
-    def test_the_salary_in_force_is_the_last_change_on_or_before_the_month(self):
-        assert repo.salary_in_force(self.PROFILES, APRIL) == Decimal("126022.40")
-        assert repo.salary_in_force(
+    def test_the_base_in_force_is_the_last_change_on_or_before_the_month(self):
+        assert repo.base_in_force(self.PROFILES, APRIL) == Decimal("116688")
+        assert repo.base_in_force(
             self.PROFILES, dt.date(2026, 4, 30)
-        ) == Decimal("126022.40")
+        ) == Decimal("116688")
+        assert repo.base_in_force(
+            self.PROFILES, dt.date(2026, 5, 1)
+        ) == Decimal("118905")
+
+    def test_salary_in_force_adds_the_derived_car_allowance(self):
+        """The two figures the old model stored as one."""
+        assert repo.salary_in_force(self.PROFILES, APRIL) == Decimal("126022.40")
         assert repo.salary_in_force(
             self.PROFILES, dt.date(2026, 5, 1)
         ) == Decimal("128350.25")
@@ -452,6 +471,35 @@ class TestSavingsSeries:
         assert april["savings_added"] == Decimal("200")
         assert april["savings_bom"] + april["savings_added"] == april["savings_eom"]
 
+    def test_added_splits_into_available_and_reserved(self):
+        """Adding to the wedding pot and adding to the general one are not the same event,
+        which a single 'Added' column could not say."""
+        april = self.series().iloc[0]
+        assert april["available_added"] == Decimal("200")   # Marcus
+        assert april["reserved_added"] == Decimal("0")      # Wedding untouched
+        assert april["available_added"] + april["reserved_added"] == april["savings_added"]
+
+    def test_money_into_an_earmarked_pot_counts_as_reserved(self):
+        postings = pd.concat(
+            [
+                self.POSTINGS,
+                pd.DataFrame(
+                    [{"period": "2026-04", "account": "Wedding", "type": "Credit",
+                      "column": "credit", "amount": Decimal("50"),
+                      "signed": Decimal("50")}]
+                ),
+            ]
+        )
+        april = repo.savings_series(
+            postings, self.OPENINGS, self.ACCOUNTS, self.TARGETS,
+            ["2026-04"], today=dt.date(2026, 6, 1),
+        ).iloc[0]
+        assert april["available_added"] == Decimal("200")
+        assert april["reserved_added"] == Decimal("50")
+        assert april["savings_added"] == Decimal("250")
+        # 'Available' is unmoved by it, which is the whole point of earmarking.
+        assert april["available_eom"] == Decimal("1200")
+
     def test_the_target_column_accumulates(self):
         rows = self.series()
         assert rows.iloc[0]["savings_target_eom"] == Decimal("300")
@@ -615,7 +663,9 @@ class TestSalaryInputs:
             reference.set_salary_profile(session, APRIL, Decimal("110000"))
         rows = repo.load_salary_profiles(session)
         assert len(rows) == 1
-        assert rows.iloc[0]["annual_salary"] == Decimal("110000")
+        assert rows.iloc[0]["base_salary"] == Decimal("110000")
+        # Written alongside as base + car allowance: 6,000 + 5% of 60,000.
+        assert rows.iloc[0]["annual_salary"] == Decimal("119000")
 
     def test_a_zero_bonus_removes_the_row(self, session):
         with session.begin():

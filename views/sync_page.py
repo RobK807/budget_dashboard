@@ -64,12 +64,40 @@ st.divider()
 
 # ------------------------------------------------------------------------ conflict
 
+if state.behind:
+    # Not a conflict, and worth being emphatic about the difference: the master having moved
+    # while this machine has nothing unpushed is the *ordinary* state after the other machine
+    # has done a day's work. Presenting it as a conflict sent you looking for a reconciliation
+    # that had nothing to reconcile.
+    st.subheader("Behind the master")
+    st.info(
+        f"The master is at revision {state.nas.revision} (pushed by "
+        f"{state.nas.machine or 'another machine'}"
+        + (f" at {state.nas.updated_at}" if state.nas.updated_at else "")
+        + f") and this machine started from {state.local.base_revision}. There is nothing "
+        "unpushed here and nothing that exists only here, so pulling adopts the master and "
+        "loses nothing."
+    )
+    st.caption(
+        "**Refresh data** will not help with this — it only clears the cached queries, and "
+        "the local database really is a different, older one. Pulling is what replaces it."
+    )
+    if st.button("Pull now and catch up", type="primary", key="catch_up"):
+        # Every pooled connection has to go before the file is replaced, not after.
+        ui.close_connections()
+        result = sync.pull()
+        ui.load_all.clear()
+        st.success(result.message) if result.ok else st.error(result.message)
+        st.rerun()
+    st.divider()
+
 if state.conflict:
     st.subheader("Conflict")
     st.error(
         f"The master is at revision {state.nas.revision}; this machine started from "
-        f"{state.local.base_revision}. Another machine has pushed in the meantime, so "
-        "pushing now would overwrite its work."
+        f"{state.local.base_revision} and has {state.local.pending} unpushed change(s). "
+        "Both sides have moved, so pushing would overwrite the other machine's work and "
+        "pulling would discard this machine's."
     )
     st.markdown(
         "**To reconcile:** export the transactions that exist only here, pull the fresh "
@@ -82,8 +110,9 @@ if state.conflict:
 
     if frame.empty:
         st.info(
-            "Nothing exists only on this machine, so nothing would be lost. Pull to adopt "
-            "the master."
+            "No *transactions* exist only on this machine, but the revision counter has "
+            "moved, so something else here has — a setting, a target, a payslip. Those are "
+            "not exported by the reconciliation below; check what you changed before pulling."
         )
     else:
         st.caption(f"{len(frame)} transaction(s) exist only on this machine:")
@@ -111,7 +140,11 @@ with push_col:
         "Snapshot, verify, upload beside the master, verify again, then promote. The live "
         "master is only replaced once a complete verified copy sits next to it."
     )
-    can_push = state.nas.reachable and not state.conflict and not state.blocked_by
+    can_push = (
+        state.nas.reachable
+        and not state.moved
+        and not state.blocked_by
+    )
     if st.button(
         "Push now", type="primary", disabled=not can_push,
         help=None if can_push else "Blocked — see the status above",
@@ -137,12 +170,15 @@ with pull_col:
     )
     can_pull = state.nas.reachable and state.nas.has_master and not state.local.dirty
     if st.button(
-        "Pull now", disabled=not can_pull,
+        "Pull now", disabled=not can_pull, key="pull_now",
         help=None if can_pull else "Blocked — push or reconcile first",
     ):
+        ui.close_connections()
         result = sync.pull()
         ui.load_all.clear()
         st.success(result.message) if result.ok else st.error(result.message)
+        for line in result.detail:
+            st.caption(f"· {line}")
         st.rerun()
 
 if state.nas.reachable and not state.nas.has_master:

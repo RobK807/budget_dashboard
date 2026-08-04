@@ -73,21 +73,31 @@ def as_decimal(value) -> Decimal:
     return Decimal(str(value))
 
 
-def expected_for(period: str, row) -> tax.Breakdown | None:
-    """Salary tracker columns S, U and W for one month.
+PARAMS = repo.salary_parameters(data["settings"])
 
-    Gross is derived from the salary in force plus any bonus, rather than stored: with both
-    held as data the derivation works again, which it could not while May's bonus lived
-    inside the formula.
+
+def expected_for(period: str, row) -> tax.Breakdown | None:
+    """One month's expected pay, from its parts rather than from a single gross figure.
+
+        base + car allowance + bonus            taxable pay
+          less pension (10% of base only)
+          less holiday pay                      = what NI and PAYE are charged on
+        plus home working allowance             paid on top, taxed nowhere
+
+    The decomposition is what makes this match a payslip. A single 'salary' of 128,350.25
+    hid a base of 118,905 and a car allowance of 9,445.25, and charging the pension against
+    the combined figure would deduct 1,069.59 a month instead of 990.88.
+
+    A month with a recorded payslip is modelled against its actual holiday pay rather than
+    the standing assumption, since that is the one deduction that genuinely varies.
     """
-    gross = repo.expected_gross(period, profiles, bonuses)
-    if gross is None:
+    holiday = None
+    if row is not None and row["holiday_pay"] is not None and not pd.isna(row["holiday_pay"]):
+        holiday = as_decimal(row["holiday_pay"])
+    components = repo.salary_components(period, profiles, bonuses, PARAMS, holiday)
+    if components is None:
         return None
-    benefits = as_decimal(row["benefits"]) if row is not None else Decimal("0")
-    additional = as_decimal(row["additional"]) if row is not None else Decimal("0")
-    return tax.expected_pay(
-        gross, bands_for(period), repo.period_start(period), benefits, additional
-    )
+    return tax.pay_for(components, bands_for(period), repo.period_start(period))
 
 
 rows = []
@@ -117,13 +127,23 @@ for period in data["all_periods"]:
             return None
         return as_decimal(salary_part) + as_decimal(bonus_part)
 
+    parts = expected.components if expected else None
     rows.append(
         {
             "period": period,
             "month": repo.period_label(period),
             "payday": actual["payday"] if actual is not None else None,
+            # The build-up, in the order a payslip reads.
+            "base": parts.base if parts else None,
+            "car": parts.car if parts else None,
+            "home_working": parts.home_working if parts else None,
+            "pension": parts.pension if parts else None,
+            "expected_holiday": parts.holiday_pay if parts else None,
+            "taxable": parts.taxable if parts else None,
             "actual_gross": paid("gross"),
-            "expected_gross": expected.gross if expected else None,
+            # Like for like: the payslip states gross net of the salary-sacrifice pension
+            # and inclusive of the home working allowance, which base-plus-car is not.
+            "expected_gross": parts.payslip_gross if parts else None,
             "bonus_gross": bonus["gross"] if bonus is not None else None,
             "holiday_pay": actual["holiday_pay"] if actual is not None else None,
             "benefits": actual["benefits"] if actual is not None else None,
@@ -207,10 +227,54 @@ with tab_compare:
         "The actual columns are salary **plus** bonus, since the two are separate payments "
         "in the same month; 'of which bonus' shows how much of the gross came from the "
         "bonus. Enter each under **Salary and bonus** and here, respectively, so neither "
-        "overwrites the other. Benefits are salary sacrifice: deducted before tax and again "
-        "from net, so the amount never reaches the payslip. Additional pay is added after "
-        "tax. Both feed the model — holiday pay does not, because it is already inside "
-        "actual gross."
+        "overwrites the other. Benefits and additional pay are what the old workbook "
+        "recorded — the model now builds the same figures from their parts instead, which "
+        "is the table below."
+    )
+
+    st.divider()
+    st.subheader("How the expected figures are built")
+    st.caption(
+        "The Tax Calculator's A18:D25 and G17:H23. Pension is a percentage of **base only** "
+        "— the car allowance is not pensionable, which is why the two cannot stay lumped "
+        "together. The home working allowance sits outside the tax calculation entirely: it "
+        "is paid on top and passes straight through to net. Set all three under "
+        "**Settings → Salary**."
+    )
+
+    build_up = frame[
+        ["month", "base", "car", "bonus_gross", "home_working", "pension",
+         "expected_holiday", "taxable", "expected_ni", "expected_paye", "expected_net",
+         "actual_net"]
+    ].copy()
+    build_up["difference"] = build_up["actual_net"] - build_up["expected_net"]
+
+    build_up_money = [
+        "base", "car", "bonus_gross", "home_working", "pension", "expected_holiday",
+        "taxable", "expected_ni", "expected_paye", "expected_net", "actual_net",
+        "difference",
+    ]
+    st.dataframe(
+        ui.money_table(
+            build_up,
+            build_up_money,
+            labels={
+                "month": "Month",
+                "base": "Base", "car": "Car allowance", "bonus_gross": "Bonus",
+                "home_working": "Home working", "pension": "Pension",
+                "expected_holiday": "Holiday pay", "taxable": "Taxable",
+                "expected_ni": "NI", "expected_paye": "PAYE",
+                "expected_net": "Net (model)", "actual_net": "Net (actual)",
+                "difference": "Difference",
+            },
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "**Taxable** = base + car allowance + bonus − pension − holiday pay, and both NI and "
+        "PAYE are charged on it. **Net (model)** = base + car allowance + bonus + home "
+        "working − pension − holiday pay − NI − PAYE."
     )
 
     if not paid_months.empty:
@@ -340,21 +404,30 @@ with tab_inputs:
     left, right = st.columns(2)
 
     with left:
-        st.subheader("Gross salary")
+        st.subheader("Base salary")
         st.caption(
-            "One row per change. The workbook repeated the figure down all twelve months, "
-            "so a pay rise meant editing each one from that point and hoping none were "
-            "missed."
+            "One row per change, and **base only** — the car allowance is derived from it, "
+            "so a pay rise moves both. The workbook repeated a single combined figure down "
+            "all twelve months, which is why 128,350.25 could never be found on a payslip: "
+            "it was a base of 118,905 with the allowance already added in."
         )
         if profiles.empty:
             st.info("No salary recorded.")
         else:
+            shown = profiles.copy()
+            shown["car"] = shown["base_salary"].map(
+                lambda b: None if b is None or pd.isna(b)
+                else repo.car_allowance(Decimal(b), PARAMS)
+            )
+            shown["total"] = shown["base_salary"].fillna(Decimal("0")) + shown["car"].fillna(
+                Decimal("0")
+            )
             st.dataframe(
                 ui.money_table(
-                    profiles[["effective_from", "annual_salary", "note"]],
-                    ["annual_salary"],
-                    labels={"effective_from": "From", "annual_salary": "Annual salary",
-                            "note": "Note"},
+                    shown[["effective_from", "base_salary", "car", "total", "note"]],
+                    ["base_salary", "car", "total"],
+                    labels={"effective_from": "From", "base_salary": "Base",
+                            "car": "Car allowance", "total": "Total", "note": "Note"},
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -365,15 +438,27 @@ with tab_inputs:
             from_date = fields[0].date_input(
                 "From", value=dt.date.today().replace(day=1), format="DD/MM/YYYY"
             )
+            last_base = (
+                float(profiles["base_salary"].iloc[-1])
+                if not profiles.empty and pd.notna(profiles["base_salary"].iloc[-1])
+                else 0.0
+            )
             annual = fields[1].number_input(
-                "Annual salary", min_value=0.0, step=1000.0, format="%.2f",
-                value=float(profiles["annual_salary"].iloc[-1]) if not profiles.empty else 0.0,
+                "Base salary", min_value=0.0, step=1000.0, format="%.2f", value=last_base,
+                help="The car allowance is calculated from this, not entered.",
             )
             note = fields[2].text_input("Note", placeholder="e.g. April pay review")
+            if annual:
+                derived = repo.car_allowance(Decimal(str(annual)), PARAMS)
+                st.caption(
+                    f"Car allowance would be {ui.money(derived)} a year "
+                    f"({ui.money(derived / 12)} a month), giving a total of "
+                    f"{ui.money(Decimal(str(annual)) + derived)}."
+                )
             if st.form_submit_button("Save salary", type="primary", disabled=READ_ONLY):
                 with ui.session() as session, session.begin():
                     outcome = reference.set_salary_profile(
-                        session, from_date, Decimal(str(annual)), note or None
+                        session, from_date, Decimal(str(annual)), note or None, PARAMS
                     )
                 ui.show_outcome(outcome, "the salary change")
 
@@ -383,7 +468,7 @@ with tab_inputs:
                 options=list(profiles["id"]),
                 format_func=lambda i: (
                     f"{profiles.set_index('id').loc[i, 'effective_from']:%d %b %Y} — "
-                    f"{ui.money(profiles.set_index('id').loc[i, 'annual_salary'])}"
+                    f"{ui.money(profiles.set_index('id').loc[i, 'base_salary'])}"
                 ),
                 key="remove_salary",
             )
@@ -508,24 +593,35 @@ with tab_inputs:
         [
             {
                 "month": repo.period_label(period),
-                "salary in force": repo.salary_in_force(
-                    profiles, repo.period_start(period)
-                ),
-                "bonus": (
-                    bonuses.set_index("period")["amount"].get(period)
-                    if not bonuses.empty
+                "base": repo.base_in_force(profiles, repo.period_start(period)),
+                "car": (
+                    repo.car_allowance(base, PARAMS)
+                    if (base := repo.base_in_force(profiles, repo.period_start(period)))
+                    is not None
                     else None
                 ),
-                "expected gross": repo.expected_gross(period, profiles, bonuses),
+                "salary in force": repo.salary_in_force(
+                    profiles, repo.period_start(period), PARAMS
+                ),
+                "bonus": repo.bonus_for(period, bonuses) or None,
+                "expected gross": repo.expected_gross(period, profiles, bonuses, PARAMS),
             }
             for period in data["all_periods"]
         ]
     )
     st.dataframe(
-        ui.money_table(derived, ["salary in force", "bonus", "expected gross"],
-                       labels={"month": "Month"}),
+        ui.money_table(
+            derived, ["base", "car", "salary in force", "bonus", "expected gross"],
+            labels={"month": "Month", "base": "Base (annual)",
+                    "car": "Car allowance (annual)", "salary in force": "Total (annual)",
+                    "expected gross": "Expected gross (monthly)"},
+        ),
         use_container_width=True,
         hide_index=True,
+    )
+    st.caption(
+        "Expected gross is the annual total over twelve plus any bonus. It excludes the "
+        "home working allowance, which is paid on top rather than being part of salary."
     )
 
 # ------------------------------------------------------------------------- tax bands

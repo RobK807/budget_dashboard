@@ -546,26 +546,47 @@ def delete_card(session: Session, card_id: int) -> Outcome:
 
 
 def set_salary_profile(
-    session: Session, effective_from: dt.date, annual_salary: Decimal, note: str | None = None
+    session: Session,
+    effective_from: dt.date,
+    base_salary: Decimal,
+    note: str | None = None,
+    params: dict | None = None,
 ) -> Outcome:
-    """One row per change of salary; re-stating a date replaces it."""
+    """One row per change of *base* salary; re-stating a date replaces it.
+
+    `annual_salary` is written alongside as base plus car allowance, because it is what the
+    column has always meant and dropping it from a NOT NULL column would need a table
+    rebuild. Nothing reads it -- repo works from base_salary and derives the allowance -- so
+    the two cannot be relied on to disagree.
+    """
+    from budget import repo
+
+    base = Decimal(base_salary)
+    total = base + repo.car_allowance(base, params)
+
     existing = session.scalar(
         select(SalaryProfile).where(SalaryProfile.effective_from == effective_from)
     )
     if existing:
-        existing.annual_salary = Decimal(annual_salary)
+        existing.base_salary = base
+        existing.annual_salary = total
         existing.note = note
     else:
         session.add(
             SalaryProfile(
                 effective_from=effective_from,
-                annual_salary=Decimal(annual_salary),
+                base_salary=base,
+                annual_salary=total,
                 note=note,
             )
         )
     session.flush()
     bump_revision(session)
-    return Outcome(True, f"Salary from {effective_from:%d %b %Y} saved.")
+    return Outcome(
+        True,
+        f"Base salary from {effective_from:%d %b %Y} saved; car allowance derived as "
+        f"{total - base:,.2f}.",
+    )
 
 
 def remove_salary_profile(session: Session, profile_id: int) -> Outcome:

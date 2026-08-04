@@ -65,10 +65,11 @@ def show_outcome(outcome) -> None:
     tab_cycling,
     tab_general,
     tab_monthly,
+    tab_salary,
     tab_savings,
 ) = st.tabs(
     ["Accounts", "Cards", "Categories", "Classifications", "Cycling", "General",
-     "Monthly figures", "Savings targets"]
+     "Monthly figures", "Salary", "Savings targets"]
 )
 
 # ---------------------------------------------------------------------------- accounts
@@ -738,6 +739,109 @@ with tab_monthly:
                 True, f"Saved figures for {repo.period_label(monthly_period)}."
             )
         show_outcome(outcome)
+
+# ------------------------------------------------------------------------------ salary
+
+with tab_salary:
+    st.caption(
+        "What a payslip is made of, beyond the tax bands. These are policy rather than pay — "
+        "how much of base goes into the pension, what the car allowance is worth — and they "
+        "are kept deliberately apart from the thresholds and allowances on the **Salary → "
+        "Tax bands** tab, so editing one cannot disturb the other."
+    )
+
+    params = repo.salary_parameters(data["settings"])
+
+    with st.form("salary_parameters"):
+        st.markdown("**Deductions and allowances**")
+        row = st.columns(3)
+        pension_rate = row[0].number_input(
+            "Pension (% of base)", min_value=0.0, max_value=100.0, step=0.5,
+            format="%.2f", value=float(params["pension_rate"]),
+            help="Charged on base salary only — the car allowance is not pensionable.",
+        )
+        home_working = row[1].number_input(
+            "Home working allowance (£/month)", min_value=0.0, step=1.0, format="%.2f",
+            value=float(params["home_working_allowance"]),
+            help="Paid on top and not taxable, so it passes straight through to net pay.",
+        )
+        holiday_pay = row[2].number_input(
+            "Holiday pay (£/month)", min_value=0.0, step=1.0, format="%.2f",
+            value=float(params["holiday_pay_monthly"]),
+            help="Deducted before tax. A month with a recorded payslip uses that figure "
+                 "instead of this one.",
+        )
+
+        st.markdown("**Car allowance**")
+        st.caption(
+            "A percentage of base salary up to a threshold and a lower one above it, so a "
+            "base of £118,905 gives 12% of £50,000 plus 5% of £68,905 — £9,445.25 a year. "
+            "Derived rather than stored, so a pay rise moves it automatically."
+        )
+        car = st.columns(3)
+        car_threshold = car[0].number_input(
+            "Threshold (£)", min_value=0.0, step=1000.0, format="%.2f",
+            value=float(params["car_allowance_threshold"]),
+        )
+        car_lower = car[1].number_input(
+            "Rate up to the threshold (%)", min_value=0.0, max_value=100.0, step=0.5,
+            format="%.2f", value=float(params["car_allowance_lower_rate"]),
+        )
+        car_upper = car[2].number_input(
+            "Rate above the threshold (%)", min_value=0.0, max_value=100.0, step=0.5,
+            format="%.2f", value=float(params["car_allowance_upper_rate"]),
+        )
+
+        if st.form_submit_button("Save salary parameters", type="primary",
+                                 disabled=READ_ONLY):
+            with ui.session() as session, session.begin():
+                for key, value in (
+                    ("pension_rate", pension_rate),
+                    ("home_working_allowance", home_working),
+                    ("holiday_pay_monthly", holiday_pay),
+                    ("car_allowance_threshold", car_threshold),
+                    ("car_allowance_lower_rate", car_lower),
+                    ("car_allowance_upper_rate", car_upper),
+                ):
+                    outcome = reference.set_setting(session, key, value)
+            show_outcome(outcome)
+
+    # What the parameters currently produce, so a change can be checked before it matters.
+    profiles = data["salary_profiles"]
+    if not profiles.empty:
+        base = repo.base_in_force(profiles, dt.date.today())
+        if base is not None:
+            allowance = repo.car_allowance(base, params)
+            pension = base * params["pension_rate"] / repo.HUNDRED
+            st.divider()
+            st.markdown("**On the salary currently in force**")
+            summary = pd.DataFrame(
+                [
+                    {"line": "Base salary", "annual": base, "monthly": base / 12},
+                    {"line": "Car allowance", "annual": allowance,
+                     "monthly": allowance / 12},
+                    {"line": "Home working allowance",
+                     "annual": params["home_working_allowance"] * 12,
+                     "monthly": params["home_working_allowance"]},
+                    {"line": "Pension", "annual": -pension, "monthly": -pension / 12},
+                    {"line": "Holiday pay",
+                     "annual": -params["holiday_pay_monthly"] * 12,
+                     "monthly": -params["holiday_pay_monthly"]},
+                ]
+            )
+            st.dataframe(
+                ui.money_table(
+                    summary, ["annual", "monthly"],
+                    labels={"line": "", "annual": "Annual", "monthly": "Monthly"},
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                "Deductions are shown negative. NI and PAYE are charged on base plus car "
+                "allowance less pension and holiday pay — the home working allowance is "
+                "outside the tax calculation entirely."
+            )
 
 # ---------------------------------------------------------------------- savings targets
 

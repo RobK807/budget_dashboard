@@ -22,11 +22,11 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from budget import config
@@ -111,9 +111,29 @@ class Status:
     notes: list[str] = field(default_factory=list)
 
     @property
-    def conflict(self) -> bool:
-        """The master moved since we pulled: someone else has pushed in the meantime."""
+    def moved(self) -> bool:
+        """The master is at a different revision from the one this machine started from."""
         return self.nas.has_master and self.nas.revision != self.local.base_revision
+
+    @property
+    def behind(self) -> bool:
+        """The master moved and there is nothing here that is not already on it.
+
+        The ordinary case after the other machine has done a day's work: catching up is a
+        pull, and it loses nothing. Kept apart from `conflict` because calling it one made an
+        everyday catch-up look like a data-loss risk -- red banner, reconciliation
+        instructions, export-and-reimport -- for a machine with nothing to reconcile.
+        """
+        return self.moved and not self.local.dirty
+
+    @property
+    def conflict(self) -> bool:
+        """The master moved *and* this machine has unpushed work.
+
+        Only this needs reconciling: both sides have changes, so one of them has to be
+        replayed onto the other rather than either simply adopting the other.
+        """
+        return self.moved and self.local.dirty
 
     @property
     def blocked_by(self) -> Lock | None:
@@ -125,7 +145,10 @@ class Status:
             return f"{self.local.pending} pending · NAS unreachable" if self.local.dirty \
                 else "NAS unreachable"
         if self.conflict:
-            return "Conflict — master has moved"
+            return f"Conflict — {self.local.pending} change(s) here, master at rev " \
+                   f"{self.nas.revision}"
+        if self.behind:
+            return f"Behind — master at rev {self.nas.revision}, pull to catch up"
         if self.local.mode == OFFLINE:
             return f"Offline · {self.local.pending} change(s) since checkout"
         if self.local.dirty:
@@ -136,7 +159,12 @@ class Status:
     def tone(self) -> str:
         if self.conflict:
             return "error"
-        if not self.nas.reachable or self.local.dirty or self.local.mode == OFFLINE:
+        if (
+            not self.nas.reachable
+            or self.behind
+            or self.local.dirty
+            or self.local.mode == OFFLINE
+        ):
             return "warning"
         return "ok"
 
@@ -283,6 +311,15 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
     nas = read_nas()
 
     if not local.dirty and nas.has_master and not force:
+        # "Up to date" and "nothing to send" are not the same thing. A machine that is
+        # thirteen revisions behind has nothing to push and is emphatically not up to date;
+        # saying so sent you looking for the problem in the wrong place.
+        if nas.revision != local.base_revision:
+            return Result(
+                True,
+                f"Nothing to push — but the master is at revision {nas.revision} and this "
+                f"machine is at {local.base_revision}. Pull to catch up.",
+            )
         return Result(True, "Already up to date — nothing to push.")
     if not nas.reachable:
         return Result(False, "NAS not reachable. Changes stay pending and will retry.")
@@ -295,13 +332,21 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
             ["Use 'force take' only if that machine is not mid-edit."],
         )
 
-    # The check that makes a lost lock recoverable rather than silent.
+    # The check that makes a lost lock recoverable rather than silent. It fires whether or
+    # not there is local work: pushing from a stale base overwrites the other machine either
+    # way. What differs is the remedy, so say which one applies.
     if nas.has_master and nas.revision != local.base_revision and not force:
+        remedy = (
+            "Another machine has pushed since. Pull first, then re-enter these changes."
+            if local.dirty
+            else "Another machine has pushed since. Pull to catch up — nothing here is "
+                 "unpushed, so nothing would be lost."
+        )
         return Result(
             False,
-            f"Conflict: master is at revision {nas.revision}, this machine started from "
+            f"Master is at revision {nas.revision}, this machine started from "
             f"{local.base_revision}.",
-            ["Another machine has pushed since. Reconcile before pushing."],
+            [remedy],
         )
 
     directory = nas_dir()
@@ -363,6 +408,39 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
 # ------------------------------------------------------------------------------ pull
 
 
+def _read_counters(db_path: Path) -> LocalState:
+    """The sync counters, read without SQLAlchemy and without writing anything.
+
+    Deliberately plain sqlite3, opened read-only, for the one caller that is about to *move*
+    this file. Two reasons an Engine is wrong here:
+
+    * It closes on the pool's schedule, not ours. A connection that fails during setup can
+      outlive dispose() until garbage collection, and the file stays locked -- which on
+      Windows turns the subsequent rename into WinError 32.
+    * make_engine runs `PRAGMA journal_mode=WAL` on connect, which *writes to the header*.
+      Probing a database in order to decide whether to replace it should not modify it, and
+      doing so to one whose WAL state is already inconsistent is a way to make things worse.
+
+    Raises sqlite3.DatabaseError if the file is not a readable database, which is the
+    caller's signal to preserve it rather than overwrite it.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT revision, base_revision, pushed_revision, mode FROM db_meta WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # No db_meta table at all: a file created but never migrated.
+        return LocalState()
+    finally:
+        conn.close()
+    if row is None:
+        return LocalState()
+    return LocalState(
+        revision=row[0], base_revision=row[1], pushed_revision=row[2], mode=row[3]
+    )
+
+
 def pull(db_path: Path | None = None) -> Result:
     """Replaces the local database with the master and records it as the new ancestor.
 
@@ -380,15 +458,33 @@ def pull(db_path: Path | None = None) -> Result:
     # the desktop, or recovering after the local copy is lost. read_local copes with a
     # missing db_meta *row*, but querying it at all fails when the table has never been
     # created, so the absence has to be established before opening anything.
+    salvaged: Path | None = None
     if not db_path.exists() or db_path.stat().st_size == 0:
         local = LocalState()
     else:
         try:
-            factory = make_session_factory(make_engine(db_path))
-            with factory() as session:
-                local = read_local(session)
-        except OperationalError:
-            # A file that exists but holds no schema: an interrupted earlier attempt.
+            local = _read_counters(db_path)
+        except sqlite3.DatabaseError as exc:
+            # Unreadable: no schema (an interrupted earlier attempt), or damaged. Either way
+            # there is no way to know whether it held unpushed work, so it is moved aside
+            # rather than overwritten. Replacing a file we could not read would destroy the
+            # only evidence of what was in it -- and the reason for pulling is usually that
+            # something has already gone wrong once.
+            salvaged = db_path.with_name(
+                f"{db_path.stem}.unreadable-"
+                f"{dt.datetime.now():%Y%m%d-%H%M%S}{db_path.suffix}"
+            )
+            try:
+                db_path.replace(salvaged)
+            except OSError as move_failed:
+                return Result(
+                    False,
+                    f"The local database cannot be read ({exc}) and could not be moved "
+                    "aside. Nothing was changed.",
+                    [f"{move_failed}", "Close every dashboard window and try again."],
+                )
+            for suffix in ("-wal", "-shm", "-journal"):
+                db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
             local = LocalState()
 
     if local.dirty:
@@ -409,20 +505,48 @@ def pull(db_path: Path | None = None) -> Result:
         if not _integrity_ok(staging):
             return Result(False, "Downloaded copy failed its integrity check.")
 
-        for suffix in ("-wal", "-shm"):
-            db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+        # Anything still holding the database has to have let go by now. On Windows this
+        # unlink raises rather than succeeding, which is the safe failure: the local file is
+        # untouched and the caller is told to close things. On POSIX it would succeed and
+        # leave the open connection pointing at a deleted inode, so the caller's obligation
+        # to release first is real on every platform -- see ui.close_connections.
+        try:
+            for suffix in ("-wal", "-shm"):
+                db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+        except OSError as exc:
+            return Result(
+                False,
+                "The local database is still open, so it cannot be replaced. Nothing was "
+                "changed.",
+                [
+                    f"{exc}",
+                    "Close every dashboard window and try again. If this came from a script, "
+                    "call ui.close_connections() (or dispose the engine) first.",
+                ],
+            )
         staging.replace(db_path)
         shutil.copy2(db_path, config.BASE_DB_PATH)
 
-        factory = make_session_factory(make_engine(db_path))
-        with factory() as session, session.begin():
-            meta = session.get(DbMeta, 1)
-            meta.base_revision = meta.revision
-            meta.pushed_revision = meta.revision
-            meta.mode = ONLINE
-            revision = meta.revision
+        fresh = make_engine(db_path)
+        try:
+            with make_session_factory(fresh)() as session, session.begin():
+                meta = session.get(DbMeta, 1)
+                meta.base_revision = meta.revision
+                meta.pushed_revision = meta.revision
+                meta.mode = ONLINE
+                revision = meta.revision
+        finally:
+            # Leaving this engine pooled would hand the caller a stale handle on a file that
+            # is about to be opened again by the app's own cached engine.
+            fresh.dispose()
 
-        return Result(True, f"Pulled revision {revision} from the NAS.")
+        detail = []
+        if salvaged is not None:
+            detail.append(
+                f"the previous local database could not be read and was kept as "
+                f"{salvaged.name}"
+            )
+        return Result(True, f"Pulled revision {revision} from the NAS.", detail)
     except OSError as exc:
         return Result(False, f"Pull failed: {exc}")
     finally:

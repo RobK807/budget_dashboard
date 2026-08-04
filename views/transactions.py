@@ -20,6 +20,12 @@ if txns.empty:
     st.info("No transactions yet.")
     st.stop()
 
+# A transfer carries no category or classification -- New_entry never wrote one -- so those
+# cells are genuinely empty. Naming them up front, before anything reads the column, means
+# the filters offer the same words the table shows: 'Transfer' rather than 'nan', and '—'
+# for an ordinary row that was left unclassified, which is worth being able to search for.
+txns = ui.name_blanks(txns, ["category", "classification"])
+
 # -------------------------------------------------------------------------------- filters
 
 with st.container(border=True):
@@ -95,12 +101,9 @@ display = view[
      "classification", "comment", "deleted"]
 ].copy()
 display["date"] = display["date"].dt.date
-# A transfer carries no category or classification -- New_entry never wrote one -- so those
-# cells arrive as NaN and pandas renders them 'nan', which reads like a broken row. Naming
-# them says what they actually are.
-display = ui.name_blanks(
-    display, ["account_to", "category", "classification", "comment"]
-)
+# Category and classification were named at the top of the page, so the filters and the table
+# agree. These two are display-only.
+display = ui.name_blanks(display, ["account_to", "comment"])
 
 st.dataframe(
     ui.money_table(
@@ -137,16 +140,19 @@ st.divider()
 
 st.subheader("Remove or restore")
 st.caption(
-    "Deletion is always soft: the row is flagged, never erased, and stays visible via the "
-    "Deleted filter above."
+    "Deletion is always soft: the row is flagged, never erased, and stays visible under the "
+    "Deleted filter at the top of the page."
 )
 
-# A second, narrower filter rather than reusing the one at the top of the page. Picking the
-# right row out of a dropdown is the hard part of removing one, and the list above is
-# usually left wide open for reading -- five hundred entries in a selectbox is not a list
-# anyone can pick from accurately.
+# Independent of the filters at the top of the page. Reading the ledger and picking a single
+# row to remove are different jobs: the table above is usually left wide open, and inheriting
+# that made the removal dropdown five hundred entries long, while narrowing it to read
+# something silently changed what could be removed.
 with st.container(border=True):
-    st.caption("Narrow the lists below.")
+    st.caption(
+        "These filters apply only to the two lists below — they are independent of the "
+        "filters at the top of the page, and search the whole ledger."
+    )
     picker = st.columns([2, 2, 1])
     pick_range = picker[0].date_input(
         "Date range",
@@ -160,7 +166,7 @@ with st.container(border=True):
     pick_accounts = picker[1].multiselect("Account", all_accounts, key="rm_accounts")
     pick_search = picker[2].text_input("Comment contains", key="rm_search")
 
-selection = view.copy()
+selection = txns.copy()
 if isinstance(pick_range, tuple) and len(pick_range) == 2:
     pick_start, pick_end = (pd.Timestamp(d) for d in pick_range)
     selection = selection[
@@ -185,7 +191,7 @@ remove_col, restore_col = st.columns(2)
 with remove_col:
     st.markdown("**Remove a transaction**")
     if live.empty:
-        st.caption("Nothing in the current selection to remove.")
+        st.caption("Nothing matches the filters above this pair of lists.")
     else:
         options = {int(r.id): ui.describe_txn(r) for r in live.head(500).itertuples()}
         st.caption(f"{len(live):,} matching; the {len(options)} most recent are listed.")
@@ -207,7 +213,7 @@ with remove_col:
 with restore_col:
     st.markdown("**Restore a removed transaction**")
     if gone.empty:
-        st.caption("Nothing removed in the current selection. Set Deleted to Show or Only.")
+        st.caption("Nothing removed in this date range or account.")
     else:
         options = {
             int(r.id): ui.describe_txn(r)

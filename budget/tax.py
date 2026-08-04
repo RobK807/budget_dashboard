@@ -13,7 +13,7 @@ year (Salary tracker C24:C27, each with a start date in F24:F27) as HMRC revises
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
 PENCE = Decimal("0.01")
@@ -58,6 +58,69 @@ class Bands:
 
 
 @dataclass(frozen=True)
+class Components:
+    """A month's pay, decomposed into the parts that behave differently.
+
+    The distinction that matters is what each part does to the taxable figure:
+
+        base            pensionable, taxable
+        car allowance   taxable, but *not* pensionable -- the pension is a percentage of
+                        base alone, which is why the two cannot stay lumped together
+        bonus           taxable in the month it is paid
+        home working    paid on top and not taxable at all, so it never reaches the
+                        NI or PAYE calculation
+        pension         deducted before tax
+        holiday pay     deducted before tax
+
+    Reproduces the Tax Calculator's A18:D25. Its B25, 'Monthly (for calcs)', is
+    `B22 - B23 - B24 - B21` -- the monthly gross less pension, less holiday pay, and less
+    the home working allowance that B22 had just added, which is the roundabout way of
+    saying the allowance is not taxable.
+    """
+
+    base: Decimal = Decimal("0")
+    car: Decimal = Decimal("0")
+    bonus: Decimal = Decimal("0")
+    home_working: Decimal = Decimal("0")
+    pension: Decimal = Decimal("0")
+    holiday_pay: Decimal = Decimal("0")
+
+    @property
+    def gross(self) -> Decimal:
+        """Pay before deductions, excluding the allowance paid on top."""
+        return self.base + self.car + self.bonus
+
+    @property
+    def total_pay(self) -> Decimal:
+        return self.gross + self.home_working
+
+    @property
+    def payslip_gross(self) -> Decimal:
+        """Gross *as the payslip states it* -- which is not base plus car allowance.
+
+        The pension is salary sacrifice, so it comes out before gross is reported, and the
+        home working allowance is inside it. Verified against every recorded month:
+
+            April  9,724.00 + 777.87 - 972.40 + 24 = 9,553.47   payslip 9,553.47
+            June   9,908.75 + 787.10 - 990.88 + 24 = 9,728.97   payslip 9,728.97
+            May    the same plus the 29,028.48 bonus = 38,757.45  payslip 38,757.45
+
+        Worth keeping distinct from `gross`: comparing the model's base-plus-car against a
+        payslip figure that is net of pension shows a phantom 966.88 gap every month.
+        """
+        return self.total_pay - self.pension
+
+    @property
+    def taxable(self) -> Decimal:
+        """What NI and PAYE are actually charged on -- the Tax Calculator's B25.
+
+        Excludes the home working allowance, which `payslip_gross` includes: B25 is
+        `B22 - B23 - B24 - B21`, and that last term takes the allowance back out again.
+        """
+        return self.gross - self.pension - self.holiday_pay
+
+
+@dataclass(frozen=True)
 class Breakdown:
     gross: Decimal
     benefits: Decimal
@@ -66,6 +129,7 @@ class Breakdown:
     ni: Decimal
     paye: Decimal
     net: Decimal
+    components: Components = field(default_factory=Components)
 
     @property
     def ni_rate(self) -> Decimal:
@@ -91,24 +155,60 @@ def national_insurance(taxable: Decimal, bands: Bands) -> Decimal:
 
 
 def income_tax(taxable: Decimal, bands: Bands, on: dt.date) -> Decimal:
-    """Salary tracker U8.
+    """Salary tracker U8, with its band overlap corrected.
 
     The personal-allowance adjustment is *subtracted* in the formula and is itself negative,
     so it increases the amount taxed at basic rate. Kept in that form rather than flipped,
     so the two can be compared line for line.
+
+    The workbook capped the higher-rate slice at `higher_threshold` -- the point where the
+    additional rate starts -- rather than at the *width* of the higher-rate band. The two
+    differ by the basic band, so any month reaching the additional rate had 3,141.67 charged
+    at 40% and again at 45%. Ordinary months never get there, which is why it went unnoticed:
+    the only month it ever bit was the bonus one, where it over-taxed by 1,256.67. Against
+    the real May payslip the corrected version is 26.51 out where the original was 1,283.18.
+
+    The thresholds themselves are untouched -- this is the arithmetic between them.
     """
     adjustment = bands.allowance_for(on)
 
     basic = min(taxable - adjustment, bands.basic_band) * bands.basic_rate
-    higher = (
-        min(
-            bands.higher_threshold,
-            max(Decimal("0"), taxable - bands.basic_band - adjustment),
-        )
-        * bands.higher_rate
-    )
+    above_basic = max(Decimal("0"), taxable - adjustment - bands.basic_band)
+    higher_width = max(Decimal("0"), bands.higher_threshold - bands.basic_band)
+    higher = min(above_basic, higher_width) * bands.higher_rate
     additional = max(Decimal("0"), taxable - bands.higher_threshold) * bands.additional_rate
     return _round(basic + higher + additional)
+
+
+def pay_for(components: Components, bands: Bands, on: dt.date) -> Breakdown:
+    """A month's expected pay from its decomposed parts.
+
+    Reproduces the Tax Calculator's G17:H23:
+
+        net = gross - pension - holiday pay - NI - income tax
+
+    where gross includes the home working allowance (H18 = B22) and NI and PAYE are charged
+    on `components.taxable`, which does not. The allowance is paid on top and taxed nowhere,
+    so it passes straight through to net.
+    """
+    ni = national_insurance(components.taxable, bands)
+    paye = income_tax(components.taxable, bands, on)
+    return Breakdown(
+        gross=components.gross,
+        benefits=components.pension + components.holiday_pay,
+        additional=components.home_working,
+        taxable=components.taxable,
+        ni=ni,
+        paye=paye,
+        net=_round(
+            components.total_pay
+            - components.pension
+            - components.holiday_pay
+            - ni
+            - paye
+        ),
+        components=components,
+    )
 
 
 def expected_pay(
@@ -118,20 +218,19 @@ def expected_pay(
     benefits: Decimal = Decimal("0"),
     additional: Decimal = Decimal("0"),
 ) -> Breakdown:
-    """Salary tracker W8: gross - benefits + additional - NI - PAYE.
+    """Salary tracker W8, in the shape the old workbook held it: one lumped `benefits`
+    figure and one lumped `additional`.
 
-    Benefits are deducted before tax and again from net -- salary sacrifice, so the amount
-    never reaches the payslip.
+    A thin wrapper over `pay_for` rather than a second implementation. The old workbook's
+    `benefits` was pension *and* holiday pay added together -- 990.875 + 187.00 = 1,177.88 --
+    and its `additional` was the home working allowance. Splitting those is what the
+    decomposition above is for; this remains so the original figures can still be reproduced
+    exactly, and so there is only ever one piece of arithmetic to be wrong.
     """
-    taxable = gross - benefits
-    ni = national_insurance(taxable, bands)
-    paye = income_tax(taxable, bands, on)
-    return Breakdown(
-        gross=gross,
-        benefits=benefits,
-        additional=additional,
-        taxable=taxable,
-        ni=ni,
-        paye=paye,
-        net=_round(taxable + additional - ni - paye),
+    return pay_for(
+        Components(
+            base=gross, pension=benefits, home_working=additional
+        ),
+        bands,
+        on,
     )

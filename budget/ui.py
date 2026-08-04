@@ -17,7 +17,7 @@ NEGATIVE = "#E45756"
 
 
 @st.cache_resource
-def _session_factory():
+def _engine():
     engine = make_engine()
     # Applied once per process, on the cached engine: an existing database created before a
     # schema change is brought up to date, and any table added since is created, rather than
@@ -25,12 +25,34 @@ def _session_factory():
     from budget.db import create_all
 
     create_all(engine)
-    return make_session_factory(engine)
+    return engine
+
+
+@st.cache_resource
+def _session_factory():
+    return make_session_factory(_engine())
 
 
 def session():
     """A session for write operations. Use as `with ui.session() as s, s.begin():`."""
     return _session_factory()()
+
+
+def close_connections() -> None:
+    """Drop every pooled connection to the local database.
+
+    Required before anything *replaces* the file rather than writing through it -- a pull,
+    or a restore. Closing a Session only returns its connection to the pool; the engine keeps
+    the file handle and the WAL open, so replacing the database underneath it corrupts the
+    result. The engine is cached for the life of the process, so without this it is still
+    holding the old file when the new one lands.
+    """
+    try:
+        _engine().dispose()
+    except Exception:  # noqa: BLE001 -- a broken engine is exactly what we are clearing
+        pass
+    _engine.clear()
+    _session_factory.clear()
 
 
 def database_check() -> dict:
@@ -182,12 +204,19 @@ def load_all() -> dict:
 
 
 def alphabetical(values) -> list:
-    """Case-insensitive sort for dropdown options.
+    """Case-insensitive sort for dropdown options, with blanks dropped.
 
     Plain sorted() is ASCII, so it puts HSBC before Halifax and ISA before Investments --
     correct by codepoint, wrong to a reader.
+
+    `is not None` was not enough: a missing value arrives from pandas as float NaN, which is
+    not None, so every filter built from a column that transfers leave empty offered 'nan' as
+    something to pick.
     """
-    return sorted({v for v in values if v is not None}, key=lambda v: str(v).casefold())
+    return sorted(
+        {v for v in values if v is not None and not (isinstance(v, float) and pd.isna(v))},
+        key=lambda v: str(v).casefold(),
+    )
 
 
 def auto_push(label: str = "write") -> None:
@@ -208,7 +237,16 @@ def auto_push(label: str = "write") -> None:
         if not state.nas.reachable:
             st.caption(f"Not synced — NAS unreachable. {state.local.pending} change(s) pending.")
             return
-        if state.conflict or state.blocked_by:
+        if state.conflict:
+            st.warning("Not synced — this machine and the master have both moved. See Sync.")
+            return
+        if state.behind:
+            st.warning(
+                f"Not synced — the master is at revision {state.nas.revision} and this "
+                "machine is behind. Pull on the Sync page first, then re-enter this."
+            )
+            return
+        if state.blocked_by:
             st.warning("Not synced — see the Sync page.")
             return
         result = sync.push(s)

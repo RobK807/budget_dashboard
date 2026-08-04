@@ -231,3 +231,140 @@ expander lists every stored figure by effective date.
 
 Version 4. New columns: `bonus.gross`, `bonus.ni`, `bonus.paye`, `bonus.net`, `bonus.payday`.
 All nullable and additive; the migration is an `ALTER TABLE` per column.
+
+---
+
+# The pull that corrupted a database
+
+Worth writing down, because the cause was a single missing `dispose()` and the symptom looked
+like disk corruption.
+
+**What happened.** The laptop sat at revision 8 while the desktop had pushed revision 21.
+Running `sync.pull()` against the live database left it reporting `malformed database schema
+(sqlite_autoindex_txn_1) - orphan index`. The file was provably healthy thirteen seconds
+earlier — a copy taken immediately before opens cleanly and passes `integrity_check`.
+
+**Why.** `pull()` opened an Engine to read the local revision and never disposed it. Closing
+a `Session` only returns its connection to the *pool*; the engine keeps the file handle and
+the WAL open. `pull()` then deletes `-wal`/`-shm` and replaces the database underneath its own
+live connection. `_snapshot` and `_integrity_ok` both had `finally: engine.dispose()`. The
+pull path was the one that did not, which is exactly the kind of inconsistency worth treating
+as a bug report in itself.
+
+Worse, `make_engine` runs `PRAGMA journal_mode=WAL` on connect — a **write to the header**. So
+merely asking "what revision is this database at?" modified it, on a file whose WAL state was
+about to be interfered with.
+
+**Three fixes.**
+
+1. `_read_counters` reads the revision with plain `sqlite3`, opened `mode=ro`. It writes
+   nothing and closes deterministically. An Engine closes on the pool's schedule, and a
+   connection that fails during setup can outlive `dispose()` until garbage collection —
+   which on Windows turns the following rename into `WinError 32`.
+2. `ui.close_connections()` disposes the app's cached engine, and the Sync page calls it
+   before any pull. The engine is `@st.cache_resource`, so without this it was still holding
+   the old file when the new one landed.
+3. An unreadable local database is **moved aside**, never overwritten. A pull is usually
+   reached because something has already gone wrong once, which makes the file it replaces
+   evidence. And a database still held open is now refused with an explanation rather than
+   replaced.
+
+**Behind is not a conflict.** Separately, `Status.conflict` was `nas.revision !=
+local.base_revision` — true whenever the master had moved, whether or not this machine had
+anything of its own. A clean machine that is simply behind was shown a red *Conflict* banner
+and a set of export-and-reimport instructions, with nothing to reconcile. Now `behind` (master
+moved, nothing unpushed here → pull, lossless) is distinct from `conflict` (both sides moved →
+genuinely needs reconciling), and being behind offers a **Pull now and catch up** button.
+
+`Refresh data` never helped with this, and now says so: it clears cached queries, and the
+local database really was a different, older one.
+
+---
+
+# A payslip, decomposed
+
+The salary model held one number where the payslip has five, which is why nothing quite tied
+out. Source: `K:\Private\Finance\Tax Calculator v0.3.xlsx`, tab `2026-2027`, `A18:D25` and
+`G1:I23`. Rates cross-checked against HMRC — every stored threshold is already correct for
+2026/27 and none were changed.
+
+## What the single figure was hiding
+
+| Stored as one | Actually | Check |
+|---|---|---|
+| `annual_salary` 128,350.25 | base **118,905** + car allowance **9,445.25** | 12% × 50,000 + 5% × 68,905 |
+| `benefits` 1,177.88 | pension **990.88** + holiday pay **187.00** | = 1,177.875 |
+| `additional` 24 | home working allowance | paid on top, not taxable |
+
+The car allowance is derived, not stored — a pay rise moves it automatically. `base_salary`
+is the input; the v5 migration recovers it by inverting the formula, `base = (total − 3,500)
+/ 1.05`, which returned 118,905.00 and 116,688.00 exactly. Both round numbers, and the second
+matches the Tax Calculator's own April column, which is the check that this is the right
+inversion rather than a plausible one.
+
+**Why it has to be split.** The pension is a percentage of base *alone* — the car allowance is
+not pensionable. Charged against the combined 128,350.25 it would take £1,069.59 a month
+instead of £990.88, and everything downstream would be wrong by the difference.
+
+## Two quantities both called "gross"
+
+`base + car` is **10,695.85**. The payslip says **9,728.97**. The gap is not an error: the
+pension is salary sacrifice, so it comes out before gross is stated, and the home working
+allowance is inside it.
+
+    payslip gross = base + car + bonus + home working − pension
+
+Verified to the penny for every recorded month, including the bonus one (38,757.45). Both are
+now available as `Components.gross` and `Components.payslip_gross`, so the comparison table
+puts like against like instead of showing a phantom £966.88 every month.
+
+Taxable is a third quantity again — `base + car + bonus − pension − holiday pay`, excluding
+the home working allowance. The workbook says this the roundabout way, in `B25 = B22 − B23 −
+B24 − B21`: that last term takes back out the allowance `B22` had just added.
+
+## The higher-rate band overlapped the additional rate
+
+Found by checking May against the real payslip. `income_tax` capped the higher-rate slice at
+`higher_threshold` — the point where the *additional* rate starts — rather than at the width
+of the higher band. The two differ by exactly the basic band, so any month reaching the
+additional rate had £3,141.67 charged at 40% **and** at 45%.
+
+Ordinary months never get there, which is why it survived: the only month it ever bit was the
+bonus one.
+
+| May PAYE | |
+|---|---|
+| Workbook / previous code | 17,452.82 |
+| Corrected | **16,196.15** |
+| Actual (payslip + bonus) | 16,169.64 |
+
+From £1,283.18 out to £26.51. The thresholds are untouched — this is the arithmetic between
+them. `tests/test_tax.py` now carries one case where the workbook is *not* the authority,
+because an actual payslip is.
+
+## Where everything now lands
+
+| Month | Payslip gross | NI | PAYE | Net |
+|---|---|---|---|---|
+| April | exact | exact | −0.21 | −0.21 |
+| May | exact | exact | +26.51 | +26.51 |
+| June | exact | exact | +0.56 | +0.56 |
+| July | exact | exact | +0.56 | +0.56 |
+
+Gross and NI reproduce exactly. The residual PAYE is the tax-code assumption: the model
+applies a monthly personal-allowance step where PAYE is really cumulative across the year, so
+a month is only ever approximately right on its own. Closing that would mean a cumulative
+model — a bigger change, and one that needs the actual tax code rather than a fitted step.
+
+## Parameters
+
+New **Settings → Salary** section: pension rate (10% of base), home working allowance (£24),
+holiday pay (£187), and the car allowance threshold and its two rates. Held as plain settings
+rather than in `salary_assumption`, deliberately — so editing them cannot disturb a tax
+threshold. A month with a recorded payslip uses its actual holiday pay in preference to the
+standing figure.
+
+## Schema
+
+Version 5. New column: `salary_profile.base_salary`. `annual_salary` is retained as the
+pre-split record and is no longer read.

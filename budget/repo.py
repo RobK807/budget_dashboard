@@ -1006,12 +1006,12 @@ def monthly_series(
 
 
 def load_salary_profiles(session: Session) -> pd.DataFrame:
+    columns = ["id", "effective_from", "base_salary", "annual_salary", "note"]
     rows = [
-        {"id": p.id, "effective_from": p.effective_from,
-         "annual_salary": p.annual_salary, "note": p.note}
+        {c: getattr(p, c) for c in columns}
         for p in session.scalars(select(SalaryProfile).order_by(SalaryProfile.effective_from))
     ]
-    return pd.DataFrame(rows, columns=["id", "effective_from", "annual_salary", "note"])
+    return pd.DataFrame(rows, columns=columns)
 
 
 def load_bonuses(session: Session) -> pd.DataFrame:
@@ -1065,8 +1065,54 @@ def period_start(period: str) -> dt.date:
     return dt.date(year, month, 1)
 
 
-def salary_in_force(profiles: pd.DataFrame, on: dt.date) -> Decimal | None:
-    """The annual salary applying on a date -- the last change on or before it.
+# ---------------------------------------------------------------------- salary parameters
+#
+# The figures behind a payslip that are policy rather than pay: what proportion of base goes
+# into the pension, what the car allowance is worth, what the home working allowance is.
+# Held as plain settings because they are not year-scoped the way the tax bands are -- and
+# deliberately apart from `salary_assumption`, so editing them cannot disturb a threshold.
+
+SALARY_PARAMETERS = {
+    "pension_rate": Decimal("10"),               # % of base salary
+    "home_working_allowance": Decimal("24"),     # per month, not taxable
+    "holiday_pay_monthly": Decimal("187"),       # per month, deducted before tax
+    "car_allowance_threshold": Decimal("50000"),
+    "car_allowance_lower_rate": Decimal("12"),   # % of base up to the threshold
+    "car_allowance_upper_rate": Decimal("5"),    # % of base above it
+}
+
+
+def salary_parameters(settings: dict) -> dict[str, Decimal]:
+    """The stored salary parameters, falling back to the defaults for anything unset."""
+    out = {}
+    for key, default in SALARY_PARAMETERS.items():
+        value = settings.get(key)
+        try:
+            out[key] = Decimal(str(value)) if value not in (None, "") else default
+        except (ArithmeticError, ValueError):
+            out[key] = default
+    return out
+
+
+def car_allowance(base: Decimal, params: dict[str, Decimal] | None = None) -> Decimal:
+    """The annual car allowance: a percentage of base up to a threshold, less above it.
+
+    12% of the first 50,000 plus 5% of anything over, so a base of 118,905 gives
+    6,000 + 3,445.25 = 9,445.25 -- the Tax Calculator's B20, 'Annual (non-pen)'. Non-pensionable,
+    which is the whole reason it has to be told apart from base rather than added to it.
+    """
+    params = params or dict(SALARY_PARAMETERS)
+    base = Decimal(base)
+    threshold = params["car_allowance_threshold"]
+    lower = params["car_allowance_lower_rate"] / HUNDRED
+    upper = params["car_allowance_upper_rate"] / HUNDRED
+    if base <= threshold:
+        return base * lower
+    return threshold * lower + (base - threshold) * upper
+
+
+def base_in_force(profiles: pd.DataFrame, on: dt.date) -> Decimal | None:
+    """The annual *base* salary applying on a date -- the last change on or before it.
 
     The workbook repeated the figure down all twelve rows of column O, so a pay rise meant
     editing every month from that point and hoping none were missed.
@@ -1077,27 +1123,87 @@ def salary_in_force(profiles: pd.DataFrame, on: dt.date) -> Decimal | None:
     if applicable.empty:
         return None
     latest = applicable.sort_values("effective_from").iloc[-1]
-    return latest["annual_salary"]
+    base = latest["base_salary"]
+    if base is None or pd.isna(base):
+        return None
+    return Decimal(base)
+
+
+def salary_in_force(
+    profiles: pd.DataFrame, on: dt.date, params: dict[str, Decimal] | None = None
+) -> Decimal | None:
+    """Base plus car allowance -- what used to be stored as the annual salary."""
+    base = base_in_force(profiles, on)
+    if base is None:
+        return None
+    return base + car_allowance(base, params)
+
+
+def bonus_for(period: str, bonuses: pd.DataFrame) -> Decimal:
+    if bonuses.empty:
+        return Decimal("0")
+    match = bonuses[bonuses["period"] == period]
+    return Decimal(match["amount"].iloc[0]) if not match.empty else Decimal("0")
 
 
 def expected_gross(
-    period: str, profiles: pd.DataFrame, bonuses: pd.DataFrame
+    period: str,
+    profiles: pd.DataFrame,
+    bonuses: pd.DataFrame,
+    params: dict[str, Decimal] | None = None,
 ) -> Decimal | None:
     """Salary tracker column P: the annual salary in force / 12, plus any bonus that month.
 
     May's cell was `=ROUND(O5/12,2)+29028.48` -- the bonus typed into the formula. With the
     bonus held as data the derivation works for every month, so expected gross no longer has
     to be stored alongside the inputs that produce it.
+
+    'Salary' here is base plus car allowance, which is what the single stored figure always
+    was. It excludes the home working allowance, which is paid on top -- see salary_components.
     """
-    salary = salary_in_force(profiles, period_start(period))
+    salary = salary_in_force(profiles, period_start(period), params)
     if salary is None:
         return None
     monthly = (Decimal(salary) / 12).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    if not bonuses.empty:
-        match = bonuses[bonuses["period"] == period]
-        if not match.empty:
-            monthly += Decimal(match["amount"].iloc[0])
-    return monthly
+    return monthly + bonus_for(period, bonuses)
+
+
+def salary_components(
+    period: str,
+    profiles: pd.DataFrame,
+    bonuses: pd.DataFrame,
+    params: dict[str, Decimal] | None = None,
+    holiday_pay: Decimal | None = None,
+) -> tax.Components | None:
+    """A month's expected pay, decomposed -- the Tax Calculator's A18:D25.
+
+    Pension is a percentage of *base* alone. That is the point of keeping base and car
+    allowance apart: charging 10% against the combined 128,350.25 would take 1,069.59 a month
+    instead of 990.88, and every figure downstream of it would be wrong by the difference.
+
+    `holiday_pay` overrides the parameterised figure, so a month with a real payslip is
+    modelled against what was actually deducted rather than the standing assumption.
+    """
+    params = params or dict(SALARY_PARAMETERS)
+    base = base_in_force(profiles, period_start(period))
+    if base is None:
+        return None
+
+    twelfth = lambda value: (Decimal(value) / 12).quantize(  # noqa: E731
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return tax.Components(
+        base=twelfth(base),
+        car=twelfth(car_allowance(base, params)),
+        bonus=bonus_for(period, bonuses),
+        home_working=params["home_working_allowance"],
+        pension=(base * params["pension_rate"] / HUNDRED / 12).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        ),
+        holiday_pay=(
+            params["holiday_pay_monthly"] if holiday_pay is None else Decimal(holiday_pay)
+        ),
+    )
 
 
 def rate_in_force(rates: pd.DataFrame, kind: str, on: dt.date) -> Decimal:
@@ -1363,6 +1469,10 @@ def savings_series(
         savings_rows = balances[balances["is_savings"]]
         invest_rows = balances[balances["is_investment"]]
         available = savings_rows[~savings_rows["account"].isin(excluded_names)]
+        # The earmarked pots. Money going in here is still saved, but it is already spoken
+        # for, so adding 200 to the wedding pot and 200 to the general one are not the same
+        # event -- which a single 'Added' column could not say.
+        reserved = savings_rows[savings_rows["account"].isin(excluded_names)]
 
         def total(frame: pd.DataFrame, column: str) -> Decimal:
             return Decimal(frame[column].sum() or 0)
@@ -1371,6 +1481,8 @@ def savings_series(
         savings_eom = total(savings_rows, "closing")
         available_bom = total(available, "opening")
         available_eom = total(available, "closing")
+        reserved_bom = total(reserved, "opening")
+        reserved_eom = total(reserved, "closing")
         investments_bom = total(invest_rows, "opening")
         investments_eom = total(invest_rows, "closing")
 
@@ -1387,9 +1499,13 @@ def savings_series(
                 "started": period_start(period) <= today,
                 "savings_bom": savings_bom,
                 "available_bom": available_bom,
+                "reserved_bom": reserved_bom,
+                "available_added": available_eom - available_bom,
+                "reserved_added": reserved_eom - reserved_bom,
                 "savings_added": savings_eom - savings_bom,
                 "savings_eom": savings_eom,
                 "available_eom": available_eom,
+                "reserved_eom": reserved_eom,
                 "savings_target": savings_target,
                 "savings_target_eom": savings_to_date,
                 "savings_required": savings_to_date - available_eom,

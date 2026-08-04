@@ -361,6 +361,13 @@ class SalaryProfile(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     uid: Mapped[str] = _uid_column()
     effective_from: Mapped[dt.date] = mapped_column(Date, unique=True, nullable=False)
+    # The input. The car allowance is a function of it (12% of the first 50,000 plus 5%
+    # above, all parameterised), so storing the total as well would let the two drift the
+    # moment either was edited -- the same reasoning as the basic rate band.
+    base_salary: Mapped[Decimal | None] = mapped_column(Money)
+    # What used to be stored: base *plus* car allowance, which is why 128,350.25 could not be
+    # reconciled against a payslip showing a base of 118,905. Retained as the pre-split
+    # record and no longer read; repo.salary_in_force works from base_salary.
     annual_salary: Mapped[Decimal] = mapped_column(Money, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
 

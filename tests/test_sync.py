@@ -176,7 +176,7 @@ class TestConflictDetection:
         session.commit()
 
         assert not result.ok
-        assert "Conflict" in result.message
+        assert "revision" in result.message
         assert sync.status(session).conflict
         assert sync.status(session).local.dirty  # still ours to reconcile
 
@@ -193,6 +193,164 @@ class TestConflictDetection:
         add_one(session)
         session.commit()
         assert sync.push(session, db_path=local, force=True).ok
+
+
+class TestBehindVersusConflict:
+    """Being behind is not a conflict.
+
+    The master having moved while this machine has nothing unpushed is the ordinary state
+    after the other machine has done a day's work. Treating it as a conflict put a red
+    banner and a set of export-and-reimport instructions in front of a machine with nothing
+    to reconcile -- and buried the one button that fixes it.
+    """
+
+    def move_the_master(self, nas, by=5):
+        meta = json.loads((nas / sync.META).read_text())
+        meta["revision"] += by
+        meta["machine"] = "DESKTOP-OTHER"
+        (nas / sync.META).write_text(json.dumps(meta))
+
+    def test_a_clean_machine_is_behind_not_conflicted(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        self.move_the_master(nas)
+
+        state = sync.status(session)
+        assert state.moved
+        assert state.behind
+        assert not state.conflict
+        assert state.tone == "warning"
+        assert "Behind" in state.label
+
+    def test_a_dirty_machine_is_conflicted_not_merely_behind(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        self.move_the_master(nas)
+        add_one(session)
+        session.commit()
+
+        state = sync.status(session)
+        assert state.conflict
+        assert not state.behind
+        assert state.tone == "error"
+
+    def test_a_clean_machine_behind_the_master_is_not_told_it_is_up_to_date(
+        self, session, local, nas
+    ):
+        """There is genuinely nothing to send, but 'up to date' is a different claim and an
+        untrue one -- it sent you looking for the problem in the wrong place."""
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        self.move_the_master(nas)
+
+        result = sync.push(session, db_path=local)
+        assert result.ok
+        assert "Pull to catch up" in result.message
+        assert "Already up to date" not in result.message
+
+    def test_in_sync_and_clean_still_reports_up_to_date(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        assert "Already up to date" in sync.push(session, db_path=local).message
+
+    def test_the_advice_names_the_right_remedy_when_dirty(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        self.move_the_master(nas)
+        add_one(session)
+        session.commit()
+
+        result = sync.push(session, db_path=local)
+        assert not result.ok
+        assert any("re-enter these changes" in d for d in result.detail)
+
+    def test_being_behind_does_not_block_a_pull(self, session, local, nas):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        self.move_the_master(nas)
+
+        # The sidecar revision is ahead of the file's, so the checksum still matches and the
+        # pull is exactly the catch-up the page offers.
+        assert not sync.status(session).local.dirty
+
+
+class TestUnreadableLocalDatabase:
+    """A pull is usually reached *because* something has already gone wrong, so the file it
+    replaces is evidence. It is moved aside, never overwritten."""
+
+    def prepare(self, session, local):
+        """Push, then damage the local file and release every handle on it.
+
+        The release is the point. A pull *replaces* the database rather than writing through
+        it, so any pooled connection still holding the old file has to go first -- which in
+        the app is ui.close_connections(). Closing a Session is not enough: its connection
+        goes back to the pool and the engine keeps the file and its WAL open.
+        """
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        engine = session.get_bind()
+        session.close()
+        engine.dispose()
+
+        with open(local, "r+b") as handle:  # readable as a file, not as a database
+            handle.seek(0)
+            handle.write(b"not a sqlite file at all")
+
+    def test_a_corrupt_local_database_is_preserved_not_overwritten(
+        self, session, local, nas
+    ):
+        self.prepare(session, local)
+
+        result = sync.pull(db_path=local)
+        assert result.ok
+        salvaged = list(local.parent.glob("*.unreadable-*.db"))
+        assert len(salvaged) == 1
+        assert salvaged[0].read_bytes().startswith(b"not a sqlite file")
+        assert any("could not be read" in d for d in result.detail)
+
+    def test_the_pull_still_lands_a_working_database(self, session, local, nas):
+        self.prepare(session, local)
+
+        assert sync.pull(db_path=local).ok
+        engine = make_engine(local)
+        try:
+            with make_session_factory(engine)() as fresh:
+                assert sync.read_local(fresh).revision > 0
+        finally:
+            engine.dispose()
+
+    def test_a_database_still_held_open_is_refused_not_replaced(
+        self, session, local, nas
+    ):
+        """The failure that matters. Replacing a file underneath a live connection is how a
+        healthy database becomes 'malformed database schema: orphan index'."""
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        before = local.read_bytes()
+
+        # session (and its engine) deliberately left open, as a running dashboard would.
+        result = sync.pull(db_path=local)
+
+        assert not result.ok
+        assert "still open" in result.message
+        assert local.read_bytes() == before  # untouched
 
 
 class TestLocking:

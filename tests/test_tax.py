@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from budget import tax
+from budget import repo, tax
 
 # Monthly bands from Salary tracker C18:F36 for 2026/27.
 BANDS = tax.Bands(
@@ -52,6 +52,98 @@ class TestAllowanceSteps:
         assert BANDS.allowance_for(dt.date(2026, 1, 1)) == Decimal("0")
 
 
+class TestCarAllowance:
+    """12% of the first 50,000 of base plus 5% above it."""
+
+    @pytest.mark.parametrize(
+        "base,expected",
+        [
+            ("118905", "9445.25"),   # Tax Calculator B20
+            ("116688", "9334.40"),   # April's, its C20
+            ("50000", "6000"),       # exactly at the threshold
+            ("40000", "4800"),       # entirely below it
+            ("0", "0"),
+        ],
+    )
+    def test_it_matches_the_tax_calculator(self, base, expected):
+        assert repo.car_allowance(Decimal(base)) == Decimal(expected)
+
+    def test_the_rates_are_parameters(self):
+        params = dict(repo.SALARY_PARAMETERS)
+        params["car_allowance_upper_rate"] = Decimal("6")
+        assert repo.car_allowance(Decimal("100000"), params) == Decimal("9000")
+
+
+class TestComponents:
+    """The decomposition, checked against the Tax Calculator's A18:D25 and G17:H23."""
+
+    # Base 118,905 -- monthly figures as the workbook computes them.
+    PARTS = tax.Components(
+        base=Decimal("9908.75"),
+        car=Decimal("787.10"),
+        home_working=Decimal("24"),
+        pension=Decimal("990.88"),
+        holiday_pay=Decimal("187"),
+    )
+
+    def test_monthly_gross_matches_b22(self):
+        assert self.PARTS.total_pay == Decimal("10719.85")
+
+    def test_taxable_matches_b25(self):
+        """B25 = B22 - pension - holiday - home working: the allowance is not taxable."""
+        assert self.PARTS.taxable == Decimal("9517.97")
+
+    def test_the_home_working_allowance_is_outside_the_tax_calculation(self):
+        without = tax.Components(
+            base=self.PARTS.base, car=self.PARTS.car, pension=self.PARTS.pension,
+            holiday_pay=self.PARTS.holiday_pay,
+        )
+        assert without.taxable == self.PARTS.taxable
+
+    def test_payslip_gross_is_net_of_the_sacrificed_pension(self):
+        """What the payslip actually states, verified against June and July: 9,728.97."""
+        assert self.PARTS.payslip_gross == Decimal("9728.97")
+
+    def test_ni_matches_the_tax_calculator(self):
+        """Its I7 comes to 357.8595 on this taxable figure."""
+        assert tax.national_insurance(self.PARTS.taxable, BANDS) == Decimal("357.86")
+
+    def test_net_is_pay_less_pension_holiday_ni_and_paye(self):
+        got = tax.pay_for(self.PARTS, BANDS, dt.date(2026, 6, 1))
+        assert got.net == (
+            self.PARTS.total_pay - self.PARTS.pension - self.PARTS.holiday_pay
+            - got.ni - got.paye
+        )
+
+
+class TestHigherBandOverlap:
+    """The workbook capped the higher-rate slice at the additional-rate threshold instead of
+    at the width of the higher band, so the two overlapped by exactly the basic band."""
+
+    def test_an_ordinary_month_is_unaffected(self):
+        """It never reaches the additional rate, which is why this went unnoticed."""
+        assert tax.income_tax(
+            Decimal("9517.97"), BANDS, dt.date(2026, 6, 1)
+        ) == Decimal("3277.42")
+
+    def test_a_month_reaching_the_additional_rate_no_longer_double_charges(self):
+        assert tax.income_tax(
+            Decimal("38546.45"), BANDS, dt.date(2026, 5, 1)
+        ) == Decimal("16196.15")
+
+    def test_the_slices_never_exceed_the_taxable_amount(self):
+        """The property the overlap broke: the bands partition the pay, they do not overlap."""
+        taxable = Decimal("38546.45")
+        adjustment = BANDS.allowance_for(dt.date(2026, 5, 1))
+        basic = min(taxable - adjustment, BANDS.basic_band)
+        higher = min(
+            max(Decimal("0"), taxable - adjustment - BANDS.basic_band),
+            BANDS.higher_threshold - BANDS.basic_band,
+        )
+        additional = max(Decimal("0"), taxable - BANDS.higher_threshold)
+        assert basic + higher + additional <= taxable - adjustment
+
+
 class TestAgainstTheWorkbook:
     """Gross, benefits and additional pay are the workbook's P, Q and R; the expected NI,
     PAYE and net are its S, U and W."""
@@ -61,8 +153,14 @@ class TestAgainstTheWorkbook:
         [
             # April: the ordinary month.
             ("2026-04", "10501.87", "1159.40", "24", "354.35", "3130.65", "5881.47"),
-            # May: bonus month, well into additional rate.
-            ("2026-05", "39724.33", "1177.88", "24", "938.43", "17452.82", "20179.20"),
+            # May: bonus month, well into additional rate. The workbook said 17,452.82 and
+            # 20,179.20; both were wrong, because it capped the higher-rate slice at the
+            # additional-rate *threshold* rather than at the width of the higher band, so
+            # 3,141.67 was charged at 40% and again at 45%. The real May payslips total
+            # 16,169.64 of PAYE, which the corrected figure is 26.51 from and the workbook's
+            # was 1,283.18 from. This is the one case in the file where the workbook is not
+            # the authority -- an actual payslip is.
+            ("2026-05", "39724.33", "1177.88", "24", "938.43", "16196.15", "21435.87"),
             # August: after the third allowance step.
             ("2026-08", "10695.85", "1177.88", "24", "357.86", "3270.82", "5913.29"),
             # March: the last month of the fiscal year.

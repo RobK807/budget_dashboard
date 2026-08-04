@@ -81,6 +81,8 @@ LABELS = {
     "month": "Month",
     "savings_bom": "Total — BoM",
     "available_bom": "Available — BoM",
+    "available_added": "Added — available",
+    "reserved_added": "Added — reserved",
     "savings_added": "Added",
     "savings_eom": "Total — EoM",
     "available_eom": "Available — EoM",
@@ -97,8 +99,8 @@ LABELS = {
 
 st.subheader("Savings")
 savings_columns = [
-    "savings_bom", "available_bom", "savings_added", "savings_eom", "available_eom",
-    "savings_target", "savings_target_eom", "savings_required",
+    "savings_bom", "available_bom", "available_added", "reserved_added", "savings_eom",
+    "available_eom", "savings_target", "savings_target_eom", "savings_required",
 ]
 st.dataframe(
     ui.money_table(series[["month"] + savings_columns], savings_columns, labels=LABELS),
@@ -120,13 +122,15 @@ st.dataframe(
 )
 
 st.caption(
-    "**Added** is the change in the total balance over the month, not a deposit total — a "
-    "month that spends out of savings shows a negative. **Target — EoM** is the monthly "
-    "targets summed to date, and **Required** is that cumulative target less what is "
-    "available at the month end, so a positive figure is money still to find. It measures a "
-    "running total of contributions against a balance, which only lines up from the month "
-    "the targets start in. Note that 'available' excludes the earmarked pots while 'total' "
-    "does not, so the two can move by different amounts in a month that touches one."
+    "**Added** is split by where the money went: *available* is the change in the "
+    "unearmarked balance, *reserved* the change in the earmarked pots"
+    + (f" ({', '.join(earmarked_names)})" if earmarked_names else "")
+    + ". The two sum to the change in the total. Both are changes in balance rather than "
+    "deposit totals, so a month that spends out of savings shows a negative. "
+    "**Target — EoM** is the monthly targets summed to date, and **Required** is that "
+    "cumulative target less what is available at the month end, so a positive figure is "
+    "money still to find. It measures a running total of contributions against a balance, "
+    "which only lines up from the month the targets start in."
 )
 
 st.divider()
