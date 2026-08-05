@@ -120,6 +120,7 @@ def add_transaction(
         classification_id=classification_id,
         comment=candidate.comment or None,
         category_comment=candidate.category_comment or None,
+        is_donation=bool(candidate.is_donation),
         legacy_identifier=build_identifier(session, candidate, ref),
         source=source,
         batch_id=batch_id,

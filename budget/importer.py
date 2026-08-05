@@ -29,14 +29,19 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "classification": ("purchasetype", "classification", "class", "purchase"),
     "comment": ("comment", "description", "notes", "note", "reference"),
     "category_comment": ("categorycomment", "catcomment"),
+    "is_donation": ("donation", "isdonation", "charitabledonation", "charity"),
 }
 
 IGNORED = ("month", "item", "id", "errormessages")
 
 TEMPLATE_COLUMNS = [
     "Date", "Type", "Amount", "Account From", "Account To",
-    "Category", "Purchase type", "Comment", "Category comment",
+    "Category", "Purchase type", "Comment", "Category comment", "Donation",
 ]
+
+# What counts as a yes in a pasted column. The workbook's own donation sheet used 'Y', and a
+# spreadsheet round-trip turns a tick box into TRUE, 1 or 'True' depending on the route.
+TRUTHY = ("y", "yes", "true", "1", "t", "donation")
 
 
 def _normalise(name: str) -> str:
@@ -78,6 +83,19 @@ def _text(value) -> str | None:
     text = str(value).strip()
     # The workbook writes 0 into optional text fields rather than leaving them empty.
     return None if text in ("", "0", "nan", "None") else text
+
+
+def _flag(value) -> bool:
+    """A yes/no column, however it arrives.
+
+    A pasted tick box comes through as a real bool; a CSV out of a spreadsheet gives TRUE,
+    1 or 'Y' depending on the route. Anything unrecognised is a no, so a stray word in the
+    column cannot silently flag a payment as a gift.
+    """
+    if isinstance(value, bool):
+        return value
+    text = _text(value)
+    return text is not None and text.strip().lower() in TRUTHY
 
 
 def _title(value) -> str | None:
@@ -125,6 +143,7 @@ def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
                 classification=_text(get(row, "classification")),
                 comment=_text(get(row, "comment")),
                 category_comment=_text(get(row, "category_comment")),
+                is_donation=_flag(get(row, "is_donation")),
                 source_row=offset,
             )
         )
@@ -145,6 +164,7 @@ def template() -> pd.DataFrame:
             "Purchase type": pd.Series(dtype="object"),
             "Comment": pd.Series(dtype="object"),
             "Category comment": pd.Series(dtype="object"),
+            "Donation": pd.Series(dtype="bool"),
         }
     )
 
@@ -191,6 +211,7 @@ def to_frame(candidates: list[Candidate]) -> pd.DataFrame:
                 "Purchase type": c.classification,
                 "Comment": c.comment,
                 "Category comment": c.category_comment,
+                "Donation": c.is_donation,
             }
             for c in candidates
         ]

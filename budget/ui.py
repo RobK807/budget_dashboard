@@ -170,7 +170,10 @@ def load_all() -> dict:
             "cycling_rates": repo.load_cycling_rates(session),
             "card_statements": repo.load_card_statements(session),
             "account_targets": repo.load_account_targets(session),
-            "savings_targets": repo.load_savings_targets(session),
+            "savings_plan": repo.load_savings_plan(session),
+            # The pre-split record, kept so the old figures can still be seen. The live
+            # targets are derived from the plan below.
+            "stored_savings_targets": repo.load_savings_targets(session),
         }
     # Every month dropdown used to be repo.fiscal_periods(tax_year) -- April 2026 to March
     # 2027 and no further, because that is how many months a workbook had. Here the range
@@ -187,7 +190,11 @@ def load_all() -> dict:
         data["bonuses"]["period"] if not data["bonuses"].empty else None,
         data["card_statements"]["period"] if not data["card_statements"].empty else None,
         data["account_targets"]["period"] if not data["account_targets"].empty else None,
-        data["savings_targets"]["period"] if not data["savings_targets"].empty else None,
+        (
+            data["stored_savings_targets"]["period"]
+            if not data["stored_savings_targets"].empty
+            else None
+        ),
         (
             data["projections"]["date"].map(repo.period_of)
             if not data["projections"].empty
@@ -200,6 +207,15 @@ def load_all() -> dict:
     data["look_forward"] = int(data["settings"].get("look_forward_months", 12) or 0)
     data["periods"] = repo.span(data["earliest_period"])
     data["all_periods"] = repo.span(data["earliest_period"], data["look_forward"])
+    # Derived from the per-account plan rather than stored beside it, so the headline and the
+    # breakdown cannot disagree. Over `all_periods`, since a target for a month that has not
+    # arrived yet is the point of having one.
+    data["savings_targets"] = repo.targets_from_plan(
+        data["savings_plan"], data["accounts"], data["all_periods"]
+    )
+    data["plan_detail"] = repo.plan_by_period(
+        data["savings_plan"], data["accounts"], data["all_periods"]
+    )
     return data
 
 

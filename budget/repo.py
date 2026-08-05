@@ -40,6 +40,7 @@ from budget.models import (
     Projection,
     SalaryAssumption,
     SalaryProfile,
+    SavingsPlan,
     SavingsTarget,
     Setting,
     Txn,
@@ -64,7 +65,7 @@ def load_reference(session: Session) -> dict[str, pd.DataFrame]:
     accounts = frame(
         session.scalars(select(Account).order_by(func.lower(Account.name))),
         ["id", "name", "short_code", "type", "is_savings", "is_investment", "is_isa",
-         "exclude_from_savings", "statement_day", "payment_day",
+         "exclude_from_savings", "interest_net", "statement_day", "payment_day",
          "display_order", "valid_from", "valid_to"],
     )
     # Grouping then name: the workbook's display_order was roughly grouped already, but only
@@ -159,6 +160,7 @@ def load_transactions(session: Session, include_deleted: bool = False) -> pd.Dat
             "comment": t.comment,
             "category_comment": t.category_comment,
             "identifier": t.legacy_identifier,
+            "is_donation": bool(t.is_donation),
             "deleted": t.deleted_at is not None,
             "deleted_reason": t.deleted_reason,
         }
@@ -168,7 +170,7 @@ def load_transactions(session: Session, include_deleted: bool = False) -> pd.Dat
         rows,
         columns=["id", "date", "period", "type", "amount", "account_from", "account_to",
                  "category", "classification", "comment", "category_comment", "identifier",
-                 "deleted", "deleted_reason"],
+                 "is_donation", "deleted", "deleted_reason"],
     )
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
@@ -242,6 +244,31 @@ def tax_year_of(period: str) -> int:
     """The tax year a month falls in -- the April it started from."""
     year, month = (int(p) for p in period.split("-"))
     return year if month >= FISCAL_START_MONTH else year - 1
+
+
+# The UK tax year runs 6 April to 5 April, so the first five days of April belong to the
+# year before. Month granularity cannot express that, which is why the interest tracker had
+# to split its April rows into 'Apr (before 6th)' and 'Apr (after 6th)' and file them under
+# different years by hand.
+TAX_YEAR_START_DAY = 6
+
+
+def tax_year_of_date(when) -> int:
+    """The tax year a *date* falls in, on the real 6 April boundary.
+
+    Distinct from `tax_year_of`, which takes a period and can only ever be right to the
+    month. Both are needed: a payslip belongs to a month, but interest belongs to the day it
+    was paid, and 1 April is a different tax year from 30 April.
+    """
+    when = pd.Timestamp(when).date() if not isinstance(when, dt.date) else when
+    if (when.month, when.day) < (FISCAL_START_MONTH, TAX_YEAR_START_DAY):
+        return when.year - 1
+    return when.year
+
+
+def tax_year_label(year: int) -> str:
+    """'26-27', the form the interest tracker used."""
+    return f"{str(year)[-2:]}-{str(year + 1)[-2:]}"
 
 
 def period_label(period: str) -> str:
@@ -1068,11 +1095,126 @@ def load_account_targets(session: Session) -> pd.DataFrame:
 
 
 def load_savings_targets(session: Session) -> pd.DataFrame:
+    """The superseded per-period overview. Retained as the pre-split record; the live
+    figures come from `load_savings_plan` via `targets_from_plan`."""
     rows = [
         {"period": t.period, "savings": t.savings, "investments": t.investments}
         for t in session.scalars(select(SavingsTarget).order_by(SavingsTarget.period))
     ]
     return pd.DataFrame(rows, columns=["period", "savings", "investments"])
+
+
+def load_savings_plan(session: Session) -> pd.DataFrame:
+    accounts = {a.id: a.name for a in session.scalars(select(Account))}
+    rows = [
+        {
+            "id": p.id,
+            "account_id": p.account_id,
+            "account": accounts.get(p.account_id),
+            "effective_from": p.effective_from,
+            "amount": p.amount,
+        }
+        for p in session.scalars(
+            select(SavingsPlan).order_by(SavingsPlan.effective_from, SavingsPlan.account_id)
+        )
+    ]
+    return pd.DataFrame(
+        rows, columns=["id", "account_id", "account", "effective_from", "amount"]
+    )
+
+
+def plan_dates(plan: pd.DataFrame) -> list[dt.date]:
+    """The distinct dates the plan was revised on, earliest first."""
+    if plan.empty:
+        return []
+    return sorted({pd.Timestamp(d).date() for d in plan["effective_from"]})
+
+
+def plan_in_force(plan: pd.DataFrame, on: dt.date) -> pd.DataFrame:
+    """Each account's target as at a date -- the latest set that has started.
+
+    Per account rather than per set, so an account added to the plan later keeps its own
+    start date instead of being backdated to whenever the last wholesale revision was.
+    """
+    columns = ["account", "amount"]
+    if plan.empty:
+        return pd.DataFrame(columns=columns)
+    dated = plan.copy()
+    dated["effective_from"] = pd.to_datetime(dated["effective_from"]).dt.date
+    applicable = dated[dated["effective_from"] <= on]
+    if applicable.empty:
+        return pd.DataFrame(columns=columns)
+    latest = (
+        applicable.sort_values("effective_from")
+        .groupby("account", as_index=False)
+        .last()
+    )
+    return latest[columns]
+
+
+def plan_by_period(
+    plan: pd.DataFrame, accounts: pd.DataFrame, periods: list[str]
+) -> pd.DataFrame:
+    """The monthly target for every account, month by month.
+
+    Columns: period, month, account, kind ('Savings' or 'Investments'), amount. Accounts with
+    no target in force in a month are omitted rather than shown as zero -- a pot that has not
+    started yet and a pot with a target of nothing are different things.
+    """
+    columns = ["period", "month", "account", "kind", "amount"]
+    if plan.empty:
+        return pd.DataFrame(columns=columns)
+
+    kinds = {}
+    for _, acct in accounts.iterrows():
+        if acct.get("is_investment"):
+            kinds[acct["name"]] = "Investments"
+        elif acct.get("is_savings"):
+            kinds[acct["name"]] = "Savings"
+
+    rows = []
+    for period in periods:
+        for _, row in plan_in_force(plan, period_start(period)).iterrows():
+            rows.append(
+                {
+                    "period": period,
+                    "month": period_label(period),
+                    "account": row["account"],
+                    "kind": kinds.get(row["account"], "Other"),
+                    "amount": row["amount"],
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def targets_from_plan(
+    plan: pd.DataFrame, accounts: pd.DataFrame, periods: list[str]
+) -> pd.DataFrame:
+    """The savings/investments overview, summed from the per-account plan.
+
+    Derived rather than stored, so the headline and the breakdown cannot disagree. The two
+    used to be typed separately, which is how the dashboard came to hold 900 and 350 while
+    the plan behind them said 250 + 350 + 300 and 250 + 100 -- the same figures, but only by
+    coincidence of nobody having changed one without the other.
+    """
+    columns = ["period", "savings", "investments"]
+    detail = plan_by_period(plan, accounts, periods)
+    if detail.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for period in periods:
+        mine = detail[detail["period"] == period]
+        rows.append(
+            {
+                "period": period,
+                "savings": mine.loc[mine["kind"] == "Savings", "amount"].sum()
+                or Decimal("0"),
+                "investments": mine.loc[mine["kind"] == "Investments", "amount"].sum()
+                or Decimal("0"),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
 
 
 # ------------------------------------------------------------------ expected salary
@@ -1110,6 +1252,24 @@ def salary_parameters(settings: dict) -> dict[str, Decimal]:
         except (ArithmeticError, ValueError):
             out[key] = default
     return out
+
+
+# The plan's L4, 'Investment return (annual)'. Stored as a percentage like every other rate
+# since v3, and read back as a fraction because that is what the compounding wants.
+INVESTMENT_RETURN_KEY = "investment_return_annual"
+DEFAULT_INVESTMENT_RETURN = Decimal("6")
+
+
+def investment_return_rate(settings: dict) -> Decimal:
+    """The expected annual investment return, as a fraction."""
+    value = settings.get(INVESTMENT_RETURN_KEY)
+    try:
+        percent = (
+            Decimal(str(value)) if value not in (None, "") else DEFAULT_INVESTMENT_RETURN
+        )
+    except (ArithmeticError, ValueError):
+        percent = DEFAULT_INVESTMENT_RETURN
+    return percent / 100
 
 
 def car_allowance(base: Decimal, params: dict[str, Decimal] | None = None) -> Decimal:
@@ -1545,6 +1705,262 @@ def savings_series(
         )
 
     return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------- investment return
+#
+# The tracker's 'Investment Return' tab. Its balances were typed in month by month and its
+# contributions were assumed -- a hard-coded 250 and 100 every row, whatever was actually
+# paid in. Both are in the ledger already: a contribution is a transfer into the account and
+# a valuation change is a credit or debit commented 'Investment return', so
+#
+#     closing = opening + contributions + return
+#
+# and the monthly return is `return / opening`, which is the same thing its
+# `=IF(C5>0, E5/C4-1, "")` computed, but from what happened rather than from what was planned.
+
+
+def investment_return_series(
+    postings: pd.DataFrame,
+    openings: pd.DataFrame,
+    accounts: pd.DataFrame,
+    periods: list[str],
+) -> pd.DataFrame:
+    """One row per investment account per month.
+
+    `periods` decides the span, so the table begins at the earliest month in the database and
+    extends as history is backfilled -- the tracker's start was pinned to a row number.
+    """
+    columns = [
+        "period", "month", "date", "account", "opening", "contributions", "gain",
+        "closing", "monthly_return",
+    ]
+    rows = []
+    for period in periods:
+        balances = account_balances(postings, openings, period, accounts)
+        if balances.empty:
+            continue
+        for _, r in balances[balances["is_investment"]].iterrows():
+            # Contributions are the transfers: money moved in from your own accounts. The
+            # credits and debits are the valuation moving, which is the return.
+            contributions = r["transfer_in"] - r["transfer_out"]
+            gain = r["paid_in"] - r["paid_out"]
+            opening = r["opening"]
+            rows.append(
+                {
+                    "period": period,
+                    "month": period_label(period),
+                    "date": month_end(period),
+                    "account": r["account"],
+                    "opening": opening,
+                    "contributions": contributions,
+                    "gain": gain,
+                    "closing": r["closing"],
+                    "monthly_return": (
+                        gain / opening if opening else None
+                    ),
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def investment_return_summary(
+    series: pd.DataFrame, today: dt.date | None = None
+) -> pd.DataFrame:
+    """The tracker's L3:N10, one column per account.
+
+    Everything is measured to today rather than to the end of the series, so a plan that runs
+    ahead of itself does not report returns on months that have not happened. `annualised`
+    scales the whole-period return by the months elapsed, which is its
+    `=(1+M8)^(12/M9)-1` -- meaningful over a year, noisy over three months, and reported as
+    such rather than hidden.
+    """
+    columns = [
+        "account", "start", "current", "contributions", "gain", "net", "total_return",
+        "months", "annualised",
+    ]
+    if series.empty:
+        return pd.DataFrame(columns=columns)
+
+    today = today or dt.date.today()
+    to_date = series[series["date"].map(lambda d: d <= today)]
+    if to_date.empty:
+        to_date = series[series["period"] == series["period"].min()]
+
+    rows = []
+    for account, group in to_date.groupby("account"):
+        group = group.sort_values("period")
+        start = group.iloc[0]["opening"]
+        current = group.iloc[-1]["closing"]
+        contributions = group["contributions"].sum() or Decimal("0")
+        gain = group["gain"].sum() or Decimal("0")
+        months = len(group)
+        # Net of what was put in, so growth is not flattered by the standing order. The
+        # tracker's 'Net'.
+        net = current - contributions
+        total = (net / start - 1) if start else None
+        annualised = None
+        if total is not None and months:
+            annualised = (1 + total) ** (Decimal(12) / Decimal(months)) - 1
+        rows.append(
+            {
+                "account": account,
+                "start": start,
+                "current": current,
+                "contributions": contributions,
+                "gain": gain,
+                "net": net,
+                "total_return": total,
+                "months": months,
+                "annualised": annualised,
+            }
+        )
+    return sort_human(pd.DataFrame(rows, columns=columns), by="account")
+
+
+def monthly_rate(annual: Decimal) -> Decimal:
+    """The monthly equivalent of an annual rate, compounded: (1+r)^(1/12)-1.
+
+    The plan's L5. Not annual/12 -- that overstates the monthly figure, and over twelve
+    months compounds to more than the rate it started from.
+    """
+    return (1 + Decimal(annual)) ** (Decimal(1) / Decimal(12)) - 1
+
+
+# -------------------------------------------------------------- interest and donations
+#
+# Both replace a sheet of the Savings interest tracker, and both are aggregated by *tax
+# year* rather than by month or by fiscal period -- HMRC's year, running 6 April to 5 April.
+# The tracker could not express that boundary, so it split April into two hand-labelled rows
+# ('Apr (before 6th)' and 'Apr (after 6th)') and filed them under different years. Here the
+# date decides, which is why `tax_year_of_date` exists alongside `tax_year_of`.
+
+INTEREST_CATEGORY = "Interest"
+
+
+def _signed_by_type(frame: pd.DataFrame) -> pd.Series:
+    """Credits add, debits subtract. Interest charged is rare but not impossible."""
+    return pd.Series(
+        [
+            -amount if kind == "Debit" else amount
+            for amount, kind in zip(frame["amount"], frame["type"])
+        ],
+        index=frame.index,
+        dtype=object,
+    )
+
+
+def _live(transactions: pd.DataFrame) -> pd.DataFrame:
+    if "deleted" in transactions.columns:
+        return transactions[~transactions["deleted"].fillna(False).astype(bool)]
+    return transactions
+
+
+def interest_by_tax_year(
+    transactions: pd.DataFrame,
+    accounts: pd.DataFrame,
+    category: str = INTEREST_CATEGORY,
+) -> pd.DataFrame:
+    """Interest received, one row per account per tax year.
+
+    The interest tracker held this as a grid typed in from statements. Nothing new is needed
+    here: interest is already in the ledger as a credit under the Interest category, so this
+    is a grouping of transactions rather than a second record of them.
+
+    'basis' is the account's own gross/net flag, which is what the tracker's row 3 held.
+    """
+    columns = ["tax_year", "year", "account", "basis", "amount"]
+    mine = _live(transactions)
+    mine = mine[mine["category"].astype("string").eq(category)]
+    if mine.empty:
+        return pd.DataFrame(columns=columns)
+
+    net_accounts = set()
+    if "interest_net" in accounts.columns:
+        flag = accounts["interest_net"].fillna(False).astype(bool)
+        net_accounts = set(accounts.loc[flag, "name"])
+
+    rows = pd.DataFrame(
+        {
+            "tax_year": mine["date"].map(tax_year_of_date),
+            "account": mine["account_from"],
+            "amount": _signed_by_type(mine),
+        }
+    )
+    grouped = rows.groupby(["tax_year", "account"], as_index=False)["amount"].sum()
+    grouped["basis"] = grouped["account"].map(
+        lambda name: "Net" if name in net_accounts else "Gross"
+    )
+    grouped["year"] = grouped["tax_year"].map(tax_year_label)
+    return sort_human(grouped[columns], by=["tax_year", "account"])
+
+
+def interest_totals(rows: pd.DataFrame) -> pd.DataFrame:
+    """Gross and net side by side for each tax year.
+
+    Kept apart rather than summed into one figure: the two are not interchangeable at tax
+    time, which is the whole reason the flag exists.
+    """
+    columns = ["tax_year", "year", "gross", "net", "total", "accounts"]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    out = []
+    for year, group in rows.groupby("tax_year"):
+        gross = group.loc[group["basis"] == "Gross", "amount"].sum() or Decimal("0")
+        net = group.loc[group["basis"] == "Net", "amount"].sum() or Decimal("0")
+        out.append(
+            {
+                "tax_year": year,
+                "year": tax_year_label(year),
+                "gross": gross,
+                "net": net,
+                "total": gross + net,
+                "accounts": int((group["amount"] != 0).sum()),
+            }
+        )
+    return pd.DataFrame(out, columns=columns).sort_values("tax_year")
+
+
+def donations(transactions: pd.DataFrame) -> pd.DataFrame:
+    """Every payment flagged as a donation, with its tax year.
+
+    Flagged on the transaction rather than inferred from a category, because the category
+    cannot tell them apart: a donation and the platform's transaction fee are one payment out
+    of the account, and only one of the two is a gift. Transaction 582 was a single 35.70
+    holding both.
+    """
+    columns = ["tax_year", "year", "id", "date", "account", "amount", "comment"]
+    mine = _live(transactions)
+    if "is_donation" not in mine.columns:
+        return pd.DataFrame(columns=columns)
+    mine = mine[mine["is_donation"].fillna(False).astype(bool)]
+    if mine.empty:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(
+        {
+            "tax_year": mine["date"].map(tax_year_of_date),
+            "id": mine["id"],
+            "date": mine["date"],
+            "account": mine["account_from"],
+            "amount": mine["amount"],
+            "comment": mine["comment"],
+        }
+    )
+    out["year"] = out["tax_year"].map(tax_year_label)
+    return out[columns].sort_values(["tax_year", "date"])
+
+
+def donations_by_tax_year(transactions: pd.DataFrame) -> pd.DataFrame:
+    columns = ["tax_year", "year", "amount", "count"]
+    given = donations(transactions)
+    if given.empty:
+        return pd.DataFrame(columns=columns)
+    out = given.groupby(["tax_year", "year"], as_index=False).agg(
+        amount=("amount", "sum"), count=("id", "size")
+    )
+    return out[columns].sort_values("tax_year")
 
 
 # ---------------------------------------------------------------- spending calculation

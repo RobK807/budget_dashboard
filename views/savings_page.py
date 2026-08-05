@@ -147,6 +147,57 @@ st.caption(
 
 st.divider()
 
+# ------------------------------------------------------------------ targets by account
+
+st.subheader("Where the target comes from")
+st.caption(
+    "The overview above is the sum of these, not a second figure typed beside it. The plan "
+    "is held per account and effective-dated — the interest tracker kept one column per "
+    "revision with the date in the row above, so reading it meant knowing which column was "
+    "current. Set it under **Settings → Savings targets**."
+)
+
+plan_detail = data["plan_detail"]
+plan_detail = plan_detail[plan_detail["period"].isin(series["period"])]
+
+if plan_detail.empty:
+    st.info("No plan set yet — add one under **Settings → Savings targets**.")
+else:
+    matrix = plan_detail.pivot_table(
+        index="period", columns="account", values="amount", aggfunc="sum"
+    )
+    matrix = matrix[ui.alphabetical(matrix.columns)]
+    matrix.insert(0, "Total", matrix.sum(axis=1))
+    matrix.index = [repo.period_label(p) for p in matrix.index]
+    matrix.index.name = "Month"
+    st.dataframe(
+        ui.money_table(matrix.reset_index(), [c for c in matrix.columns]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    kinds = (
+        plan_detail[plan_detail["period"] == plan_detail["period"].max()]
+        .groupby("kind")["amount"].sum()
+    )
+    st.caption(
+        "Counting towards **savings**: "
+        + ", ".join(
+            ui.alphabetical(
+                plan_detail.loc[plan_detail["kind"] == "Savings", "account"]
+            )
+        )
+        + f" ({ui.money(kinds.get('Savings', 0))} a month). Towards **investments**: "
+        + ", ".join(
+            ui.alphabetical(
+                plan_detail.loc[plan_detail["kind"] == "Investments", "account"]
+            )
+        )
+        + f" ({ui.money(kinds.get('Investments', 0))} a month)."
+    )
+
+st.divider()
+
 # ------------------------------------------------------------------------- over time
 
 st.subheader("Balances over the year")
@@ -236,3 +287,251 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
 )
+
+st.divider()
+
+# ------------------------------------------------------- the Savings interest tracker
+#
+# Three sheets of it, all of them aggregations of the ledger rather than a second record.
+# Held in tabs because each answers a question you ask once a year, not every time the page
+# is opened.
+
+tab_return, tab_interest, tab_donations = st.tabs(
+    ["Investment return", "Interest", "Donations"]
+)
+
+# ------------------------------------------------------------------- investment return
+
+with tab_return:
+    st.caption(
+        "What the investments have actually returned, net of what was paid into them. The "
+        "tracker typed its balances in month by month and assumed the contributions — a "
+        "fixed £250 and £100 every row, whatever was really paid. Both are in the ledger: a "
+        "contribution is a transfer in, and a valuation change is the credit or debit "
+        "commented 'Investment return'. So"
+    )
+    st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;`closing = opening + contributions + gain`")
+
+    returns = repo.investment_return_series(
+        postings, data["openings"], accounts, periods
+    )
+
+    if returns.empty:
+        st.info("No investment accounts with a balance yet.")
+    else:
+        shown = returns.copy()
+        shown["monthly_return"] = shown["monthly_return"].map(
+            lambda v: None if v is None else float(v) * 100
+        )
+        st.dataframe(
+            ui.money_table(
+                shown[["month", "account", "opening", "contributions", "gain", "closing",
+                       "monthly_return"]],
+                ["opening", "contributions", "gain", "closing"],
+                labels={
+                    "month": "Month", "account": "Account", "opening": "Opening",
+                    "contributions": "Paid in", "gain": "Gain", "closing": "Closing",
+                    "monthly_return": "Return %",
+                },
+                formats={"monthly_return": "{:,.2f}"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+        )
+        st.caption(
+            "**Return %** is the gain over the opening balance, so a month's contribution "
+            "does not read as growth. The table starts at the earliest month in the "
+            "database and extends as history is backfilled — nothing here is pinned to a "
+            "start date."
+        )
+
+        chart = ui.to_float(returns, ["closing"])
+        fig = px.line(
+            chart, x="date", y="closing", color="account", markers=True,
+            labels={"closing": "Balance (£)", "date": "", "account": ""},
+        )
+        fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+
+        pct = returns.dropna(subset=["monthly_return"]).copy()
+        if not pct.empty:
+            pct["monthly_return"] = pct["monthly_return"].map(lambda v: float(v) * 100)
+            fig = px.bar(
+                pct, x="month", y="monthly_return", color="account", barmode="group",
+                labels={"monthly_return": "Return (%)", "month": "", "account": ""},
+            )
+            expected_monthly = float(
+                repo.monthly_rate(repo.investment_return_rate(data["settings"])) * 100
+            )
+            fig.add_hline(
+                y=expected_monthly,
+                line_dash="dash",
+                annotation_text=f"expected {expected_monthly:,.3f}%",
+                annotation_position="top left",
+            )
+            fig.update_layout(margin=dict(t=10))
+            fig.update_yaxes(tickformat=",.2f", hoverformat=",.2f")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "The dashed line is the expected return from **Settings → Savings "
+                "targets**, converted to its monthly equivalent by compounding rather than "
+                "by dividing by twelve."
+            )
+
+        st.subheader("Summary")
+        summary = repo.investment_return_summary(returns)
+        if summary.empty:
+            st.caption("Nothing has completed a month yet.")
+        else:
+            display = summary.copy()
+            for column in ("total_return", "annualised"):
+                display[column] = display[column].map(
+                    lambda v: None if v is None else float(v) * 100
+                )
+            st.dataframe(
+                ui.money_table(
+                    display[["account", "start", "contributions", "current", "net",
+                             "total_return", "months", "annualised"]],
+                    ["start", "contributions", "current", "net"],
+                    labels={
+                        "account": "Account", "start": "Start",
+                        "contributions": "Paid in", "current": "Current", "net": "Net",
+                        "total_return": "Return %", "months": "Months",
+                        "annualised": "Annualised %",
+                    },
+                    formats={"total_return": "{:,.2f}", "annualised": "{:,.2f}",
+                             "months": "{:,.0f}"},
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            months = int(summary["months"].max())
+            st.caption(
+                f"**Net** is the current balance less everything paid in, and **Return %** "
+                f"is that against the starting balance — the tracker's L3:N10. Measured to "
+                f"today rather than to the end of the plan, so months that have not happened "
+                f"are not counted. **Annualised** scales {months} month(s) up to a year, "
+                "which is a fair summary over a year and a noisy one over a quarter."
+            )
+
+# --------------------------------------------------------------------------- interest
+
+with tab_interest:
+    st.caption(
+        "Interest received, by tax year — HMRC's year, running 6 April to 5 April. Nothing "
+        "new is entered here: interest is already in the ledger under the **Interest** "
+        "category, so this is a grouping of transactions rather than a second record of "
+        "them. **Gross** or **net** is the account's own flag, set under "
+        "**Settings → Accounts**."
+    )
+
+    interest = repo.interest_by_tax_year(data["transactions"], accounts)
+
+    if interest.empty:
+        st.info("No interest recorded under the Interest category yet.")
+    else:
+        totals = repo.interest_totals(interest)
+        headline = totals.iloc[-1]
+        cols = st.columns(3)
+        cols[0].metric(f"Gross — {headline['year']}", ui.money(headline["gross"]))
+        cols[1].metric(f"Net — {headline['year']}", ui.money(headline["net"]))
+        cols[2].metric(f"Total — {headline['year']}", ui.money(headline["total"]))
+
+        st.markdown("**By tax year**")
+        st.dataframe(
+            ui.money_table(
+                totals[["year", "gross", "net", "total", "accounts"]],
+                ["gross", "net", "total"],
+                labels={"year": "Tax year", "gross": "Gross", "net": "Net",
+                        "total": "Total", "accounts": "Accounts"},
+                formats={"accounts": "{:,.0f}"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("**By account**")
+        picked = st.selectbox(
+            "Tax year",
+            options=list(totals["year"])[::-1],
+            key="interest_year",
+        )
+        year = int(totals.loc[totals["year"] == picked, "tax_year"].iloc[0])
+        mine = interest[interest["tax_year"] == year]
+        st.dataframe(
+            ui.money_table(
+                mine[["account", "basis", "amount"]],
+                ["amount"],
+                labels={"account": "Account", "basis": "Basis", "amount": "Interest"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        fig = px.bar(
+            ui.to_float(mine, ["amount"]), x="account", y="amount", color="basis",
+            labels={"amount": "£", "account": "", "basis": ""},
+        )
+        fig.update_layout(margin=dict(t=10))
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+
+        st.caption(
+            "A payment dated 1–5 April belongs to the *previous* tax year, which is why the "
+            "tracker had to split its April rows into 'before 6th' and 'after 6th' and file "
+            "them by hand. Here the date decides."
+        )
+
+# -------------------------------------------------------------------------- donations
+
+with tab_donations:
+    st.caption(
+        "Charitable giving, by tax year. Flagged on the payment rather than inferred from a "
+        "category, because a category cannot tell a gift from the platform fee charged "
+        "alongside it — the two leave the account together, on the same day, under the same "
+        "heading. Flag one on **Add transaction**, on **Import**, or on the **Transactions** "
+        "page for something already recorded."
+    )
+
+    given = repo.donations(data["transactions"])
+    by_year = repo.donations_by_tax_year(data["transactions"])
+
+    if given.empty:
+        st.info("Nothing flagged as a donation yet.")
+    else:
+        cols = st.columns(2)
+        cols[0].metric("Given, all years", ui.money(given["amount"].sum()))
+        cols[1].metric(
+            f"Given in {by_year.iloc[-1]['year']}", ui.money(by_year.iloc[-1]["amount"])
+        )
+
+        st.markdown("**By tax year**")
+        st.dataframe(
+            ui.money_table(
+                by_year[["year", "amount", "count"]],
+                ["amount"],
+                labels={"year": "Tax year", "amount": "Given", "count": "Payments"},
+                formats={"count": "{:,.0f}"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("**Every donation**")
+        rows = given.copy()
+        rows["date"] = rows["date"].dt.date
+        st.dataframe(
+            ui.money_table(
+                rows[["year", "id", "date", "account", "amount", "comment"]],
+                ["amount"],
+                labels={"year": "Tax year", "id": "ID", "date": "Date",
+                        "account": "Account", "amount": "Amount", "comment": "Comment"},
+                formats={"id": "{:,.0f}"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Transaction fees are deliberately absent: they are recorded as their own line "
+            "with the flag left clear, so this column is what was actually given."
+        )

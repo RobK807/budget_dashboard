@@ -211,6 +211,18 @@ with no error. This is what had un-formatted the Cards page and Settings → Car
 Missing values render as `—`, not `£nan`: a month with no payslip has no NI, and that is not
 the same as zero.
 
+**There are two tax-year functions and they are not interchangeable.**
+
+| Use | For |
+|---|---|
+| `repo.tax_year_of(period)` | Anything keyed by month — a payslip, a set of bands |
+| `repo.tax_year_of_date(date)` | Anything keyed by a day — interest, donations |
+
+The UK tax year runs 6 April to 5 April, so a payment dated 1–5 April belongs to the year
+before. A period is only ever right to the month and cannot express that; the interest
+tracker worked around it by splitting April into two hand-labelled rows. Reach for the date
+version whenever the thing being grouped has a date of its own.
+
 ## Layout
 
 ```

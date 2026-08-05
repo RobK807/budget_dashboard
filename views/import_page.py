@@ -60,6 +60,11 @@ with tab_paste:
             ),
             "Comment": st.column_config.TextColumn("Comment"),
             "Category comment": st.column_config.TextColumn("Category comment"),
+            "Donation": st.column_config.CheckboxColumn(
+                "Donation",
+                help="Charitable giving, counted under Savings and investments. A "
+                     "transaction fee is its own row with this left clear.",
+            ),
         },
     )
     if edited is not None and not edited.dropna(how="all").empty:

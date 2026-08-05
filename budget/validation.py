@@ -39,6 +39,10 @@ class Candidate:
     classification: str | None = None
     comment: str | None = None
     category_comment: str | None = None
+    # Charitable giving. Carried on the candidate so a donation can be flagged as it is
+    # entered or imported, rather than found again afterwards -- which is the only reliable
+    # moment, since nothing in the amount, account or category distinguishes one.
+    is_donation: bool = False
     source_row: int | None = None
 
     @property

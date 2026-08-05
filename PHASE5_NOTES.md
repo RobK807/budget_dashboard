@@ -446,3 +446,108 @@ cumsum, so today's figure is still the running total of everything before it.
 The card balance charts started at the oldest card's opening date and spent most of their
 width on balances already cleared. They start at the current month, with a **From** dropdown
 back to April 2026 for when a card's history is the point.
+
+# The Savings interest tracker
+
+`K:\Private\Finance\Banking\Savings\Savings interest tracker.xlsx`, four sheets of it. None
+of it is new *data* — all four are aggregations of a ledger that already holds the underlying
+transactions. What was missing was the structure to ask the questions.
+
+## The tax year is not the fiscal year
+
+Everything here is grouped by HMRC's year, 6 April to 5 April. The dashboard's `tax_year_of`
+takes a period and so can only ever be right to the month; interest belongs to the day it was
+paid, and 1 April is a different tax year from 30 April. Hence `tax_year_of_date` alongside
+it, with `TAX_YEAR_START_DAY = 6`.
+
+The tracker could not express the boundary at all, so it split April into two hand-labelled
+rows — `Apr (before 6th)` and `Apr (after 6th)` — and filed them under different years by
+eye. There are two such payments in the data: 0.16 of Nationwide interest and 2.35 of HSBC's,
+both dated 1 April 2026, both belonging to 25-26 rather than to 26-27.
+
+## Interest, gross and net
+
+`account.interest_net`, the tracker's row 3. It held `Gross`/`Net` per account and used it to
+decide whether tax should come off again: `IF(D3="Net", D4-D5, D4)`. Everything is gross bar
+Halifax, so the flag names the exception and defaults to false.
+
+Interest itself needed nothing: it is already in the ledger under the **Interest** category,
+26 payments of it, so the table is a `groupby` rather than a second record. Gross and net are
+reported side by side and never summed into one figure — they are not interchangeable at tax
+time, which is the entire reason the flag exists.
+
+## A donation and the fee it was paid with
+
+`txn.is_donation`, flagged on the payment rather than inferred from a category, because no
+category can tell the two apart. Transaction 582 was a single debit of 35.70 covering both a
+30.00 gift and a 5.70 platform fee: same day, same account, same category, same comment.
+Only the person entering it knows which is which.
+
+`budget/seed_interest_tracker.py` splits it — 30.00 commented 'Charity' and flagged, 5.70
+commented 'transaction fee' and not. Everything else is untouched, and 30.00 + 5.70 leaves
+every month total exactly where it was, which is what keeps the reconciliation green.
+
+The flag is offered on **Add transaction**, on **Import** (a `Donation` column, which accepts
+`Y`, `TRUE`, `1` or a real tick box), and on the **Transactions** page for anything already
+recorded.
+
+## The targets were the totals of a plan nobody could see
+
+The dashboard held 900 a month into savings and 350 into investments. The tracker's
+'Savings & investment plan' says where those came from:
+
+    savings      NS&I 250 + Wedding 350 + Marcus 300 = 900
+    investments  CSD  250 + HSBC     100            = 350
+
+The same figures — but only because nobody had yet changed one without the other. So the plan
+is now the record and the overview is derived from it, the same relationship `base_salary`
+has to the car allowance.
+
+`CSD` is Charles Stanley Direct, which is the ledger's **Stocks & Shares ISA**. Proven by the
+balance rather than the name: the plan's April 2026 actual of 7,509.80 is that account's
+April opening to the penny, and its 1,679.75 is HSBC Investments'.
+
+Effective-dated per account, in five revisions (08/25, 10/25, 03/26, 11/26, 05/27), because
+the tracker held one column per revision with the date in the row above — so reading it meant
+knowing which column was current. A pot being wound down stores an explicit **0**: from
+November 2026 the plan stops paying into Wedding, and leaving the row out would carry the
+previous 350 forward.
+
+`savings_target` is retained as the pre-split record and is no longer read.
+
+## Investment return, from what happened rather than what was planned
+
+The tracker's 'Investment Return' tab typed its balances in month by month and *assumed* the
+contributions — a fixed 250 and 100 on every row, whatever was really paid. Both are already
+in the ledger: a contribution is a transfer into the account, and a valuation change is a
+credit or debit commented 'Investment return'. So
+
+    closing = opening + contributions + gain
+
+and the monthly return is `gain / opening`, which is what its
+`=IF(C5>0, E5/C4-1, "")` computed — but from the real contributions. The identity balances on
+every row of the live data.
+
+The summary reproduces its L3:N10 (start, current, payments, net, return, months,
+annualised), measured to *today* rather than to the end of the plan, so months that have not
+happened are not counted. `annualised` is its `=(1+M8)^(12/M9)-1`: a fair summary over a year
+and a noisy one over a quarter, which the caption says rather than hides.
+
+The table starts at the earliest month in the database, not at a row number, so it extends
+when history is backfilled.
+
+The expected annual return (6%) is a setting under **Settings → Savings targets** and is
+drawn on the return chart as a benchmark. It converts to a monthly figure by compounding —
+`repo.monthly_rate`, the plan's `=(1+L4)^(1/12)-1` — not by dividing by twelve, which would
+overstate the month and compound past the rate it started from.
+
+## Not carried over
+
+The 'Savings Account Planner' tab, as asked. The plan's 'Minimum' column is also left out: it
+is a floor rather than a dated target, and nothing reads it yet.
+
+## Schema
+
+Version 6. New table `savings_plan`; new columns `account.interest_net` and
+`txn.is_donation`. New setting `investment_return_annual`, held as a percentage like every
+other rate since v3.

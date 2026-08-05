@@ -92,6 +92,11 @@ class Account(Base):
     exclude_from_savings: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # Whether interest arrives already taxed. The interest tracker held this as a per-account
+    # 'Gross'/'Net' row and used it to decide whether tax paid should be deducted again --
+    # `IF(D3="Net", D4-D5, D4)`. Everything is gross bar Halifax, so False is the default and
+    # the flag names the exception rather than the rule.
+    interest_net: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Credit cards only: the day the statement is issued and the day the direct debit is
     # taken. Month-tab rows 48 and 50, which held them per month even though they never
@@ -200,6 +205,11 @@ class Txn(Base):
 
     comment: Mapped[str | None] = mapped_column(Text)
     category_comment: Mapped[str | None] = mapped_column(Text)
+    # Charitable giving, tracked for its own sake rather than as a spending category: the
+    # interest tracker kept a separate sheet for it because the figure wanted is the year's
+    # total given, which no category could produce -- a donation and its transaction fee are
+    # one payment out of the account but only one of them is a donation.
+    is_donation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # The workbook's natural key (e.g. '0401_BAAM_0'). Useful for de-duplicating re-imports
     # and for flagging near-duplicates during a cross-machine merge (DESIGN.md 6.3.4).
     legacy_identifier: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -504,6 +514,9 @@ class SavingsTarget(Base):
 
     A monthly contribution target, not a balance: the 'Required' column accumulates the
     shortfall, so a month that falls short raises the bar for the next one.
+
+    Superseded by SavingsPlan, which holds the same thing per account. Retained as the
+    pre-split record and no longer read, the same way `salary_profile.annual_salary` is.
     """
 
     __tablename__ = "savings_target"
@@ -511,6 +524,35 @@ class SavingsTarget(Base):
     period: Mapped[str] = mapped_column(String(7), primary_key=True)
     savings: Mapped[Decimal | None] = mapped_column(Money)
     investments: Mapped[Decimal | None] = mapped_column(Money)
+
+
+class SavingsPlan(Base):
+    """The interest tracker's 'Savings & investment plan' B5:H9 -- a monthly contribution
+    target per account, effective-dated.
+
+    The workbook held one column per revision of the plan (`Target - 08/25`, `Target - 10/25`
+    ...) with the date in the row above, so reading it meant knowing which column was current.
+    Here each figure carries its own start date and the set in force on a month is the one
+    that applies, which is the same shape as the tax bands.
+
+    Per account rather than two lump sums, because the lump sums were only ever the totals:
+    250 + 350 + 300 into NS&I, Wedding and Marcus is the 900 the dashboard had, and 250 + 100
+    into the two investment accounts is its 350. Splitting them means a shortfall can be read
+    back to the pot that caused it, and the overview is derived rather than typed twice.
+    """
+
+    __tablename__ = "savings_plan"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False)
+    effective_from: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
+
+    account: Mapped[Account] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "effective_from", name="uq_savings_plan_account_date"),
+    )
 
 
 class Setting(Base):

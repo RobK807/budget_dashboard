@@ -40,6 +40,15 @@ with st.form("add_transaction", clear_on_submit=False):
     comment = row4[0].text_input("Comment")
     category_comment = row4[1].text_input("Category comment")
 
+    # Flagged here rather than inferred later, because nothing about the payment identifies
+    # one: a donation and the platform's fee leave the account together, on the same day,
+    # under the same category. Only the person entering it knows which is the gift.
+    is_donation = st.checkbox(
+        "Charitable donation",
+        help="Counted in the donations totals under Savings and investments. Enter any "
+             "transaction fee as its own line and leave this clear on it.",
+    )
+
     submitted = st.form_submit_button("Add transaction", type="primary")
 
 if submitted:
@@ -53,6 +62,7 @@ if submitted:
         classification=None if classification == "—" else classification,
         comment=comment or None,
         category_comment=category_comment or None,
+        is_donation=is_donation,
     )
 
     with ui.session() as session, session.begin():

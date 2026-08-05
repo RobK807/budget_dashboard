@@ -85,7 +85,7 @@ with tab_accounts:
     st.dataframe(
         repo.sort_human(
             accounts[["name", "short_code", "kind", "status", "used by",
-                      "is_savings", "is_investment", "is_isa"]],
+                      "is_savings", "is_investment", "is_isa", "interest_net"]],
             by="name",
         ),
         use_container_width=True,
@@ -99,8 +99,60 @@ with tab_accounts:
             "is_savings": st.column_config.CheckboxColumn("Savings"),
             "is_investment": st.column_config.CheckboxColumn("Investment"),
             "is_isa": st.column_config.CheckboxColumn("ISA"),
+            "interest_net": st.column_config.CheckboxColumn(
+                "Interest net",
+                help="Ticked where interest arrives already taxed. Left clear it is gross.",
+            ),
         },
     )
+
+    st.markdown("**How interest is paid**")
+    st.caption(
+        "Whether an account's interest arrives already taxed. The interest tracker held this "
+        "as a Gross/Net row per account and used it to decide whether tax should be taken "
+        "off again. Almost everything is gross, so this flags the exceptions. It drives the "
+        "interest table under **Savings and investments**."
+    )
+    interest_frame = repo.sort_human(
+        accounts[accounts["kind"] == "Bank account"][["id", "name", "interest_net"]],
+        by="name",
+    ).copy()
+    interest_frame["interest_net"] = (
+        interest_frame["interest_net"].fillna(False).astype(bool)
+    )
+    edited_interest = st.data_editor(
+        interest_frame,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["id", "name"] if not READ_ONLY else True,
+        column_order=["name", "interest_net"],
+        column_config={
+            "name": "Account",
+            "interest_net": st.column_config.CheckboxColumn("Paid net of tax"),
+        },
+        key="interest_basis_editor",
+    )
+    if st.button("Save interest basis", disabled=READ_ONLY):
+        changed = 0
+        outcome = reference.Outcome(True, "Nothing changed.")
+        with ui.session() as session, session.begin():
+            for _, row in edited_interest.iterrows():
+                was = bool(
+                    interest_frame.loc[
+                        interest_frame["id"] == row["id"], "interest_net"
+                    ].iloc[0]
+                )
+                if bool(row["interest_net"]) != was:
+                    outcome = reference.update_account(
+                        session, int(row["id"]), interest_net=bool(row["interest_net"])
+                    )
+                    changed += 1
+        if changed:
+            show_outcome(outcome)
+        else:
+            st.info("Nothing changed.")
+
+    st.divider()
 
     with st.expander("Add an account", expanded=False):
         st.caption(
@@ -848,54 +900,153 @@ with tab_salary:
 
 with tab_savings:
     st.caption(
-        "How much should go into savings and investments each month. These drive the "
-        "'Required' columns on the Savings and investments page, which accumulate: a month "
-        "that falls short raises the bar for the next one."
+        "How much should go into each pot every month. These drive the 'Required' columns on "
+        "the Savings and investments page, which accumulate: a month that falls short raises "
+        "the bar for the next one."
     )
 
-    savings_targets = data["savings_targets"]
-    target_rows = []
-    lookup = (
-        savings_targets.set_index("period") if not savings_targets.empty else None
-    )
-    for period in data["all_periods"]:
-        has_row = lookup is not None and period in lookup.index
-        target_rows.append(
-            {
-                "period": period,
-                "month": repo.period_label(period),
-                "savings": float(lookup.loc[period, "savings"] or 0) if has_row else 0.0,
-                "investments": (
-                    float(lookup.loc[period, "investments"] or 0) if has_row else 0.0
-                ),
-            }
-        )
+    plan = data["savings_plan"]
+    pots = data["accounts"][
+        data["accounts"]["is_savings"].astype(bool)
+        | data["accounts"]["is_investment"].astype(bool)
+    ]
+    pots = repo.sort_human(pots, by="name")
 
-    edited_targets = st.data_editor(
-        pd.DataFrame(target_rows),
+    # ---- the plan, per account, effective-dated ------------------------------------
+    st.markdown("**The plan**")
+    st.caption(
+        "Per account and effective-dated, which is how the interest tracker held it — one "
+        "column per revision, with the date above. Saving against a date that has no set yet "
+        "creates one and leaves the earlier figures intact for the months they applied to. "
+        "A pot being wound down needs an explicit **0**, not a blank: a blank carries the "
+        "previous figure forward."
+    )
+
+    stored_dates = repo.plan_dates(plan)
+    # The set in force *now*, not the last one stored. The plan runs ahead of itself -- there
+    # is a revision dated May 2027 -- and opening on that would show a future set as though
+    # it were current.
+    started = [d for d in stored_dates if d <= dt.date.today()]
+    date_cols = st.columns([1, 2])
+    plan_from = date_cols[0].date_input(
+        "Set in force from",
+        value=(
+            started[-1] if started
+            else (stored_dates[0] if stored_dates else dt.date.today().replace(day=1))
+        ),
+        format="DD/MM/YYYY",
+        key="plan_effective",
+    )
+    date_cols[1].caption("")
+    date_cols[1].caption(
+        f"{len(stored_dates)} revision(s) stored: "
+        + (", ".join(f"{d:%d/%m/%Y}" for d in stored_dates) or "none")
+    )
+
+    in_force = repo.plan_in_force(plan, plan_from).set_index("account")
+    plan_rows = [
+        {
+            "id": int(row["id"]),
+            "account": row["name"],
+            "kind": "Investments" if row["is_investment"] else "Savings",
+            "amount": (
+                float(in_force.loc[row["name"], "amount"])
+                if row["name"] in in_force.index
+                else 0.0
+            ),
+        }
+        for _, row in pots.iterrows()
+    ]
+
+    edited_plan = st.data_editor(
+        pd.DataFrame(plan_rows),
         use_container_width=True,
         hide_index=True,
-        disabled=["period", "month"] if not READ_ONLY else True,
-        column_order=["month", "savings", "investments"],
+        disabled=["id", "account", "kind"] if not READ_ONLY else True,
+        column_order=["account", "kind", "amount"],
         column_config={
-            "month": "Month",
-            "savings": ui.editable_money("Savings target"),
-            "investments": ui.editable_money("Investments target"),
+            "account": "Account",
+            "kind": "Counts towards",
+            "amount": ui.editable_money("Monthly target"),
         },
-        key="savings_target_editor",
-        height=460,
+        key=f"savings_plan_editor_{plan_from}",
     )
 
-    if st.button("Save targets", type="primary", disabled=READ_ONLY, key="save_savings"):
+    totals = edited_plan.groupby("kind")["amount"].sum().to_dict()
+    st.caption(
+        f"That set totals **{ui.money(totals.get('Savings', 0))}** into savings and "
+        f"**{ui.money(totals.get('Investments', 0))}** into investments each month — "
+        f"{ui.money(sum(totals.values()))} altogether. The overview below is this sum, not a "
+        "second figure typed beside it."
+    )
+
+    buttons = st.columns([1, 1, 3])
+    if buttons[0].button("Save the plan", type="primary", disabled=READ_ONLY,
+                         key="save_plan"):
         with ui.session() as session, session.begin():
-            for _, row in edited_targets.iterrows():
-                reference.set_savings_target(
-                    session, row["period"],
-                    savings=Decimal(str(row["savings"] or 0)),
-                    investments=Decimal(str(row["investments"] or 0)),
+            for _, row in edited_plan.iterrows():
+                reference.set_savings_plan(
+                    session, int(row["id"]), plan_from,
+                    Decimal(str(row["amount"] or 0)),
                 )
-            outcome = reference.Outcome(True, "Savings and investment targets saved.")
+            outcome = reference.Outcome(
+                True, f"Plan saved, in force from {plan_from:%d %b %Y}."
+            )
         show_outcome(outcome)
+
+    if buttons[1].button(
+        "Remove this revision",
+        disabled=READ_ONLY or plan_from not in stored_dates,
+        key="drop_plan",
+        help="Deletes every target dated from this day, so the previous set applies again.",
+    ):
+        with ui.session() as session, session.begin():
+            outcome = reference.remove_savings_plan_date(session, plan_from)
+        show_outcome(outcome)
+
+    # ---- the expected return -------------------------------------------------------
+    st.markdown("**Expected investment return**")
+    with st.form("investment_return"):
+        rate_cols = st.columns([1, 3])
+        annual = rate_cols[0].number_input(
+            "Annual (%)",
+            value=float(repo.investment_return_rate(data["settings"]) * 100),
+            min_value=0.0, max_value=100.0, step=0.25, format="%.2f",
+        )
+        monthly = repo.monthly_rate(Decimal(str(annual)) / 100)
+        rate_cols[1].caption("")
+        rate_cols[1].caption(
+            f"Compounds to **{ui.percent(monthly * 100, 4)}%** a month — the plan's "
+            "`=(1+L4)^(1/12)-1`, not the annual figure over twelve, which would overstate "
+            "the month and compound past the rate it started from."
+        )
+        if st.form_submit_button("Save the return", disabled=READ_ONLY):
+            with ui.session() as session, session.begin():
+                outcome = reference.set_setting(
+                    session, repo.INVESTMENT_RETURN_KEY, str(annual)
+                )
+            show_outcome(outcome)
+
+    # ---- the derived overview ------------------------------------------------------
+    with st.expander("The resulting monthly overview"):
+        st.caption(
+            "Derived from the plan above, not entered. The two used to be typed separately, "
+            "which is how the dashboard came to hold 900 and 350 while the plan behind them "
+            "said 250 + 350 + 300 and 250 + 100 — the same figures, but only because nobody "
+            "had yet changed one without the other."
+        )
+        st.dataframe(
+            ui.money_table(
+                data["savings_targets"].assign(
+                    month=data["savings_targets"]["period"].map(repo.period_label)
+                )[["month", "savings", "investments"]],
+                ["savings", "investments"],
+                labels={"month": "Month", "savings": "Savings target",
+                        "investments": "Investments target"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.divider()
     st.subheader("Earmarked savings")

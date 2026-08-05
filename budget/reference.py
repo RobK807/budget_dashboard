@@ -41,6 +41,7 @@ from budget.models import (
     Projection,
     SalaryAssumption,
     SalaryProfile,
+    SavingsPlan,
     SavingsTarget,
     Setting,
     Txn,
@@ -218,7 +219,7 @@ def update_account(session: Session, account_id: int, **fields) -> Outcome:
         return Outcome(False, "An account cannot be both savings and investment")
 
     for key in ("type", "is_savings", "is_investment", "is_isa", "savings_limit",
-                "investment_limit", "valid_from", "exclude_from_savings",
+                "investment_limit", "valid_from", "exclude_from_savings", "interest_net",
                 "statement_day", "payment_day"):
         if key in fields:
             setattr(account, key, fields[key])
@@ -857,6 +858,77 @@ def set_savings_target(
     session.flush()
     bump_revision(session)
     return Outcome(True, f"Targets for {period} saved.")
+
+
+def set_savings_plan(
+    session: Session, account_id: int, effective_from: dt.date, amount: Decimal | None
+) -> Outcome:
+    """One account's monthly contribution target, from a date.
+
+    Saving against a date that has no entry yet creates one, leaving the earlier figure
+    intact for the months it applied to -- the same effective-dating the tax bands use. A
+    target of None removes that account's entry for the date rather than storing a zero,
+    since 'no longer paying into this' and 'paying nothing this month' read alike in a total
+    but differ in the breakdown.
+    """
+    existing = session.scalars(
+        select(SavingsPlan).where(
+            SavingsPlan.account_id == account_id,
+            SavingsPlan.effective_from == effective_from,
+        )
+    ).first()
+
+    if amount is None:
+        if existing:
+            session.delete(existing)
+            session.flush()
+            bump_revision(session)
+            return Outcome(True, "Target removed.")
+        return Outcome(True, "Nothing to remove.")
+
+    if Decimal(amount) < 0:
+        return Outcome(False, "A contribution target cannot be negative.")
+
+    if existing:
+        existing.amount = Decimal(amount)
+    else:
+        session.add(
+            SavingsPlan(
+                account_id=account_id,
+                effective_from=effective_from,
+                amount=Decimal(amount),
+            )
+        )
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Target saved, from {effective_from:%d %b %Y}.")
+
+
+def remove_savings_plan_date(session: Session, effective_from: dt.date) -> Outcome:
+    """Drop a whole revision of the plan."""
+    rows = list(
+        session.scalars(
+            select(SavingsPlan).where(SavingsPlan.effective_from == effective_from)
+        )
+    )
+    if not rows:
+        return Outcome(True, "Nothing to remove.")
+    for row in rows:
+        session.delete(row)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Removed {len(rows)} target(s) from {effective_from:%d %b %Y}.")
+
+
+def set_donation_flag(session: Session, txn_id: int, is_donation: bool) -> Outcome:
+    txn = session.get(Txn, txn_id)
+    if txn is None:
+        return Outcome(False, "Transaction not found")
+    txn.is_donation = bool(is_donation)
+    session.flush()
+    bump_revision(session)
+    verb = "flagged as a donation" if is_donation else "no longer flagged as a donation"
+    return Outcome(True, f"Transaction #{txn_id} {verb}.")
 
 
 def set_card_statement(

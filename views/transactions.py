@@ -11,7 +11,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from budget import service, ui
+from budget import reference, service, ui
 
 data = ui.page_header("Transactions", "Every transaction in the ledger, filtered.")
 
@@ -98,7 +98,7 @@ cols[3].metric("Transfers", ui.money(transfers))
 
 display = view[
     ["id", "date", "type", "amount", "account_from", "account_to", "category",
-     "classification", "comment", "deleted"]
+     "classification", "comment", "is_donation", "deleted"]
 ].copy()
 display["date"] = display["date"].dt.date
 # Category and classification were named at the top of the page, so the filters and the table
@@ -119,6 +119,7 @@ st.dataframe(
             "category": "Category",
             "classification": "Classification",
             "comment": "Comment",
+            "is_donation": "Donation",
             "deleted": "Deleted",
         },
     ),
@@ -236,3 +237,48 @@ with restore_col:
                 st.rerun()
             else:
                 st.warning(f"#{target} is not currently removed.")
+
+st.divider()
+
+# ----------------------------------------------------------------------- donation flag
+
+st.subheader("Flag a donation")
+st.caption(
+    "Charitable giving is counted under **Savings and investments**, by tax year. New "
+    "entries carry the flag from **Add transaction** or **Import**; this is for one already "
+    "recorded. Where a payment covers both a gift and a platform fee, split it into two "
+    "transactions and flag only the gift — the fee is not a donation."
+)
+
+flag_left, flag_right = st.columns([2, 1])
+with flag_left:
+    if live.empty:
+        st.caption("Nothing matches the filters above.")
+    else:
+        flag_options = {
+            int(r.id): ui.describe_txn(r) + (" · donation" if r.is_donation else "")
+            for r in live.head(500).itertuples()
+        }
+        flag_target = st.selectbox(
+            "Transaction",
+            list(flag_options),
+            format_func=lambda i: flag_options[i],
+            key="donation_target",
+        )
+        currently = bool(
+            live.loc[live["id"] == flag_target, "is_donation"].iloc[0]
+        )
+        wanted = st.checkbox(
+            "Charitable donation", value=currently, key="donation_flag"
+        )
+        if st.button("Save the flag", disabled=wanted == currently):
+            with ui.session() as session, session.begin():
+                outcome = reference.set_donation_flag(session, flag_target, wanted)
+            ui.show_outcome(outcome, "the donation flag")
+            st.rerun()
+
+with flag_right:
+    flagged = txns[~txns["deleted"] & txns["is_donation"].fillna(False).astype(bool)]
+    st.metric("Flagged so far", f"{len(flagged):,}")
+    if not flagged.empty:
+        st.caption(f"Totalling {ui.money(flagged['amount'].sum())}.")

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Columns added to tables that already existed. create_all only creates whole tables, so a
 # new column on an existing one needs an explicit ALTER -- cheap in SQLite, unlike a CHECK.
@@ -36,6 +36,13 @@ ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("bonus", "payday", "INTEGER"),
     # v5 -----------------------------------------------------------------------------
     ("salary_profile", "base_salary", "INTEGER"),
+    # v6 -----------------------------------------------------------------------------
+    # Whether an account's interest arrives already taxed. Default gross, because every
+    # account bar Halifax is -- the flag names the exception.
+    ("account", "interest_net", "BOOLEAN NOT NULL DEFAULT 0"),
+    # Charitable giving, flagged on the payment rather than inferred from a category: a
+    # donation and its transaction fee leave the account together but only one is a gift.
+    ("txn", "is_donation", "BOOLEAN NOT NULL DEFAULT 0"),
 ]
 
 # Splitting the stored annual salary back into its two parts. What was held was base *plus*
