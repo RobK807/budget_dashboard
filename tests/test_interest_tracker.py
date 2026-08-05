@@ -401,6 +401,53 @@ class TestMonthlyRate:
         assert repo.monthly_rate(Decimal("0")) == Decimal("0")
 
 
+class TestStaleBuildGuard:
+    """A process that started before the code changed runs a new page against an old module,
+    and the page dies with a KeyError naming a column but not the cause."""
+
+    def loaded(self, **overrides):
+        data = {
+            "savings_plan": pd.DataFrame(),
+            "plan_detail": pd.DataFrame(),
+            "savings_targets": pd.DataFrame(),
+            "accounts": pd.DataFrame(columns=["exclude_from_savings", "interest_net"]),
+            "transactions": pd.DataFrame(columns=["is_donation"]),
+        }
+        data.update(overrides)
+        return data
+
+    def test_a_current_build_reports_nothing(self):
+        from budget import ui
+
+        assert ui._stale_build(self.loaded()) == []
+
+    def test_a_missing_column_is_named(self):
+        from budget import ui
+
+        stale = ui._stale_build(
+            self.loaded(accounts=pd.DataFrame(columns=["exclude_from_savings"]))
+        )
+        assert "accounts.interest_net" in stale
+
+    def test_a_missing_key_is_named(self):
+        from budget import ui
+
+        data = self.loaded()
+        del data["savings_plan"]
+        assert "data['savings_plan']" in ui._stale_build(data)
+
+    def test_every_expected_column_is_one_the_loader_actually_returns(self):
+        """Guards the guard: a stale entry here would fire on a perfectly current build and
+        lock the dashboard out of every page."""
+        from budget import repo, ui
+
+        loaders = {
+            "accounts": repo.load_reference,
+            "transactions": repo.load_transactions,
+        }
+        assert set(ui.EXPECTED_COLUMNS) <= set(loaders)
+
+
 class TestInvestmentReturnSetting:
     def test_it_reads_back_as_a_fraction(self):
         assert repo.investment_return_rate({"investment_return_annual": "6.00"}) == (

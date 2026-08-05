@@ -219,6 +219,32 @@ def load_all() -> dict:
     return data
 
 
+# What this build of the code expects the loaded data to carry.
+#
+# Streamlit re-executes a page script from disk on every rerun but does not re-import modules
+# already in sys.modules, and `load_all` is cached for five minutes on top of that. So a
+# process started before a change can run a new views/ against an old budget/ -- and the page
+# dies with a bare KeyError naming a column, which says nothing about the cause. The cause is
+# always the same and the fix is always the same: restart.
+EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "accounts": ("exclude_from_savings", "interest_net"),
+    "transactions": ("is_donation",),
+}
+EXPECTED_KEYS = ("savings_plan", "plan_detail", "savings_targets")
+
+
+def _stale_build(data: dict) -> list[str]:
+    """Anything this code needs that the loaded data does not have."""
+    missing = [f"data[{key!r}]" for key in EXPECTED_KEYS if key not in data]
+    for name, columns in EXPECTED_COLUMNS.items():
+        frame = data.get(name)
+        if frame is None:
+            missing.append(f"data[{name!r}]")
+            continue
+        missing += [f"{name}.{c}" for c in columns if c not in frame.columns]
+    return missing
+
+
 def alphabetical(values) -> list:
     """Case-insensitive sort for dropdown options, with blanks dropped.
 
@@ -447,6 +473,21 @@ def page_header(title: str, subtitle: str = "") -> dict:
     """Per-page chrome. set_page_config lives in app.py because st.navigation runs the
     entrypoint and the page in a single script run, so it may only be called once."""
     data = load_all()
+
+    stale = _stale_build(data)
+    if stale:
+        st.title(title)
+        st.error(
+            "**This dashboard is running older code than it is displaying.**\n\n"
+            "Close every dashboard window and start it again — `run.bat`, or whatever you "
+            "launched it with. Nothing is wrong with your data.\n\n"
+            "Streamlit re-reads a page from disk on every rerun but keeps the modules "
+            "behind it in memory, so after an update the two can be a version apart. "
+            "**Refresh data** in the sidebar will not fix it; only a restart will."
+        )
+        st.caption("Missing: " + ", ".join(stale))
+        st.stop()
+
     st.title(title)
     if subtitle:
         st.caption(subtitle)
