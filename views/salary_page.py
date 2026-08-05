@@ -136,6 +136,7 @@ for period in data["all_periods"]:
             # The build-up, in the order a payslip reads.
             "base": parts.base if parts else None,
             "car": parts.car if parts else None,
+            "expected_bonus": (parts.bonus or None) if parts else None,
             "home_working": parts.home_working if parts else None,
             "pension": parts.pension if parts else None,
             "expected_holiday": parts.holiday_pay if parts else None,
@@ -147,6 +148,16 @@ for period in data["all_periods"]:
             "bonus_gross": bonus["gross"] if bonus is not None else None,
             "holiday_pay": actual["holiday_pay"] if actual is not None else None,
             "benefits": actual["benefits"] if actual is not None else None,
+            # The recorded 'benefits' is the workbook's lumped figure: pension *and* holiday
+            # pay. Shown as-is beside its own holiday pay column it counts that twice, and
+            # reads 1,177.88 against an expected pension of 990.88 -- a discrepancy of
+            # exactly the 187.00 sitting in the next column along. Taking it back out
+            # reproduces the expected pension to the penny in every recorded month.
+            "actual_pension": (
+                actual["benefits"] - as_decimal(actual["holiday_pay"])
+                if actual is not None and pd.notna(actual["benefits"])
+                else None
+            ),
             "additional": actual["additional"] if actual is not None else None,
             "actual_ni": paid("ni"),
             "expected_ni": expected.ni if expected else None,
@@ -193,43 +204,49 @@ tab_compare, tab_inputs, tab_bands, tab_spend = st.tabs(
 # ------------------------------------------------------------- actual vs expected
 
 with tab_compare:
-    display = frame[
-        ["month", "payday", "actual_gross", "expected_gross", "bonus_gross",
-         "holiday_pay", "benefits", "additional", "actual_ni", "expected_ni",
-         "actual_paye", "expected_paye", "actual_net", "expected_net"]
-    ].copy()
-    display["net difference"] = display["actual_net"] - display["expected_net"]
-
-    money_columns = [
-        "actual_gross", "expected_gross", "bonus_gross", "holiday_pay", "benefits",
-        "additional", "actual_ni", "expected_ni", "actual_paye", "expected_paye",
-        "actual_net", "expected_net", "net difference",
+    # The same eight lines twice, expected then actual, in the order a payslip works down:
+    # what was earned, what was taken off, what landed. Interleaving them -- Gross, Gross
+    # (expected), of which bonus, ... -- meant reading a discrepancy required jumping between
+    # neighbouring columns; grouped, one half is scanned against the other.
+    PAYSLIP_LINES = [
+        ("Gross", "expected_gross", "actual_gross"),
+        ("Bonus", "expected_bonus", "bonus_gross"),
+        ("Home working", "home_working", "additional"),
+        ("Holiday pay", "expected_holiday", "holiday_pay"),
+        ("Pension", "pension", "actual_pension"),
+        ("PAYE", "expected_paye", "actual_paye"),
+        ("NI", "expected_ni", "actual_ni"),
+        ("Net", "expected_net", "actual_net"),
     ]
+
+    display = frame[["month", "payday"]].copy()
+    money_columns = []
+    for index, group in enumerate(("Expected", "Actual")):
+        for label, *sources in PAYSLIP_LINES:
+            column = f"{group} — {label}"
+            display[column] = frame[sources[index]]
+            money_columns.append(column)
+    display["Net difference"] = frame["actual_net"] - frame["expected_net"]
+    money_columns.append("Net difference")
+
     st.dataframe(
         ui.money_table(
-            display,
-            money_columns,
-            labels={
-                "month": "Month", "payday": "Payday",
-                "actual_gross": "Gross", "expected_gross": "Gross (expected)",
-                "bonus_gross": "of which bonus",
-                "holiday_pay": "Holiday pay", "benefits": "Benefits",
-                "additional": "Additional pay",
-                "actual_ni": "NI", "expected_ni": "NI (model)",
-                "actual_paye": "PAYE", "expected_paye": "PAYE (model)",
-                "actual_net": "Net", "expected_net": "Net (model)",
-            },
+            display, money_columns,
+            labels={"month": "Month", "payday": "Payday"},
         ),
         use_container_width=True,
         hide_index=True,
     )
     st.caption(
-        "The actual columns are salary **plus** bonus, since the two are separate payments "
-        "in the same month; 'of which bonus' shows how much of the gross came from the "
-        "bonus. Enter each under **Salary and bonus** and here, respectively, so neither "
-        "overwrites the other. Benefits and additional pay are what the old workbook "
-        "recorded — the model now builds the same figures from their parts instead, which "
-        "is the table below."
+        "**Expected gross** is stated as a payslip states it — net of the salary-sacrifice "
+        "pension and inclusive of the home working allowance — so the two gross figures are "
+        "like for like. **Actual gross** is salary **plus** bonus, since the two are separate "
+        "payments in the same month, and the bonus line shows how much of it came from the "
+        "bonus. Enter each under **Salary and bonus** and below, respectively, so neither "
+        "overwrites the other. On the actual side, home working is what the old workbook "
+        "recorded as 'additional pay', and pension is its 'benefits' less the holiday pay "
+        "that had been lumped in with it — otherwise holiday pay would be counted twice "
+        "across the row."
     )
 
     st.divider()

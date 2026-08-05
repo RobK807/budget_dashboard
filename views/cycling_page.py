@@ -8,6 +8,7 @@ worth -- and does not mean editing every historic row either.
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 
 import pandas as pd
@@ -71,8 +72,14 @@ if not savings.empty:
     timeline["net"] = timeline["saving"].astype(float) - timeline["outgoing"].astype(float)
     timeline["cumulative"] = timeline["net"].cumsum()
 
+    # Days are recorded for the whole year ahead, unridden ones included, so the line ran
+    # flat out to next March -- a long tail of nothing happening that squeezed the part
+    # where it did. Cut after the cumsum, so today's figure is still the running total of
+    # everything before it rather than of a truncated series.
+    to_date = timeline[pd.to_datetime(timeline["date"]).dt.date <= dt.date.today()]
+
     fig = px.area(
-        timeline, x="date", y="cumulative",
+        to_date if not to_date.empty else timeline, x="date", y="cumulative",
         labels={"cumulative": "Net saving (£)", "date": ""},
     )
     fig.update_layout(margin=dict(t=10))

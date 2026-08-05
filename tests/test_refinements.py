@@ -417,3 +417,101 @@ def test_monthly_and_annual_reconcile(monthly, annual, was_monthly, was_annual, 
     assert repo.reconcile_monthly_annual(monthly, annual, was_monthly, was_annual) == (
         expected
     )
+
+
+# ------------------------------------------------------------------ one format dictionary
+
+
+class TestMoneyTableFormats:
+    """A Styler's format() replaces rather than adds, which is what silently un-formatted
+    the Cards page and Settings > Cards."""
+
+    FRAME = pd.DataFrame([{"limit": Decimal("1000"), "rate": 2.5}])
+
+    def rendered(self, styler) -> str:
+        return styler.to_html()
+
+    def test_a_money_column_carries_the_pound_and_the_separator(self):
+        assert "£1,000.00" in self.rendered(ui.money_table(self.FRAME, ["limit"]))
+
+    def test_a_second_format_does_not_wipe_the_money_columns(self):
+        """The bug, stated as a test: ui.money_table(...).format({...}) walks every column
+        and hands the ones it was not told about back to the default formatter."""
+        chained = ui.money_table(self.FRAME, ["limit"]).format({"rate": "{:.2f}"})
+        assert "£1,000.00" not in self.rendered(chained)
+
+        together = ui.money_table(self.FRAME, ["limit"], formats={"rate": "{:,.2f}"})
+        assert "£1,000.00" in self.rendered(together)
+        assert "2.50" in self.rendered(together)
+
+    def test_a_missing_amount_is_a_dash_rather_than_nan(self):
+        """A month with no payslip has no NI. '£nan' says that badly, and there are a lot of
+        them now that expected and actual are shown line for line."""
+        frame = pd.DataFrame([{"limit": None, "rate": None}])
+        rendered = self.rendered(ui.money_table(frame, ["limit"]))
+        assert "nan" not in rendered
+        assert "—" in rendered
+
+    def test_extra_formats_are_keyed_before_the_labels_are_applied(self):
+        """Same as money_columns, so a caller names its own columns throughout rather than
+        the labels it happens to have chosen for them."""
+        styled = ui.money_table(
+            self.FRAME, ["limit"], labels={"limit": "Credit limit", "rate": "Minimum %"},
+            formats={"rate": "{:,.2f}"},
+        )
+        assert "£1,000.00" in self.rendered(styled)
+        assert "Credit limit" in self.rendered(styled)
+
+
+# ---------------------------------------------------------------- available, everywhere
+
+
+class TestAvailableSavings:
+    """'Available' is savings less the earmarked pots. Held on the balances themselves so
+    the Summary chart and the savings tables cannot disagree about what it means."""
+
+    ACCOUNTS = pd.DataFrame(
+        [
+            {"id": 1, "name": "Marcus", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False},
+            {"id": 2, "name": "Wedding", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": True},
+        ]
+    )
+    OPENINGS = pd.DataFrame(
+        [
+            {"account": "Marcus", "period": "2026-04", "opening": Decimal("1000")},
+            {"account": "Wedding", "period": "2026-04", "opening": Decimal("500")},
+        ]
+    )
+    POSTINGS = pd.DataFrame(
+        columns=["period", "account", "type", "column", "amount", "signed"]
+    )
+
+    def balances(self, accounts=None):
+        return repo.account_balances(
+            self.POSTINGS, self.OPENINGS, "2026-04",
+            self.ACCOUNTS if accounts is None else accounts,
+        )
+
+    def test_the_earmarked_flag_reaches_the_balances(self):
+        flags = self.balances().set_index("account")["earmarked"]
+        assert flags["Marcus"] is False or not flags["Marcus"]
+        assert flags["Wedding"]
+
+    def test_a_missing_flag_does_not_earmark_the_account(self):
+        """NaN is truthy, so a bare bool() would have reserved every unflagged pot."""
+        accounts = self.ACCOUNTS.copy()
+        accounts["exclude_from_savings"] = accounts["exclude_from_savings"].astype(object)
+        accounts.loc[accounts["name"] == "Marcus", "exclude_from_savings"] = None
+        assert not self.balances(accounts).set_index("account").loc["Marcus", "earmarked"]
+
+    def test_available_excludes_the_earmarked_pots(self):
+        position = repo.savings_position(self.balances())
+        assert position["savings"] == Decimal("1500")
+        assert position["available"] == Decimal("1000")
+
+    def test_balances_without_the_column_treat_nothing_as_earmarked(self):
+        """Callers that build their own frame -- reconcile does -- should not lose the key."""
+        position = repo.savings_position(self.balances().drop(columns="earmarked"))
+        assert position["available"] == position["savings"] == Decimal("1500")

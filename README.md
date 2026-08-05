@@ -195,6 +195,22 @@ numeric, so it stays at `%.2f` with the unit in the label.
 
 Without `ui.money_axis`, Plotly's default SI notation draws £10,000 as `10.00000k`.
 
+**Never chain a second `.format()` onto a Styler.** A non-money column that needs its own
+format goes through the same call:
+
+```python
+ui.money_table(df, ["credit_limit"], formats={"min_pct": "{:,.2f}"})   # right
+ui.money_table(df, ["credit_limit"]).format({"Minimum %": "{:.2f}"})   # silently wrong
+```
+
+`Styler.format` with no `subset` walks *every* column and assigns a display function to each,
+handing the ones its dict does not mention back to the default. So the second call replaces
+the first rather than adding to it, and the money columns lose their pound sign and separator
+with no error. This is what had un-formatted the Cards page and Settings → Cards.
+
+Missing values render as `—`, not `£nan`: a month with no payslip has no NI, and that is not
+the same as zero.
+
 ## Layout
 
 ```

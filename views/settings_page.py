@@ -489,7 +489,8 @@ with tab_cards:
                     "term_months": "Term (months)", "payment_day": "Payment day",
                     "min_pct": "Minimum %",
                 },
-            ).format({"Minimum %": "{:.2f}"}),
+                formats={"min_pct": "{:,.2f}"},
+            ),
             use_container_width=True,
             hide_index=True,
         )

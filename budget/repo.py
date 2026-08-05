@@ -384,9 +384,17 @@ def account_balances(
                 "is_savings": bool(acct["is_savings"]),
                 "is_investment": bool(acct["is_investment"]),
                 "is_isa": bool(acct["is_isa"]),
+                # Carried here rather than joined back on by name at each call site, so
+                # 'available' means the same thing on the Summary chart as in the savings
+                # tables. NaN is truthy, so a bare bool() would earmark every unflagged pot.
+                "earmarked": _flag(acct.get("exclude_from_savings")),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _flag(value) -> bool:
+    return False if value is None or pd.isna(value) else bool(value)
 
 
 def category_actuals(postings: pd.DataFrame, period: str) -> pd.DataFrame:
@@ -859,9 +867,19 @@ def classification_by_month(postings: pd.DataFrame) -> pd.DataFrame:
 
 
 def savings_position(balances: pd.DataFrame) -> dict[str, Decimal]:
-    """Headline totals from the Summary tab, driven by the account flags."""
+    """Headline totals from the Summary tab, driven by the account flags.
+
+    'available' is savings less the earmarked pots -- the workbook's 'Less SC & Wed', whose
+    label had stopped describing what it excluded. Derived from the flag rather than a fixed
+    list, so it follows when a pot is added.
+    """
+    earmarked = (
+        balances["earmarked"] if "earmarked" in balances else pd.Series(False, balances.index)
+    )
     return {
         "savings": balances.loc[balances["is_savings"], "closing"].sum() or Decimal("0"),
+        "available": balances.loc[balances["is_savings"] & ~earmarked, "closing"].sum()
+        or Decimal("0"),
         "investments": balances.loc[balances["is_investment"], "closing"].sum() or Decimal("0"),
         "isa": balances.loc[balances["is_isa"], "closing"].sum() or Decimal("0"),
         "cards": balances.loc[balances["type"] == "credit_card", "closing"].sum()
@@ -1509,6 +1527,12 @@ def savings_series(
                 "savings_target": savings_target,
                 "savings_target_eom": savings_to_date,
                 "savings_required": savings_to_date - available_eom,
+                # The same cumulative target measured against each of the three balances,
+                # so the Savings table can switch basis without three sets of targets: what
+                # changes is which pot is being asked to meet it, not the figure to meet.
+                "total_required": savings_to_date - savings_eom,
+                "available_required": savings_to_date - available_eom,
+                "reserved_required": savings_to_date - reserved_eom,
                 "investments_bom": investments_bom,
                 "investments_added": investments_eom - investments_bom,
                 "investments_eom": investments_eom,
@@ -1516,6 +1540,7 @@ def savings_series(
                 "investments_target_eom": investments_to_date,
                 "investments_required": investments_to_date - investments_eom,
                 "combined": savings_eom + investments_eom,
+                "combined_available": available_eom + investments_eom,
             }
         )
 

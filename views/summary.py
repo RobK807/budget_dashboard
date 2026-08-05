@@ -160,11 +160,19 @@ with left:
     st.subheader("Savings and investments")
     plot = series[series["period"].isin(live_periods)].copy()
     plot["Month"] = plot["period"].map(repo.period_label)
-    plot = ui.to_float(plot, ["savings", "investments", "isa"])
+    # Available is drawn alongside the total rather than instead of it: the gap between the
+    # two lines is what the earmarked pots hold, which is the thing worth seeing.
+    plot = ui.to_float(plot, ["savings", "available", "investments", "isa"]).rename(
+        columns={
+            "savings": "Savings (total)",
+            "available": "Savings (available)",
+            "investments": "Investments",
+        }
+    )
     fig = px.line(
         plot,
         x="Month",
-        y=["savings", "investments"],
+        y=["Savings (total)", "Savings (available)", "Investments"],
         markers=True,
         labels={"value": "Balance (£)", "variable": ""},
     )

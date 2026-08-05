@@ -77,60 +77,72 @@ st.divider()
 
 # Opening and closing side by side, so a month reads across in one line. The workbook gave
 # closing balances only, which meant 'Added' could only be checked by finding the row above.
+#
+# Six columns whichever basis is chosen, in the order the money moves: what was there, what
+# went in, what was there at the end, then the two targets and the shortfall. Splitting the
+# basis into a dropdown rather than widening the table keeps that reading order -- nine
+# columns interleaving total and available made a row something to decode rather than read.
+COLUMNS = ["bom", "added", "eom", "target", "target_eom", "required"]
 LABELS = {
     "month": "Month",
-    "savings_bom": "Total — BoM",
-    "available_bom": "Available — BoM",
-    "available_added": "Added — available",
-    "reserved_added": "Added — reserved",
-    "savings_added": "Added",
-    "savings_eom": "Total — EoM",
-    "available_eom": "Available — EoM",
-    "savings_target": "Monthly target",
-    "savings_target_eom": "Target — EoM",
-    "savings_required": "Required",
-    "investments_bom": "Total — BoM",
-    "investments_added": "Added",
-    "investments_eom": "Total — EoM",
-    "investments_target": "Monthly target",
-    "investments_target_eom": "Target — EoM",
-    "investments_required": "Required",
+    "bom": "BoM",
+    "added": "Added",
+    "eom": "EoM",
+    "target": "Monthly target",
+    "target_eom": "Cumulative target",
+    "required": "Required",
 }
 
-st.subheader("Savings")
-savings_columns = [
-    "savings_bom", "available_bom", "available_added", "reserved_added", "savings_eom",
-    "available_eom", "savings_target", "savings_target_eom", "savings_required",
-]
+# The cumulative target is one figure per month whichever pot is being measured against it:
+# what changes with the basis is which balance is being asked to meet it, not the target.
+BASES = {
+    "Total": ("savings_bom", "savings_added", "savings_eom", "total_required"),
+    "Available": ("available_bom", "available_added", "available_eom", "available_required"),
+    "Reserved": ("reserved_bom", "reserved_added", "reserved_eom", "reserved_required"),
+}
+
+head, picker = st.columns([3, 1])
+head.subheader("Savings")
+basis = picker.selectbox(
+    "Basis",
+    options=list(BASES),
+    key="savings_basis",
+    help="Total is every savings account; available excludes the earmarked pots; reserved "
+         "is those pots alone.",
+)
+
+bom, added, eom, required = BASES[basis]
+savings = series[
+    ["month", bom, added, eom, "savings_target", "savings_target_eom", required]
+].set_axis(["month"] + COLUMNS, axis="columns")
+
 st.dataframe(
-    ui.money_table(series[["month"] + savings_columns], savings_columns, labels=LABELS),
+    ui.money_table(savings, COLUMNS, labels=LABELS),
     use_container_width=True,
     hide_index=True,
 )
 
 st.subheader("Investments")
-investment_columns = [
-    "investments_bom", "investments_added", "investments_eom", "investments_target",
-    "investments_target_eom", "investments_required",
-]
+investments = series[
+    ["month", "investments_bom", "investments_added", "investments_eom",
+     "investments_target", "investments_target_eom", "investments_required"]
+].set_axis(["month"] + COLUMNS, axis="columns")
+
 st.dataframe(
-    ui.money_table(
-        series[["month"] + investment_columns], investment_columns, labels=LABELS
-    ),
+    ui.money_table(investments, COLUMNS, labels=LABELS),
     use_container_width=True,
     hide_index=True,
 )
 
 st.caption(
-    "**Added** is split by where the money went: *available* is the change in the "
-    "unearmarked balance, *reserved* the change in the earmarked pots"
+    "**Added** is a change in balance rather than a deposit total, so a month that spends "
+    "out of savings shows a negative. On the *available* basis it is what went into the "
+    "unearmarked accounts, on *reserved* what went into the earmarked pots"
     + (f" ({', '.join(earmarked_names)})" if earmarked_names else "")
-    + ". The two sum to the change in the total. Both are changes in balance rather than "
-    "deposit totals, so a month that spends out of savings shows a negative. "
-    "**Target — EoM** is the monthly targets summed to date, and **Required** is that "
-    "cumulative target less what is available at the month end, so a positive figure is "
-    "money still to find. It measures a running total of contributions against a balance, "
-    "which only lines up from the month the targets start in."
+    + "; the two sum to the total. **Cumulative target** is the monthly targets summed to "
+    "date, and **Required** is that less the balance on the chosen basis, so a positive "
+    "figure is money still to find. It measures a running total of contributions against a "
+    "balance, which only lines up from the month the targets start in."
 )
 
 st.divider()
@@ -139,46 +151,57 @@ st.divider()
 
 st.subheader("Balances over the year")
 
-plot = ui.to_float(series, ["available_eom", "investments_eom", "combined"]).rename(
-    columns={
-        "available_eom": "Savings (available)",
-        "investments_eom": "Investments",
-        "combined": "Combined",
-    }
-)
+BALANCE_SERIES = {
+    "available_eom": "Savings (available)",
+    "reserved_eom": "Savings (reserved)",
+    "investments_eom": "Investments",
+    "combined": "Combined (total)",
+    "combined_available": "Combined (available)",
+}
+plot = ui.to_float(series, list(BALANCE_SERIES)).rename(columns=BALANCE_SERIES)
 fig = px.line(
-    plot, x="month", markers=True,
-    y=["Savings (available)", "Investments", "Combined"],
+    plot, x="month", markers=True, y=list(BALANCE_SERIES.values()),
     labels={"value": "Balance (£)", "month": "", "variable": ""},
 )
 fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
 st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.caption(
+    "**Combined (total)** is all savings plus investments; **combined (available)** leaves "
+    "out the earmarked pots, so the gap between the two lines is what is already spoken for."
+)
 
 st.subheader("Added against target")
 
-chart = ui.to_float(
-    series,
-    ["savings_added", "savings_target", "investments_added", "investments_target"],
-).melt(
-    id_vars="month",
-    value_vars=["savings_added", "savings_target", "investments_added",
-                "investments_target"],
+# Against the *cumulative* target, which means what is added has to accumulate too: a month's
+# 200 set beside a target that has reached 2,400 by December is not a comparison, it is two
+# quantities on scales an order of magnitude apart. Both sides run from the first month shown.
+ADDED_SERIES = {
+    "available_added": "Savings added (available)",
+    "reserved_added": "Savings added (reserved)",
+    "savings_target_eom": "Savings target",
+    "investments_added": "Investments added",
+    "investments_target_eom": "Investments target",
+}
+cumulative = ui.to_float(series, list(ADDED_SERIES)).copy()
+for column in ("available_added", "reserved_added", "investments_added"):
+    cumulative[column] = cumulative[column].cumsum()
+
+chart = cumulative.melt(
+    id_vars="month", value_vars=list(ADDED_SERIES),
     var_name="series", value_name="amount",
 )
-chart["series"] = chart["series"].map(
-    {
-        "savings_added": "Savings added",
-        "savings_target": "Savings target",
-        "investments_added": "Investments added",
-        "investments_target": "Investments target",
-    }
-)
+chart["series"] = chart["series"].map(ADDED_SERIES)
 fig = px.bar(
     chart.dropna(subset=["amount"]), x="month", y="amount", color="series",
     barmode="group", labels={"amount": "£", "month": "", "series": ""},
 )
 fig.update_layout(margin=dict(t=10))
 st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.caption(
+    "Everything here is cumulative from the first month shown, so a bar that stays below its "
+    "target bar is a shortfall that has not been made up. The two savings bars stack "
+    "conceptually: together they are the change in the total balance."
+)
 
 st.divider()
 

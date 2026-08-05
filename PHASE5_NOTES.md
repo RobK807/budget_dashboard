@@ -368,3 +368,81 @@ standing figure.
 
 Version 5. New column: `salary_profile.base_salary`. `annual_salary` is retained as the
 pre-split record and is no longer read.
+
+# The second review
+
+Presentation, mostly — but two of the items turned out to be bugs rather than preferences.
+
+## One dictionary, or none of the formats survive
+
+The Cards page and Settings → Cards were both asked for money formatting they already had in
+the code:
+
+```python
+ui.money_table(..., ["credit_limit", "opening_balance"]).format({"Minimum %": "{:.2f}"})
+```
+
+`Styler.format` clears nothing only when *every* argument is left at its default. Given a
+dict, it walks all the columns in the subset — and with no `subset` that is all of them —
+assigning a display function to each, falling back to the default formatter for any the dict
+does not mention. The second call therefore replaced the first. Both tables lost the pound
+sign and the separator, silently, and both were the only two places in the app that chained.
+
+`ui.money_table` now takes `formats=` for the non-money columns, so there is one dict and
+nothing to overwrite. `tests/test_refinements.py` asserts the broken spelling stays broken —
+if a future pandas makes chaining cumulative, that test says so rather than quietly passing.
+
+The same call now renders missing values as `—`. `£nan` was always wrong and became hard to
+miss once expected and actual were shown line for line, where a future month is empty on one
+side by definition.
+
+## Holiday pay, counted twice
+
+Putting expected and actual side by side is what exposed it. The comparison table mapped the
+stored `benefits` to "Actual — Pension" and read £1,177.88 against an expected £990.88 —
+adrift by exactly the £187.00 in the holiday pay column two places to its left.
+
+`benefits` is the old workbook's lumped figure: pension *and* holiday pay. Shown beside its
+own holiday pay column it counted that twice. Taking it back out reproduces the expected
+pension to the penny in all four recorded months. Nothing stored changed; this was only ever
+a display of it.
+
+## A note that said 0
+
+Found while checking the pages rendered. The Projections day-by-day table merged projected
+against actual and called `.fillna(Decimal("0"))` on the result, which reached the comment
+column too — so a day with no note showed `0`, and the column held Decimals beside strings,
+which Arrow cannot type. Streamlit recovered by coercing the column, so it never surfaced as
+an error, only as a wrong-looking table. Now only the two amount columns are filled.
+
+## Savings, on three bases
+
+The Savings table had grown to nine columns interleaving total and available. It is six now —
+BoM, Added, EoM, monthly target, cumulative target, required — with a **Basis** dropdown
+choosing between total, available and reserved. `savings_series` gained `total_required`,
+`available_required` and `reserved_required`: one cumulative target measured against each of
+the three balances, since what the dropdown switches is which pot is being asked to meet the
+target, not the target itself.
+
+'Available' now lives on `account_balances` as an `earmarked` flag rather than being derived
+from the account list at each call site, so the Summary chart and the savings tables cannot
+disagree about what the word means. NaN is truthy, so the flag is read through a guard — a
+bare `bool()` would have earmarked every unflagged pot.
+
+## Added against a cumulative target
+
+Asked for directly, and it forces the other side to accumulate too: a month's £200 set beside
+a target that has reached £2,400 by December is not a comparison, it is two quantities an
+order of magnitude apart. Both sides now run cumulatively from the first month shown, so a
+bar below its target bar is a shortfall not yet made up.
+
+## Charts that stop where the data does
+
+Two of them ran on into empty space. The cycling cumulative saving is built from recorded
+days, and days are recorded for the whole year ahead — so the line ran flat out to next
+March, squeezing the part where something actually happened. It is cut at today, after the
+cumsum, so today's figure is still the running total of everything before it.
+
+The card balance charts started at the oldest card's opening date and spent most of their
+width on balances already cleared. They start at the current month, with a **From** dropdown
+back to April 2026 for when a card's history is the point.

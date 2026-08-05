@@ -309,19 +309,39 @@ def heatmap(df: pd.DataFrame):
     return df.style.format("£{:,.2f}").map(shade)
 
 
-def money_table(df: pd.DataFrame, money_columns: list[str], labels: dict[str, str] | None = None):
+def money_table(
+    df: pd.DataFrame,
+    money_columns: list[str],
+    labels: dict[str, str] | None = None,
+    formats: dict[str, str] | None = None,
+):
     """Table with thousands separators on the money columns.
 
     st.column_config.NumberColumn takes a printf format, and printf has no thousands
     separator -- '%.2f' gives £39255.98. A pandas Styler does support '{:,.2f}' and keeps the
     underlying values numeric, so sorting still works on magnitude rather than on text.
+
+    `formats` is for the non-money columns that still need a format -- a percentage, say --
+    and exists because the obvious spelling of that is silently wrong:
+
+        ui.money_table(...).format({"Minimum %": "{:.2f}"})
+
+    Styler.format with no `subset` walks *every* column and assigns a display function to
+    each, falling back to the default for any the dict does not mention. So the second call
+    does not add to the first, it replaces it, and the money columns lose their pound sign
+    and separator. That is what had happened to the Cards page and to Settings > Cards.
+    Passing both through one call means there is only ever one dict to overwrite.
     """
     out = df.copy()
+    spec = dict.fromkeys(money_columns, "£{:,.2f}")
+    spec.update(formats or {})
     if labels:
         out = out.rename(columns=labels)
-        money_columns = [labels.get(c, c) for c in money_columns]
-    out = to_float(out, money_columns)
-    return out.style.format({c: "£{:,.2f}" for c in money_columns})
+        spec = {labels.get(c, c): f for c, f in spec.items()}
+    out = to_float(out, list(spec))
+    # A blank is not zero: a month with no payslip yet has no NI, and '£nan' says that
+    # badly. The dash matches ui.name_blanks, so an empty cell reads the same everywhere.
+    return out.style.format(spec, na_rep="—")
 
 
 def currency_columns(*names: str) -> dict:

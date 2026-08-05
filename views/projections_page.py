@@ -125,9 +125,12 @@ if chosen:
         if not daily_actual.empty
         else pd.DataFrame(columns=["date", "classification", "total"])
     )
-    merged = proj.merge(
-        act, on=["date", "classification"], how="outer"
-    ).fillna(Decimal("0"))
+    merged = proj.merge(act, on=["date", "classification"], how="outer")
+    # Only the amounts. A blanket fillna(Decimal("0")) reached the comment too, so a day
+    # with no note showed '0' -- and left the column holding Decimals beside strings, which
+    # Arrow cannot type. A missing note stays missing and renders as a dash.
+    for column in ("amount", "total"):
+        merged[column] = merged[column].fillna(Decimal("0"))
     merged = merged.rename(columns={"amount": "projected", "total": "actual"})
     merged["difference"] = merged["actual"] - merged["projected"]
     merged = merged.sort_values(["date", "classification"])

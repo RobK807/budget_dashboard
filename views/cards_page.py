@@ -94,7 +94,8 @@ st.dataframe(
             "term_months": "Term (months)", "payment_day": "Payment day",
             "credit_limit": "Credit limit", "clears": "Clears",
         },
-    ).format({"Minimum %": "{:.2f}"}),
+        formats={"min_pct": "{:,.2f}"},
+    ),
     use_container_width=True,
     hide_index=True,
 )
@@ -123,6 +124,24 @@ for name, rows in schedules.items():
 projection = pd.DataFrame(frames)
 
 if not projection.empty:
+    # These charts are about what is still to pay, so they start here rather than at the
+    # oldest card's opening date -- a schedule that begins eighteen months back spends most
+    # of its width on balances already cleared. The months before it are still reachable,
+    # since a card taken out last year is the one whose history you want to check.
+    projection["period"] = projection["date"].map(repo.period_of)
+    months = sorted(projection["period"].unique())
+    this_month = repo.period_of(today)
+    from_month = st.selectbox(
+        "From",
+        options=months,
+        index=months.index(this_month) if this_month in months else 0,
+        format_func=repo.period_label,
+        key="cards_from_month",
+        help="Defaults to the current month. Pick an earlier one to see what has already "
+             "been repaid.",
+    )
+    projection = projection[projection["period"] >= from_month]
+
     fig = px.line(
         projection, x="date", y="balance", color="card",
         labels={"balance": "Balance (£)", "date": "", "card": ""},

@@ -512,6 +512,21 @@ class TestSavingsSeries:
         assert rows.iloc[0]["savings_required"] == Decimal("300") - Decimal("1200")
         assert rows.iloc[1]["savings_required"] == Decimal("600") - Decimal("1200")
 
+    def test_required_is_offered_on_each_of_the_three_bases(self):
+        """One cumulative target, three balances measured against it: what the basis
+        dropdown switches is which pot is being asked to meet it."""
+        april = self.series().iloc[0]
+        assert april["total_required"] == Decimal("300") - Decimal("1700")
+        assert april["available_required"] == Decimal("300") - Decimal("1200")
+        assert april["reserved_required"] == Decimal("300") - Decimal("500")
+        # The original column is the available basis, which is what it always measured.
+        assert april["savings_required"] == april["available_required"]
+
+    def test_combined_available_leaves_out_the_earmarked_pots(self):
+        april = self.series().iloc[0]
+        assert april["combined"] == Decimal("1700") + Decimal("2000")
+        assert april["combined_available"] == Decimal("1200") + Decimal("2000")
+
     def test_investments_are_tracked_separately(self):
         may = self.series().iloc[1]
         assert may["investments_eom"] == Decimal("2150")
