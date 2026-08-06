@@ -81,6 +81,14 @@ with tab_upload:
         source_name = uploaded.name
         st.caption(f"{len(frame)} row(s) read from {uploaded.name}")
 
+        # Editable, like the paste tab. An import is all-or-nothing, so one bad row stops the
+        # other forty-seven -- and a read-only upload meant the only way to fix that row was
+        # to leave, edit the file elsewhere and upload it again. The rejection message said
+        # "nothing will be written until fixed" while offering nothing to fix it with.
+        frame = st.data_editor(
+            frame, num_rows="dynamic", width="stretch", key="uploaded_rows",
+        )
+
 if frame is None or frame.empty:
     st.info("Nothing to import yet.")
     candidates = []
@@ -120,7 +128,10 @@ if candidates:
     )
 
     if bad:
-        st.error(f"{len(bad)} row(s) cannot be imported. Nothing will be written until fixed.")
+        st.error(
+            f"{len(bad)} row(s) cannot be imported. Nothing will be written until fixed — "
+            "correct them in the table above, which is editable."
+        )
         for c, r in bad:
             st.markdown(f"**Row {c.source_row}** — " + "; ".join(r.errors))
     elif warned:

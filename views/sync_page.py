@@ -15,6 +15,41 @@ from budget import config, sync, ui
 
 data = ui.page_header("Sync", "Keep the laptop and the desktop on the same database.")
 
+
+# --------------------------------------------------------------------------- outcomes
+#
+# Every action here changes the state the page is *drawn from*, so each has to redraw or the
+# banner keeps describing the position before the button was pressed -- which is how a pull
+# that had worked went on reporting a conflict that no longer existed.
+#
+# Redrawing means st.rerun(), and a rerun discards anything already written this run. So the
+# outcome is put away first and rendered on the far side of it. Writing the message and then
+# rerunning, which is what most of these buttons used to do, threw the message away: a push
+# reporting 'promoted; previous master kept as budget.db.bak' showed that to nobody.
+
+def finish(result: sync.Result, follow_up: str | None = None) -> None:
+    """Stash an outcome and redraw. Does not return -- st.rerun ends the script run."""
+    st.session_state["sync_outcome"] = {
+        "ok": result.ok,
+        "message": result.message,
+        "detail": list(result.detail),
+        "follow_up": follow_up if result.ok else None,
+    }
+    st.rerun()
+
+
+def show_outcome() -> None:
+    """Render whatever the last action reported, once. Popped so a later rerun is clean."""
+    outcome = st.session_state.pop("sync_outcome", None)
+    if not outcome:
+        return
+    (st.success if outcome["ok"] else st.error)(outcome["message"])
+    for line in outcome["detail"]:
+        st.caption(f"· {line}")
+    if outcome["follow_up"]:
+        st.info(outcome["follow_up"])
+
+
 with ui.session() as session:
     state = sync.status(session)
 
@@ -35,6 +70,8 @@ elif state.tone == "warning":
     st.warning(f"**{state.label}**")
 else:
     st.success(f"**{state.label}**")
+
+show_outcome()
 
 if not state.nas.reachable:
     st.caption(

@@ -65,15 +65,44 @@ def map_columns(columns) -> tuple[dict[str, str], list[str]]:
     return mapping, unknown
 
 
+# A leading YYYY-M-D. Anything starting this way states its own order and must be taken at
+# its word -- see _to_date.
+_ISO_LEADING = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}(\D|$)")
+
+
 def _to_date(value) -> dt.date | None:
+    """A date from whatever the column holds, without guessing at an order it has stated.
+
+    Two conventions arrive here and they need opposite treatment:
+
+      * `03/08/2026` is ambiguous, and this is a UK budget, so it is 3 August.
+      * `2026-08-01` is not ambiguous. It is 1 August, in every locale.
+
+    Applying dayfirst to both -- which is what this used to do -- reads the second as
+    year-day-month and returns 8 January. Pandas warns about it only when the day is too
+    large to be a month, so `2026-07-31` came back correct with a warning while `2026-08-01`
+    came back wrong in silence. Every date in the first twelve days of a month was quietly
+    transposed, and the ones that would have been noticed were the ones that still worked.
+
+    It mattered because ISO is what this application itself writes: the conflict export in
+    sync.local_only_frame emits `datetime.date`, which `to_csv` renders as ISO. So the round
+    trip that exists to rescue a machine's transactions -- export, pull, re-import -- was the
+    one path guaranteed to hit it.
+    """
     if value is None or (isinstance(value, float) and pd.isna(value)) or value == "":
         return None
     if isinstance(value, dt.datetime):
         return value.date()
     if isinstance(value, dt.date):
         return value
-    # dayfirst: this is a UK budget, so 03/08/2026 is 3 August.
-    parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    parsed = pd.to_datetime(
+        text, dayfirst=not _ISO_LEADING.match(text), errors="coerce"
+    )
     return None if pd.isna(parsed) else parsed.date()
 
 
