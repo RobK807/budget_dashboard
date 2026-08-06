@@ -69,6 +69,18 @@ AMEX_STAYS_ON_BA = (
 
 CORRECTIONS = {2025: xr.CORRECTIONS_25_26, 2026: xr.CORRECTIONS_26_27}
 
+# One workbook column can be several database accounts. A month tab's 'Amex' block is the
+# two cards added together, so that is what a reconciliation has to compare against.
+BLOCK_TO_DB = {"Amex": ("BA Amex", "Platinum Amex")}
+
+
+def db_accounts_for_block(block_name: str) -> tuple[str, ...]:
+    """The database accounts one month-tab column stands for. Identity for anything the
+    backfill does not rename, so the current year's reconciliation is unaffected."""
+    if block_name in BLOCK_TO_DB:
+        return BLOCK_TO_DB[block_name]
+    return (ACCOUNT_ALIASES.get(block_name, block_name),)
+
 # Stage one only: reference data. Clear this once transactions, opening balances,
 # salary, cycling, cards and the savings plan are all in, so a half-built import cannot
 # be committed to a real database by accident.
@@ -242,6 +254,121 @@ def backfill(session: Session, workbook: Path, verbose: bool = False) -> list[st
     )
     done.append(f"classifications: {widened} widened")
     session.flush()
+
+    # --- opening balances --------------------------------------------------------------
+    #
+    # Stored for every month as the workbook states them, but only the earliest per account
+    # is now consulted: repo.rolled_forward_openings derives the rest. Storing them all keeps
+    # the record faithful and gives the reconciliation something to check against.
+    stored = 0
+    for month, period in zip(xr.FISCAL_MONTHS, periods):
+        layout = xr.month_layout(values, formulas, month, period)
+        for name, amount in xr.read_opening_balances(values, layout).items():
+            db_name = ACCOUNT_ALIASES.get(name, name)
+            account = session.scalar(select(Account).where(Account.name == db_name))
+            if account is None:
+                continue
+            session.add(
+                OpeningBalance(account_id=account.id, period=period, amount=amount)
+            )
+            stored += 1
+
+    # Platinum Amex has no column in this workbook but does have transactions in it, from
+    # the 24 March split. Anchoring it at zero that month is what lets its April 2026
+    # opening derive to the stated figure instead of being inherited from BA Amex.
+    platinum = session.scalar(select(Account).where(Account.name == "Platinum Amex"))
+    split_period = f"{AMEX_CUTOVER.year:04d}-{AMEX_CUTOVER.month:02d}"
+    if platinum is not None and split_period in periods:
+        session.add(
+            OpeningBalance(
+                account_id=platinum.id, period=split_period, amount=Decimal("0")
+            )
+        )
+        stored += 1
+        done.append(f"Platinum Amex anchored at zero for {split_period}")
+    session.flush()
+    done.append(f"opening balances: {stored} stored across {len(periods)} months")
+
+    # --- transactions ------------------------------------------------------------------
+    rows = ledger_rows(values, year)
+    batch = ImportBatch(
+        filename=workbook.name,
+        row_count=len(rows),
+        note=f"Backfill of {year}/{str(year + 1)[-2:]}",
+    )
+    session.add(batch)
+    session.flush()
+
+    accounts = {a.name: a for a in session.scalars(select(Account))}
+    categories = {c.name: c for c in session.scalars(select(Category))}
+    classifications = {c.name: c for c in session.scalars(select(Classification))}
+
+    rejected: list[str] = []
+    imported = soft_deleted = 0
+    by_day: dict[tuple, int] = {}
+
+    for row in rows:
+        from_name = account_for(row.account_from, row)
+        to_name = account_for(row.account_to, row) if row.account_to else None
+        account = accounts.get(from_name)
+        if account is None:
+            rejected.append(f"row {row.source_row}: unknown account {from_name!r}")
+            continue
+        if row.category and row.category not in categories:
+            rejected.append(f"row {row.source_row}: unknown category {row.category!r}")
+            continue
+        if row.classification and row.classification not in classifications:
+            rejected.append(
+                f"row {row.source_row}: unknown purchase type {row.classification!r}"
+            )
+            continue
+
+        # The workbook's own identifier scheme, rebuilt rather than copied: the Amex split
+        # sends some rows to a different account, and a copied identifier would still name
+        # the old one.
+        key = (row.txn_date, from_name)
+        seq = by_day.get(key, 0)
+        by_day[key] = seq + 1
+        stem = f"{row.txn_date.month:02d}{row.txn_date.day:02d}_{account.short_code}"
+        if row.type == "Transfer" and to_name:
+            stem += f"_{accounts[to_name].short_code}"
+
+        session.add(
+            Txn(
+                txn_date=row.txn_date,
+                period=f"{row.txn_date.year:04d}-{row.txn_date.month:02d}",
+                type=row.type,
+                amount=row.amount,
+                account_from_id=account.id,
+                account_to_id=accounts[to_name].id if to_name else None,
+                category_id=categories[row.category].id if row.category else None,
+                classification_id=(
+                    classifications[row.classification].id if row.classification else None
+                ),
+                comment=row.comment,
+                category_comment=row.category_comment,
+                legacy_identifier=f"{stem}_{seq}",
+                source="bulk",
+                batch_id=batch.id,
+                created_at=row.created_at,
+                deleted_at=dt.datetime.now() if row.removed else None,
+                deleted_reason=row.removed_reason,
+            )
+        )
+        imported += 1
+        soft_deleted += bool(row.removed)
+
+    if rejected:
+        raise ValueError(
+            f"{len(rejected)} row(s) could not be imported:\n    "
+            + "\n    ".join(rejected[:20])
+        )
+
+    session.flush()
+    done.append(
+        f"transactions: {imported} imported as batch {batch.id}"
+        f" ({soft_deleted} soft-deleted)"
+    )
 
     return done
 

@@ -313,6 +313,7 @@ class Corrections:
     dates: dict[int, tuple[dt.date, dt.date]] = field(default_factory=dict)
     amounts: dict[int, tuple[Decimal, Decimal]] = field(default_factory=dict)
     categories: dict[int, tuple[str, str]] = field(default_factory=dict)
+    accounts: dict[int, tuple[str, str]] = field(default_factory=dict)
     phantoms: dict[int, str] = field(default_factory=dict)
 
     def covers(self, date: dt.date) -> bool:
@@ -336,14 +337,36 @@ CORRECTIONS_26_27 = Corrections(
 #             year was wrong
 #   row 1929  GBP 500.61 NY hotel on 29 March; the real figure is 499.85, and the 76p is
 #             exactly what stopped Platinum Amex's opening reconciling across the year end
+#   row 326   an exact duplicate of row 324 -- the same HSBC -> First Direct transfer of
+#             3,524.58 on the same day, entered twice. Kept and soft-deleted rather than
+#             dropped, so the ledger still shows what the workbook contained.
+#   row 372   6 June, 148.40 'Hyrox' -- on Mastercard, not Amex
+#   row 589   9 July, a TfL debit left at zero; it was 10.50
+#   row 1221  9 November, TfL recorded as 6.00; it was 7.40
+#   row 1547  a TfL debit left at zero and dated a day early: 7.70 on 9 January
+# Row 1796 (27 February, 85.05 'Lottery') is *not* corrected: the ledger is right and the
+# workbook put it on the March tab. It is an accepted difference in reconcile.py instead.
+#
+# The user counts the header as row 1, so their numbering runs one behind openpyxl's. These
+# are openpyxl's.
 CORRECTIONS_25_26 = Corrections(
     tax_year=2025,
     dates={
         2: (dt.date(2019, 4, 1), dt.date(2025, 4, 1)),
         1169: (dt.date(2022, 11, 1), dt.date(2025, 11, 1)),
+        1547: (dt.date(2026, 1, 8), dt.date(2026, 1, 9)),
     },
-    amounts={1929: (Decimal("500.61"), Decimal("499.85"))},
-    phantoms={2: "Template seed row: no matching entry in the April tab"},
+    amounts={
+        589: (Decimal("0"), Decimal("10.50")),
+        1221: (Decimal("6"), Decimal("7.40")),
+        1547: (Decimal("0"), Decimal("7.70")),
+        1929: (Decimal("500.61"), Decimal("499.85")),
+    },
+    accounts={372: ("Amex", "Mastercard")},
+    phantoms={
+        2: "Template seed row: no matching entry in the April tab",
+        326: "Duplicate of row 324: the same HSBC to First Direct transfer, entered twice",
+    },
 )
 
 
@@ -359,6 +382,7 @@ def read_ledger(
     rows: list[LedgerRow] = []
     notes: list[str] = []
     applied_fixes = applied_amount_fixes = applied_phantoms = applied_category_fixes = 0
+    applied_account_fixes = 0
 
     for r in range(2, ws.max_row + 1):
         raw_date = ws.cell(r, 1).value
@@ -385,6 +409,16 @@ def read_ledger(
             )
 
         account_from = _clean(ws.cell(r, 4).value)
+        if r in corrections.accounts:
+            expected, corrected = corrections.accounts[r]
+            if str(account_from) != expected:
+                raise ValueError(
+                    f"Debug row {r}: expected account {expected!r}, found {account_from!r}. "
+                    "The workbook has changed -- re-verify the workbook's account fixes."
+                )
+            notes.append(f"row {r}: account {expected!r} -> {corrected!r}")
+            account_from = corrected
+            applied_account_fixes += 1
         if account_from and str(account_from).strip().lower() == "cash":
             raise ValueError(
                 f"Debug row {r}: cash transaction found. Cash is no longer tracked "
@@ -449,6 +483,7 @@ def read_ledger(
         ("date", applied_fixes, len(corrections.dates)),
         ("amount", applied_amount_fixes, len(corrections.amounts)),
         ("category", applied_category_fixes, len(corrections.categories)),
+        ("account", applied_account_fixes, len(corrections.accounts)),
         ("phantom", applied_phantoms, len(corrections.phantoms)),
     ):
         if applied != expected_total:

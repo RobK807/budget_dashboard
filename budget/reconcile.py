@@ -27,6 +27,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from budget import config, repo, xlsm_reader as xr
+from budget.backfill_year import db_accounts_for_block
 from budget.db import make_engine, make_session_factory
 from budget.models import Account, Classification, OpeningBalance, Txn
 from budget.postings import postings_for
@@ -52,6 +53,20 @@ ACCEPTED: dict[tuple[str, str], str] = {
     # corrected day shifts the month's closing figure and everything that reads it.
     ("May", "Food"): "Summary view of the GBP 17.09 correction above.",
     ("May", "Running Food"): "Month-tab running view of the GBP 17.09 correction above.",
+    # 25-26. The ledger is right and the workbook is not: Debug row 1796 is a GBP 85.05
+    # 'Lottery' debit on Mastercard dated 27 February, and the workbook posted it to the
+    # March tab instead. Everything else about it -- date, amount, comment -- is correct, so
+    # the difference shows in February and closes again by March. Confirmed by the user.
+    ("March", "Amex"): (
+        "Debug row 1929, 29 Mar, the NY hotel charge. The workbook says GBP 500.61; the real "
+        "figure is 499.85, which the user identified. The 76p is exactly what stopped "
+        "Platinum Amex's opening reconciling into 26-27, and with it corrected the two cards "
+        "land on their stated April 2026 openings to the penny."
+    ),
+    ("February", "Mastercard"): (
+        "Debug row 1796, 27 Feb, Mastercard, GBP 85.05 'Lottery'. The workbook posted it to "
+        "the March tab; the ledger dates it correctly. Confirmed by the user."
+    ),
 }
 
 # Differences that are understood but not yet decided. Listed so the run stays usable as a
@@ -130,13 +145,23 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
         month_diffs = []
         for block in layout.blocks:
             name = block.name
-            computed = opening.get(name, Decimal("0")) + movement.get(name, Decimal("0"))
+            # One column can stand for several accounts: a workbook that predates a split
+            # shows the cards added together, which is what its 'End' figure is.
+            parts = db_accounts_for_block(name)
+            computed = sum(
+                (opening.get(p, Decimal("0")) + movement.get(p, Decimal("0")) for p in parts),
+                Decimal("0"),
+            )
             expected = closing.get(name, Decimal("0"))
             if abs(computed - expected) > TOLERANCE:
                 month_diffs.append(Diff(month, name, expected, computed))
-            # This month's close is next month's open. Carried whether or not it matched, so
-            # one bad month shows as one difference rather than repeating to March.
-            running[name] = computed
+            # This month's close is next month's open, carried per account rather than per
+            # column so a split stays split. Carried whether or not it matched, so one bad
+            # month shows as one difference rather than repeating to March.
+            for part in parts:
+                running[part] = opening.get(part, Decimal("0")) + movement.get(
+                    part, Decimal("0")
+                )
 
         status = "OK" if not month_diffs else f"{len(month_diffs)} MISMATCH"
         print(
