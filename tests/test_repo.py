@@ -313,3 +313,54 @@ class TestCumulativeTax:
         got = repo.cumulative_tax(pd.DataFrame(), self.bands_for)
         assert got.empty
         assert "difference" in got.columns
+
+
+class TestSplitAtZero:
+    """Splitting a line so the part below the axis can be drawn in another colour.
+
+    Plotly colours a line per trace, not per segment, so the series has to be handed over as
+    two. The property that matters is that they meet *on* the axis -- without interpolating
+    the crossing there is a visible break, one sample wide, every time a running total passes
+    through nothing, which on a daily series is often.
+    """
+
+    def split(self, y, x=None):
+        from budget import ui
+
+        return ui.split_at_zero(x or list(range(len(y))), y)
+
+    def test_a_crossing_is_interpolated_onto_the_axis(self):
+        xs, above, below = self.split([10.0, -10.0])
+        assert xs == [0, 0.5, 1]
+        assert above == [10.0, 0.0, None]
+        assert below == [None, 0.0, -10.0]
+
+    def test_the_two_halves_share_one_x_axis(self):
+        xs, above, below = self.split([5.0, -5.0, 5.0])
+        assert len(xs) == len(above) == len(below)
+
+    def test_every_point_belongs_to_exactly_one_half_unless_it_is_zero(self):
+        _, above, below = self.split([3.0, -3.0, 4.0])
+        for a, b in zip(above, below):
+            assert (a is None) != (b is None) or a == b == 0.0
+
+    def test_a_series_that_never_goes_negative_has_an_empty_lower_half(self):
+        _, above, below = self.split([1.0, 2.0, 3.0])
+        assert above == [1.0, 2.0, 3.0]
+        assert below == [None, None, None]
+
+    def test_touching_zero_without_crossing_does_not_break_the_line(self):
+        """Zero belongs to both halves, so a line that grazes the axis stays joined."""
+        xs, above, below = self.split([2.0, 0.0, 2.0])
+        assert xs == [0, 1, 2]
+        assert above == [2.0, 0.0, 2.0]
+
+    def test_dates_interpolate_too(self):
+        xs, _, _ = self.split(
+            [4.0, -4.0],
+            [pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-03")],
+        )
+        assert xs[1] == pd.Timestamp("2026-08-02")
+
+    def test_an_empty_series_is_not_an_error(self):
+        assert self.split([]) == ([], [], [])

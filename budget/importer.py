@@ -136,6 +136,28 @@ def _title(value) -> str | None:
     )
 
 
+# Categories whose comment column is a restatement of the transaction's own comment. 'Other'
+# is the catch-all: the category says nothing about what the payment was, so the category
+# comment is where the description would otherwise have to be typed a second time.
+INHERIT_COMMENT_FOR = ("other",)
+
+
+def _inherited_category_comment(
+    entered: str | None, category: str | None, comment: str | None
+) -> str | None:
+    """A default, not an override: only fills a blank, and only for the catch-all category.
+
+    Anything typed into the column wins, so this can be corrected on the row rather than
+    fought with -- and a category that does describe the spending is left alone, where
+    copying the comment across would just be the same words twice.
+    """
+    if entered is not None:
+        return entered
+    if category is None or category.strip().lower() not in INHERIT_COMMENT_FOR:
+        return None
+    return comment
+
+
 def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
     """Table -> candidates. Returns (candidates, problems with the table itself)."""
     mapping, unknown = map_columns(df.columns)
@@ -161,6 +183,8 @@ def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
         # Skip rows that are entirely blank -- common when pasting from a spreadsheet.
         if all(_text(get(row, f)) is None for f in mapping):
             continue
+        category = _text(get(row, "category"))
+        comment = _text(get(row, "comment"))
         candidates.append(
             Candidate(
                 txn_date=_to_date(get(row, "txn_date")),
@@ -168,15 +192,39 @@ def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
                 amount=to_decimal(get(row, "amount")),
                 account_from=_text(get(row, "account_from")),
                 account_to=_text(get(row, "account_to")),
-                category=_text(get(row, "category")),
+                category=category,
                 classification=_text(get(row, "classification")),
-                comment=_text(get(row, "comment")),
-                category_comment=_text(get(row, "category_comment")),
+                comment=comment,
+                category_comment=_inherited_category_comment(
+                    _text(get(row, "category_comment")), category, comment
+                ),
                 is_donation=_flag(get(row, "is_donation")),
                 source_row=offset,
             )
         )
     return candidates, problems
+
+
+def with_blank_rows(frame: pd.DataFrame, count: int) -> pd.DataFrame:
+    """`frame` with `count` empty rows appended, keeping its dtypes.
+
+    For entering a known number of transactions at once. The editor's own + button adds one
+    row per click, which is fine for three and tedious for forty.
+
+    Concatenating an all-NA frame would widen the dtypes to object and cost the date picker
+    and the numeric field, so the blanks are taken from the template and the column types
+    restored afterwards.
+    """
+    if count <= 0:
+        return frame
+    blanks = pd.DataFrame(
+        {column: [None] * count for column in frame.columns}, index=range(count)
+    )
+    grown = pd.concat([frame, blanks], ignore_index=True)
+    for column, dtype in template().dtypes.items():
+        if column in grown.columns:
+            grown[column] = grown[column].astype(dtype)
+    return grown
 
 
 def template() -> pd.DataFrame:

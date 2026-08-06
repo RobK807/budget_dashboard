@@ -199,11 +199,10 @@ if state.conflict:
             ui.close_connections()  # before the file is replaced, not after
             result = sync.pull(discard_local=True)
             ui.load_all.clear()
-            st.success(result.message) if result.ok else st.error(result.message)
-            for line in result.detail:
-                st.caption(f"· {line}")
-            if result.ok:
-                st.info("Now re-import the CSV under **Record → Import**.")
+            # Redraws. Without it the conflict banner above -- captured before this ran --
+            # keeps reporting a conflict that no longer exists, which reads as the pull
+            # having failed when it has not.
+            finish(result, "Now re-import the CSV under **Record → Import**.")
     st.divider()
 
 # --------------------------------------------------------------------------- actions

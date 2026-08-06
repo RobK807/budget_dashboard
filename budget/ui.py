@@ -14,6 +14,11 @@ from budget.db import make_engine, make_session_factory
 ACCENT = "#4C78A8"
 POSITIVE = "#54A24B"
 NEGATIVE = "#E45756"
+# For reference lines drawn over data -- targets, expected returns. Deliberately outside the
+# categorical palette the bars come from, so it cannot be read as another series, and bright
+# enough to survive both the dark theme and a column crossing underneath it. Plotly's default
+# is near-black, which disappeared into both.
+REFERENCE = "#F2B701"
 
 
 @st.cache_resource
@@ -369,6 +374,39 @@ def auto_push(label: str = "write") -> None:
         st.caption(f"Not synced: {result.message}")
 
 
+def split_at_zero(x, y):
+    """One series as two, so the part below the axis can be drawn in a different colour.
+
+    Returns `(x, above, below)` sharing one x axis, with None wherever the other half owns
+    the point. A crossing is interpolated and added to both at exactly zero, so the two lines
+    meet on the axis instead of leaving a gap the width of one sample -- which on a daily
+    series is a visible break every time the running total passes through nothing.
+
+    Plotly colours a line per *trace*, not per segment, which is why this cannot be done by
+    handing it a list of colours.
+    """
+    xs: list = []
+    above: list = []
+    below: list = []
+
+    for index, (point, value) in enumerate(zip(x, y)):
+        if index:
+            previous_x, previous_y = x[index - 1], y[index - 1]
+            crosses = (previous_y < 0) != (value < 0)
+            if crosses and previous_y != value:
+                share = (0 - previous_y) / (value - previous_y)
+                xs.append(previous_x + (point - previous_x) * share)
+                above.append(0.0)
+                below.append(0.0)
+        xs.append(point)
+        # Zero belongs to both, so a line that touches the axis without crossing it stays
+        # joined rather than ending and restarting.
+        above.append(value if value >= 0 else None)
+        below.append(value if value <= 0 else None)
+
+    return xs, above, below
+
+
 def money(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "-"
@@ -595,6 +633,41 @@ def sync_badge() -> None:
     st.write(f"{icon} {state.label}")
     if state.blocked_by:
         st.caption(f"Locked by {state.blocked_by.machine}")
+
+    # One button, and only where it is the right one. Amber covers four different states and
+    # the action differs by state: behind wants a pull, unpushed work wants a push, an
+    # unreachable NAS wants neither, and offline mode is deliberate. Green needs nothing and
+    # red needs the Sync page, where the consequences can be explained -- a conflict button
+    # here would be a one-click way to lose a machine's work.
+    if state.tone != "warning" or not state.nas.reachable or state.local.mode == sync.OFFLINE:
+        return
+
+    if state.behind:
+        # Safe by definition: nothing here is unpushed, so adopting the master loses nothing.
+        if st.button("Pull now", width="stretch", key="sidebar_pull"):
+            close_connections()  # before the file is replaced, not after
+            result = sync.pull()
+            load_all.clear()
+            st.session_state["sidebar_sync_outcome"] = _outcome(result)
+            st.rerun()
+    elif state.local.dirty:
+        if st.button(
+            f"Push {state.local.pending} change(s)", width="stretch", key="sidebar_push"
+        ):
+            with session() as s, s.begin():
+                result = sync.push(s)
+            load_all.clear()
+            st.session_state["sidebar_sync_outcome"] = _outcome(result)
+            st.rerun()
+
+    outcome = st.session_state.pop("sidebar_sync_outcome", None)
+    if outcome:
+        (st.success if outcome["ok"] else st.error)(outcome["message"])
+
+
+def _outcome(result) -> dict:
+    """A Result reduced to what survives a rerun. See sync_badge."""
+    return {"ok": result.ok, "message": result.message}
 
 
 def read_only() -> bool:

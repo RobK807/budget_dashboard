@@ -36,11 +36,21 @@ with tab_paste:
         "Pick from the lists rather than typing — the same options as the Add transaction "
         "page, filtered to what is currently configured."
     )
+    # Rows are seeded from session state rather than always starting empty, so a block of
+    # blanks can be added in one go. The key carries a version: st.data_editor keys its
+    # edits by row position, so reseeding under the same key would replay them onto the new
+    # frame. Bumping the key retires that state, and nothing is lost because the seed *is*
+    # what was on screen a moment ago.
+    seeded = st.session_state.get("import_seed")
+    if seeded is None:
+        seeded = importer.template()
+    grid_version = st.session_state.get("import_grid_version", 0)
+
     edited = st.data_editor(
-        importer.template(),
+        seeded,
         num_rows="dynamic",
         width="stretch",
-        key="import_grid",
+        key=f"import_grid_{grid_version}",
         column_config={
             "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
             "Type": st.column_config.SelectboxColumn(
@@ -67,6 +77,21 @@ with tab_paste:
             ),
         },
     )
+    add_count, add_button, clear_button = st.columns([1, 1, 3])
+    how_many = add_count.number_input(
+        "Rows to add", min_value=1, max_value=200, value=10, step=5,
+        key="import_row_count", label_visibility="collapsed",
+    )
+    if add_button.button("Add blank rows", width="stretch"):
+        # Seeded from `edited`, not from the previous seed, so anything typed survives.
+        st.session_state["import_seed"] = importer.with_blank_rows(edited, int(how_many))
+        st.session_state["import_grid_version"] = grid_version + 1
+        st.rerun()
+    if clear_button.button("Clear the table", disabled=seeded.empty and edited.empty):
+        st.session_state["import_seed"] = importer.template()
+        st.session_state["import_grid_version"] = grid_version + 1
+        st.rerun()
+
     if edited is not None and not edited.dropna(how="all").empty:
         frame = edited.dropna(how="all")
 
@@ -153,9 +178,11 @@ if candidates:
     verification = repo.import_verification(
         candidates, data["postings"], data["openings"], data["accounts"], current_period
     )
-    verification = repo.sort_human(
-        verification, by=["affected", "account"], ascending=[False, True]
-    ).reset_index(drop=True)
+    # Alphabetical, like every other list of accounts in the app. It used to float the
+    # affected accounts to the top, which put the table in an order that changed with the
+    # import and made a named account hard to find -- and the checkbox below already
+    # isolates the affected ones for anyone who wants only those.
+    verification = repo.sort_human(verification, by="account").reset_index(drop=True)
 
     filter_col, clear_col = st.columns([3, 1])
     only_affected = filter_col.checkbox(

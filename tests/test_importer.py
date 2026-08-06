@@ -180,3 +180,67 @@ class TestDateOrder:
 
         assert problems == []
         assert [c.txn_date for c in candidates] == list(exported["Date"])
+
+
+class TestBulkBlankRows:
+    """Adding a known number of rows at once. The editor's own + button adds one per click,
+    which is fine for three and tedious for forty."""
+
+    def test_rows_are_appended(self):
+        grown = importer.with_blank_rows(importer.template(), 5)
+        assert len(grown) == 5
+
+    def test_dtypes_survive(self):
+        """Concatenating an all-NA frame widens every column to object, which costs the date
+        picker and the numeric field in the editor and turns them into free text."""
+        template = importer.template()
+        grown = importer.with_blank_rows(template, 3)
+        assert dict(grown.dtypes) == dict(template.dtypes)
+
+    def test_existing_content_is_kept(self):
+        started = importer.with_blank_rows(importer.template(), 2)
+        started.loc[0, "Amount"] = 12.5
+        grown = importer.with_blank_rows(started, 3)
+
+        assert len(grown) == 5
+        assert grown.loc[0, "Amount"] == 12.5
+        assert dict(grown.dtypes) == dict(importer.template().dtypes)
+
+    def test_asking_for_none_changes_nothing(self):
+        started = importer.with_blank_rows(importer.template(), 2)
+        assert len(importer.with_blank_rows(started, 0)) == 2
+
+
+class TestCategoryCommentDefault:
+    """'Other' says nothing about what a payment was, so the description would otherwise be
+    typed twice. Every other category already describes it."""
+
+    def frame(self, category, comment, category_comment=None):
+        return pd.DataFrame(
+            {
+                "Date": ["2026-08-01"], "Type": ["Debit"], "Amount": [1],
+                "Account From": ["HSBC"], "Category": [category],
+                "Comment": [comment], "Category comment": [category_comment],
+            }
+        )
+
+    def test_other_inherits_the_comment(self):
+        candidates, _ = importer.parse(self.frame("Other", "Vet bill"))
+        assert candidates[0].category_comment == "Vet bill"
+
+    def test_a_named_category_does_not(self):
+        candidates, _ = importer.parse(self.frame("Food", "Lunch"))
+        assert candidates[0].category_comment is None
+
+    def test_anything_entered_wins(self):
+        """A default, not an override -- otherwise it could not be corrected on the row."""
+        candidates, _ = importer.parse(self.frame("Other", "Gift", "Birthday"))
+        assert candidates[0].category_comment == "Birthday"
+
+    def test_case_and_spacing_do_not_matter(self):
+        candidates, _ = importer.parse(self.frame("  other ", "Vet bill"))
+        assert candidates[0].category_comment == "Vet bill"
+
+    def test_no_comment_to_inherit_leaves_it_blank(self):
+        candidates, _ = importer.parse(self.frame("Other", None))
+        assert candidates[0].category_comment is None

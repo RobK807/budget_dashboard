@@ -295,10 +295,23 @@ st.divider()
 
 # ------------------------------------------------------------------- account detail
 
-st.subheader(f"Accounts at end of {latest['month']}")
+st.subheader("Accounts at end of the month")
+
+# Fixed to the last month in the series until now, which made 'what did I have in March'
+# a question the page could not answer. Defaults to the same month it always showed, so
+# the reading on arrival is unchanged.
+month_options = list(series["period"])
+detail_period = st.selectbox(
+    "Month",
+    month_options,
+    index=len(month_options) - 1,
+    format_func=repo.period_label,
+    key="accounts_month",
+    label_visibility="collapsed",
+)
 
 balances = repo.account_balances(
-    postings, data["openings"], latest["period"], accounts
+    postings, data["openings"], detail_period, accounts
 )
 detail = balances[balances["is_savings"] | balances["is_investment"]].copy()
 detail["kind"] = detail.apply(
@@ -446,11 +459,20 @@ with tab_return:
             expected_monthly = float(
                 repo.monthly_rate(repo.investment_return_rate(data["settings"])) * 100
             )
+            # Plotly's default hline is near-black, which vanishes on the dark theme and
+            # again wherever it crosses a bar. Amber sits outside the categorical palette
+            # the bars are drawn from, so it cannot be confused for a series, and it reads
+            # against both backgrounds. The annotation carries its own panel for the same
+            # reason -- over a negative month the text was landing on a coloured column.
             fig.add_hline(
                 y=expected_monthly,
                 line_dash="dash",
+                line_color=ui.REFERENCE,
+                line_width=2.5,
                 annotation_text=f"expected {expected_monthly:,.3f}%",
                 annotation_position="top left",
+                annotation_font_color=ui.REFERENCE,
+                annotation_bgcolor="rgba(0,0,0,0.55)",
             )
             fig.update_layout(margin=dict(t=10))
             fig.update_yaxes(tickformat=",.2f", hoverformat=",.2f")
@@ -461,7 +483,12 @@ with tab_return:
                 "by dividing by twelve."
             )
 
-        st.subheader("Summary")
+        # A month only enters the series once it has closed, so this stops at the last
+        # complete one rather than at today. That is the right calculation -- a part-month's
+        # return annualises to nonsense -- but the heading said 'Summary' and left you to
+        # work out why it disagreed with the balances above it.
+        closed_to = repo.period_label(returns["period"].max())
+        st.subheader(f"Summary to end of {closed_to}")
         summary = repo.investment_return_summary(returns)
         if summary.empty:
             st.caption("Nothing has completed a month yet.")
@@ -492,9 +519,11 @@ with tab_return:
             st.caption(
                 f"**Net** is the current balance less everything paid in, and **Return %** "
                 f"is that against the starting balance — the tracker's L3:N10. Measured to "
-                f"today rather than to the end of the plan, so months that have not happened "
-                f"are not counted. **Annualised** scales {months} month(s) up to a year, "
-                "which is a fair summary over a year and a noisy one over a quarter."
+                f"the end of **{closed_to}**, the last month to have closed: a month still "
+                f"running has no return to report, and annualising a part-month would "
+                f"exaggerate it. So these figures will trail the balances above, which are "
+                f"current. **Annualised** scales {months} month(s) up to a year, which is a "
+                "fair summary over a year and a noisy one over a quarter."
             )
 
 # --------------------------------------------------------------------------- interest

@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from budget import repo, ui
@@ -60,10 +61,55 @@ view = daily[daily["classification"].isin(chosen)].copy()
 view["running"] = view["running"].astype(float)
 
 today = pd.Timestamp(dt.date.today())
-fig = px.line(
-    view, x="date", y="running", color="classification",
-    labels={"running": "£", "date": "", "classification": ""},
-)
+
+if len(chosen) == 1:
+    # One series, so colour is free to mean something else: below zero is drawn red. With
+    # several selected, colour is already carrying which classification a line is and
+    # cannot say both -- see the else branch.
+    xs, above, below = ui.split_at_zero(
+        list(view["date"]), list(view["running"])
+    )
+    fig = go.Figure()
+    # An invisible full-height trace carries the hover, so a point stays readable whichever
+    # side of the axis it falls on. The two coloured traces only draw.
+    fig.add_trace(
+        go.Scatter(
+            x=list(view["date"]), y=list(view["running"]),
+            mode="lines", line=dict(width=0), showlegend=False,
+            name=chosen[0], hovertemplate=None,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=xs, y=above, mode="lines", name=chosen[0],
+            line=dict(color=ui.ACCENT), hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=xs, y=below, mode="lines", name=f"{chosen[0]} (below zero)",
+            line=dict(color=ui.NEGATIVE), hoverinfo="skip", showlegend=False,
+        )
+    )
+    fig.update_layout(yaxis_title="£", xaxis_title="")
+else:
+    fig = px.line(
+        view, x="date", y="running", color="classification",
+        labels={"running": "£", "date": "", "classification": ""},
+    )
+
+# Negative figures read red in the hover box whichever branch built the chart. Plotly
+# substitutes into the template before rendering it as HTML, so the colour can be chosen per
+# point through customdata; 'inherit' leaves positives to the theme's own hover colour.
+for trace in fig.data:
+    if trace.hoverinfo == "skip":
+        continue
+    values = [v if v is not None else float("nan") for v in trace.y]
+    trace.customdata = [[ui.NEGATIVE if v < 0 else "inherit"] for v in values]
+    trace.hovertemplate = (
+        '<span style="color:%{customdata[0]}">£%{y:,.2f}</span><extra></extra>'
+    )
+
 fig.add_vline(x=today.timestamp() * 1000, line_dash="dash", line_color="grey")
 fig.add_annotation(x=today, y=0, text="today", showarrow=False, yshift=10)
 fig.update_layout(hovermode="x unified", margin=dict(t=10))
@@ -71,7 +117,13 @@ st.plotly_chart(ui.money_axis(fig), width="stretch")
 
 st.caption(
     "Solid throughout, but everything to the right of the dashed line is built from "
-    "projections rather than actuals."
+    "projections rather than actuals. Negative figures are red in the hover box"
+    + (
+        ", and the line itself is red below zero."
+        if len(chosen) == 1
+        else " — select a single classification to see the line itself go red below zero, "
+        "which with several selected would clash with the colour telling them apart."
+    )
 )
 
 st.divider()

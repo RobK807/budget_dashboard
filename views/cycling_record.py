@@ -142,12 +142,27 @@ st.divider()
 
 st.subheader("Recently recorded")
 
+recent = pd.DataFrame()
+if not days.empty:
+    valued = repo.cycling_savings_dated(days, rates)
+    valued["date"] = pd.to_datetime(valued["date"])
+
+    # Back from today, not back from the end of the data. The fiscal year runs to March
+    # 2027, so sorting every dated row descending filled the list with months that have not
+    # happened -- 'Recently recorded' showing next March is not recent by any reading.
+    today = pd.Timestamp(dt.date.today())
+    recent = valued[valued["date"] <= today].sort_values(
+        "date", ascending=False
+    ).head(30).copy()
+    recent["date"] = recent["date"].dt.date
+
 if days.empty:
     st.info("Nothing recorded yet.")
+elif recent.empty:
+    # Rides exist, but every one of them is dated ahead of today. Saying 'nothing recorded'
+    # would be wrong and saying nothing at all would look broken.
+    st.info("Nothing recorded on or before today — everything on file is dated ahead.")
 else:
-    valued = repo.cycling_savings_dated(days, rates)
-    recent = valued.sort_values("date", ascending=False).head(30).copy()
-    recent["date"] = pd.to_datetime(recent["date"]).dt.date
     st.dataframe(
         ui.money_table(
             recent[["date", "kind", "saving"]], ["saving"],
@@ -158,6 +173,7 @@ else:
         height=360,
     )
     st.caption(
-        "Each day is valued at the rate that applied on that date, so raising a fare does "
-        "not rewrite what earlier rides were worth."
+        f"The most recent {len(recent)} day(s) up to today. Each is valued at the rate that "
+        "applied on that date, so raising a fare does not rewrite what earlier rides were "
+        "worth."
     )
