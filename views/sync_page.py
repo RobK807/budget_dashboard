@@ -137,6 +137,36 @@ if state.conflict:
             mime="text/csv",
             type="primary",
         )
+
+    # The step the instructions above ask for and nothing here used to offer. Pull refuses
+    # while the machine is dirty -- which is the whole point of it -- so without this the
+    # remedy described in the paragraph above could not actually be carried out, and a
+    # conflict was a dead end reachable through ordinary use.
+    with st.expander("I have the export — discard these changes and pull"):
+        st.caption(
+            "The local database is **moved aside, not deleted**: it is kept as "
+            "`budget.discarded-<timestamp>.db` next to the live one, so this is reversible "
+            "even after the fact.\n\n"
+            "Take the export first if you have not. It covers **transactions only** — a "
+            "setting, target or payslip changed on this machine is not in it, and would need "
+            "entering again after the pull."
+        )
+        confirm = st.checkbox(
+            f"I have what I need from this machine's {state.local.pending} unpushed "
+            f"change(s)",
+            key="confirm_discard",
+        )
+        if st.button(
+            "Discard local changes and pull", disabled=not confirm, key="discard_and_pull"
+        ):
+            ui.close_connections()  # before the file is replaced, not after
+            result = sync.pull(discard_local=True)
+            ui.load_all.clear()
+            st.success(result.message) if result.ok else st.error(result.message)
+            for line in result.detail:
+                st.caption(f"· {line}")
+            if result.ok:
+                st.info("Now re-import the CSV under **Record → Import**.")
     st.divider()
 
 # --------------------------------------------------------------------------- actions

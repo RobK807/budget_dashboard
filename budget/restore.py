@@ -36,6 +36,13 @@ def summarise(path: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Restore the local database from the NAS.")
     parser.add_argument("--db", type=Path, default=config.DB_PATH)
+    parser.add_argument(
+        "--discard-local",
+        action="store_true",
+        help="Proceed even if this machine has unpushed work. The current database is kept "
+             "as budget.discarded-<timestamp>.db rather than deleted. Export the local-only "
+             "transactions from the Sync page first.",
+    )
     args = parser.parse_args(argv)
 
     print(f"Local database  {args.db}")
@@ -58,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         print("outright if it finds unpushed work.")
         print()
 
-    result = sync.pull(args.db)
+    result = sync.pull(args.db, discard_local=args.discard_local)
     print(result.message)
     for note in result.detail:
         print(f"  {note}")

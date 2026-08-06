@@ -840,3 +840,108 @@ class TestFirstPull:
         result = sync.pull(target)
         assert not result.ok
         assert "unpushed" in result.message
+
+
+class TestDiscardingLocalChanges:
+    """The way out of a conflict.
+
+    6.3.4 says to export the local-only transactions, pull the fresh master, then re-import
+    them. Every route to that middle step went through `pull`, which refused precisely
+    because the machine held the work the export had just captured -- so the documented
+    remedy could not be carried out, and a conflict reached through ordinary use was a dead
+    end. These pin both halves: the refusal stays the default, and the way past it keeps
+    what it sets aside.
+    """
+
+    def conflicted(self, session, local, nas):
+        """A machine with unpushed work, and a master that has moved on without it."""
+        add_one(session)
+        session.commit()
+        assert sync.push(session, db_path=local).ok
+        session.commit()
+
+        meta = json.loads((nas / sync.META).read_text())
+        meta["revision"] = meta["revision"] + 5  # the other machine pushed since
+        (nas / sync.META).write_text(json.dumps(meta, indent=2))
+
+        add_one(session, "42.00")  # and this one has entered something meanwhile
+        session.commit()
+
+        # Nothing may touch the session after this: Windows will not rename a file that is
+        # still open, and a single query would reopen it. Which is exactly what the real
+        # dashboard does through ui.close_connections before pulling.
+        state = sync.status(session)
+        session.close()
+        session.get_bind().dispose()
+        return state
+
+    def test_the_refusal_is_still_the_default(self, session, local, nas):
+        self.conflicted(session, local, nas)
+        result = sync.pull(db_path=local)
+
+        assert not result.ok
+        assert "unpushed" in result.message
+        # And it now says how to get past it, rather than describing a dead end.
+        assert "discard local changes" in " ".join(result.detail)
+
+    def test_discarding_lets_the_pull_through(self, session, local, nas):
+        self.conflicted(session, local, nas)
+        assert sync.pull(db_path=local, discard_local=True).ok
+
+    def test_what_is_discarded_is_kept_beside_the_database(self, session, local, nas):
+        """'Discard' has to mean 'stop using', not 'destroy'. The CSV export covers
+        transactions only, so a setting changed here would otherwise vanish unrecorded."""
+        self.conflicted(session, local, nas)
+        result = sync.pull(db_path=local, discard_local=True)
+
+        kept = list(local.parent.glob("*.discarded-*.db"))
+        assert len(kept) == 1
+        assert kept[0].stat().st_size > 0
+        assert "set aside, not deleted" in " ".join(result.detail)
+
+    def test_the_kept_copy_is_still_a_readable_database(self, session, local, nas):
+        """Renamed rather than copied, so it is whole -- including anything that was still
+        sitting in the WAL when the pull happened."""
+        self.conflicted(session, local, nas)
+        sync.pull(db_path=local, discard_local=True)
+
+        kept = next(local.parent.glob("*.discarded-*.db"))
+        connection = sqlite3.connect(f"file:{kept}?mode=ro", uri=True)
+        try:
+            count = connection.execute(
+                "SELECT count(*) FROM txn WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        assert count == 2  # both transactions, the pushed one and the unpushed one
+
+    def test_a_master_that_fails_verification_leaves_the_local_database_alone(
+        self, session, local, nas
+    ):
+        """The ordering that matters. Setting the database aside before the download is
+        verified would mean a corrupt master destroyed the copy it could not replace."""
+        self.conflicted(session, local, nas)
+        before = local.read_bytes()
+
+        meta = json.loads((nas / sync.META).read_text())
+        meta["sha256"] = "0" * 64  # the master no longer matches what was published
+        (nas / sync.META).write_text(json.dumps(meta, indent=2))
+
+        result = sync.pull(db_path=local, discard_local=True)
+
+        assert not result.ok
+        assert local.read_bytes() == before
+        assert list(local.parent.glob("*.discarded-*.db")) == []
+
+    def test_a_clean_machine_is_unaffected_by_the_flag(self, session, local, nas):
+        """Nothing to discard, so nothing is set aside -- the flag is not a second code path
+        for the ordinary pull."""
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+        session.close()
+        session.get_bind().dispose()
+
+        assert sync.pull(db_path=local, discard_local=True).ok
+        assert list(local.parent.glob("*.discarded-*.db")) == []

@@ -139,7 +139,7 @@ Double-clickable helpers sit beside `budget.bat`:
 | **`repair.bat`** | Rebuilds damaged *indexes* with REINDEX. Lossless, because the rows were never the problem. Backs up first, refuses while anything holds the file, and says plainly when the damage is to the pages instead, where REINDEX cannot help. |
 | **`restore-data.bat`** | Re-applies the data work that lives in scripts: the savings plan, the interest gross/net basis, the expected return, the split of transaction 582, and clearing the workbook's assumptions off unpaid months. Idempotent. |
 | **`stop.bat`** | Kills whatever holds port 8501. Closing the console window does not reliably stop the server on Windows, and a leftover process serves stale code to the browser. |
-| **`restore.bat`** | Rebuilds the local database from the NAS master, for when the dashboard will not start and the Sync page therefore cannot be reached. Refuses outright if there is unpushed work locally. |
+| **`restore.bat`** | Rebuilds the local database from the NAS master, for when the dashboard will not start and the Sync page therefore cannot be reached. Refuses if there is unpushed work locally — `python -m budget.restore --discard-local` overrides that, keeping the current database as `budget.discarded-<timestamp>.db`. |
 
 Run `diagnose.bat` first — it is a fresh process with nothing cached between it and the file,
 which is what makes it the reading to trust when the app and the database appear to disagree.
@@ -148,6 +148,22 @@ which is what makes it the reading to trust when the app and the database appear
 if the savings targets are missing afterwards. **A page reporting nothing** where the file has
 rows is a stale read — press *Refresh data*, and if that fails the process is older than the
 code, so use `stop.bat` and start again. **The folder missing** is what `restore.bat` is for.
+
+**A red "Conflict" on the Sync page** means both machines moved: this one has unpushed work
+*and* the master has been pushed by the other since. Push and pull are both refused on
+purpose — one would overwrite the other machine's work, the other would discard this
+machine's. To get out of it, on the machine showing the conflict:
+
+1. **Manage → Sync → Conflict** — download the local-only transactions as CSV.
+2. Open **I have the export — discard these changes and pull**, tick the confirmation, and
+   pull. The current database is *moved aside*, not deleted, as
+   `budget.discarded-<timestamp>.db` beside the live one.
+3. **Record → Import** — feed the CSV back in. It arrives as its own undoable batch.
+4. Push.
+
+The export covers **transactions only**. A setting, target or payslip changed on that
+machine is not in it and needs re-entering after step 2 — the discarded database is still
+there to check against.
 
 **"This dashboard is older than the database it is pointed at"**, or a sync badge reading
 **"Update needed"**, is not a data problem and no script will fix it. The other machine is

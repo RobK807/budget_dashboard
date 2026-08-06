@@ -503,11 +503,25 @@ def _read_counters(db_path: Path) -> LocalState:
     )
 
 
-def pull(db_path: Path | None = None) -> Result:
+def pull(db_path: Path | None = None, discard_local: bool = False) -> Result:
     """Replaces the local database with the master and records it as the new ancestor.
 
     Refuses if there are unpushed changes -- overwriting them is exactly the data loss this
     module exists to prevent.
+
+    `discard_local` is the way *out* of that refusal, and it exists because without it the
+    documented remedy for a conflict could not be carried out. 6.3.4 says to export the
+    local-only transactions, pull the fresh master, then re-import them -- but every route to
+    that middle step went through this function, which refused precisely because the machine
+    had the work the export had just captured. The Sync page offered the instruction and no
+    button that could follow it.
+
+    So the refusal stays the default and becomes deliberate rather than absolute. Nothing is
+    deleted either way: the local database is *moved aside*, with its WAL, to
+    `budget.discarded-<timestamp>.db`. Renamed rather than copied so nothing has to be read
+    out of a file that may still be mid-write, and kept rather than removed because "discard"
+    should mean "stop using", not "destroy" -- the export only covers transactions, and a
+    setting or a target changed on this machine would otherwise be gone with no record of it.
     """
     db_path = db_path or config.DB_PATH
     nas = read_nas()
@@ -549,10 +563,15 @@ def pull(db_path: Path | None = None) -> Result:
                 db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
             local = LocalState()
 
-    if local.dirty:
+    if local.dirty and not discard_local:
         return Result(
             False,
             f"{local.pending} unpushed change(s) here. Push or reconcile before pulling.",
+            [
+                "Export the local-only transactions from the Sync page first. Then pull with "
+                "'discard local changes', which keeps the current database as "
+                "budget.discarded-<timestamp>.db rather than deleting it."
+            ],
         )
 
     master = nas_dir() / MASTER
@@ -583,6 +602,31 @@ def pull(db_path: Path | None = None) -> Result:
                     "it here."
                 ],
             )
+
+        # Only now, with a verified master in hand. Moving the local database aside earlier
+        # would mean a download that failed its checksum left this machine with no database
+        # at all -- the pull would have destroyed the thing it could not replace.
+        discarded: Path | None = None
+        if local.dirty and discard_local:
+            discarded = db_path.with_name(
+                f"{db_path.stem}.discarded-"
+                f"{dt.datetime.now():%Y%m%d-%H%M%S}{db_path.suffix}"
+            )
+            try:
+                for suffix in ("-wal", "-shm"):
+                    sidecar = db_path.with_name(db_path.name + suffix)
+                    if sidecar.exists():
+                        sidecar.replace(
+                            discarded.with_name(discarded.name + suffix)
+                        )
+                db_path.replace(discarded)
+            except OSError as exc:
+                return Result(
+                    False,
+                    "The local database is still open, so it could not be set aside. "
+                    "Nothing was changed.",
+                    [f"{exc}", "Close every dashboard window and try again."],
+                )
 
         # Anything still holding the database has to have let go by now. On Windows this
         # unlink raises rather than succeeding, which is the safe failure: the local file is
@@ -624,6 +668,11 @@ def pull(db_path: Path | None = None) -> Result:
             detail.append(
                 f"the previous local database could not be read and was kept as "
                 f"{salvaged.name}"
+            )
+        if discarded is not None:
+            detail.append(
+                f"the local changes were set aside, not deleted — the previous database is "
+                f"{discarded.name}, beside this one"
             )
         return Result(True, f"Pulled revision {revision} from the NAS.", detail)
     except OSError as exc:
