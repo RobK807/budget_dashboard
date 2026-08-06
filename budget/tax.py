@@ -154,7 +154,9 @@ def national_insurance(taxable: Decimal, bands: Bands) -> Decimal:
     return _round(main + upper)
 
 
-def income_tax(taxable: Decimal, bands: Bands, on: dt.date) -> Decimal:
+def income_tax(
+    taxable: Decimal, bands: Bands, on: dt.date, months: int = 1
+) -> Decimal:
     """Salary tracker U8, with its band overlap corrected.
 
     The personal-allowance adjustment is *subtracted* in the formula and is itself negative,
@@ -169,15 +171,104 @@ def income_tax(taxable: Decimal, bands: Bands, on: dt.date) -> Decimal:
     the real May payslip the corrected version is 26.51 out where the original was 1,283.18.
 
     The thresholds themselves are untouched -- this is the arithmetic between them.
-    """
-    adjustment = bands.allowance_for(on)
 
-    basic = min(taxable - adjustment, bands.basic_band) * bands.basic_rate
-    above_basic = max(Decimal("0"), taxable - adjustment - bands.basic_band)
-    higher_width = max(Decimal("0"), bands.higher_threshold - bands.basic_band)
+    `months` scales every threshold, which is the whole of what separates a monthly charge
+    from a cumulative one: a tax year's bands are twelve times a month's, and n months of
+    them are n times. At the default of 1 this is the monthly figure a payslip is charged and
+    the arithmetic is identical to before. See `year_to_date` for what the other values are
+    for -- and for why the monthly figure remains the one the Salary page models against.
+    """
+    adjustment = bands.allowance_for(on) * months
+    basic_band = bands.basic_band * months
+    higher_threshold = bands.higher_threshold * months
+
+    basic = min(taxable - adjustment, basic_band) * bands.basic_rate
+    above_basic = max(Decimal("0"), taxable - adjustment - basic_band)
+    higher_width = max(Decimal("0"), higher_threshold - basic_band)
     higher = min(above_basic, higher_width) * bands.higher_rate
-    additional = max(Decimal("0"), taxable - bands.higher_threshold) * bands.additional_rate
+    additional = max(Decimal("0"), taxable - higher_threshold) * bands.additional_rate
     return _round(basic + higher + additional)
+
+
+@dataclass(frozen=True)
+class YearToDate:
+    """One month's place in the tax year's running total.
+
+    `due_to_date` is what the year's tax *should* come to by this point, charged the way HMRC
+    reconciles a year: one set of bands stretched across the months elapsed, rather than a
+    fresh set every month. `deducted_to_date` is what payroll has actually taken.
+    """
+
+    month: int                    # 1 = April, the first month of the UK tax year
+    taxable: Decimal              # this month alone
+    taxable_to_date: Decimal
+    due: Decimal                  # this month's share of the cumulative charge
+    due_to_date: Decimal
+    deducted: Decimal
+    deducted_to_date: Decimal
+    actual: bool                  # deducted came from a payslip rather than the model
+
+    @property
+    def difference(self) -> Decimal:
+        """Overpaid, if positive. What HMRC would settle at the end of the year."""
+        return self.deducted_to_date - self.due_to_date
+
+
+def year_to_date(
+    entries: "list[tuple[Decimal, Bands, dt.date, Decimal, bool]]",
+) -> list[YearToDate]:
+    """Walk one tax year, comparing the cumulative charge against what was deducted.
+
+    `entries` is ordered from April, each `(taxable, bands, on, deducted, actual)`.
+
+    **This is a reconciliation, not the way the payslips are produced.** Payroll here charges
+    each month on its own bands, and the recorded payslips say so plainly: June and July came
+    to 3,276.86 against a per-month model of 3,277.42, while a cumulative model would have
+    predicted 3,133.34 -- out by 143.52, twice. The May bonus was charged 13,011.09 on
+    29,028.48, a flat 44.82%, which is the additional rate applied to the payment on its own
+    rather than a year's bands being spread across it.
+
+    So the per-month figure stays the one the Salary page models a payslip against, and this
+    exists to answer the different question: taxed month by month, does the *year* come out
+    right? It usually does not. A month carrying a bonus uses up a single month's basic and
+    higher bands and throws the rest at the additional rate, where across a full year far
+    more of it would have fallen below the additional-rate threshold. Nothing is wrong when
+    these disagree -- HMRC reconciles after 5 April and refunds the difference. The point of
+    showing it is to know the refund is coming, and roughly how large.
+
+    The bands are taken per month rather than once for the year, because they are
+    effective-dated: a threshold revised mid-year, or a tax code reissued, applies from the
+    month it takes effect. The cumulative charge is therefore always computed on the bands in
+    force at the month being reported, which is what reissuing a code cumulatively does.
+    """
+    out: list[YearToDate] = []
+    taxable_to_date = Decimal("0")
+    deducted_to_date = Decimal("0")
+    previous_due = Decimal("0")
+
+    for index, (taxable, bands, on, deducted, actual) in enumerate(entries, start=1):
+        taxable_to_date += taxable
+        deducted_to_date += deducted
+        due_to_date = income_tax(taxable_to_date, bands, on, months=index)
+        out.append(
+            YearToDate(
+                month=index,
+                taxable=taxable,
+                taxable_to_date=taxable_to_date,
+                # Can be negative, and legitimately so: after a bonus month the cumulative
+                # charge stops growing as fast as a per-month one, and a payroll running this
+                # basis would be issuing a refund. Not floored at zero -- that would hide the
+                # very thing this is here to show.
+                due=_round(due_to_date - previous_due),
+                due_to_date=due_to_date,
+                deducted=deducted,
+                deducted_to_date=deducted_to_date,
+                actual=actual,
+            )
+        )
+        previous_due = due_to_date
+
+    return out
 
 
 def pay_for(components: Components, bands: Bands, on: dt.date) -> Breakdown:

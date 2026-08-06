@@ -342,6 +342,41 @@ From £1,283.18 out to £26.51. The thresholds are untouched — this is the ari
 them. `tests/test_tax.py` now carries one case where the workbook is *not* the authority,
 because an actual payslip is.
 
+## The tax year does not add up to the sum of its months
+
+PAYE can be operated two ways: charge each month on its own bands, or charge the year to date
+against one set of bands stretched across the months elapsed. HMRC reconciles on the second.
+The payslips say this payroll runs the first:
+
+| | Actual | Per-month model | Cumulative model |
+|---|---|---|---|
+| June 2026 | 3,276.86 | **3,277.42** | 3,133.34 |
+| July 2026 | 3,276.86 | **3,277.42** | 3,133.34 |
+| May bonus | 13,011.09 on 29,028.48 — a flat 44.82%, the additional rate on the payment alone |
+
+So the per-month figure stays what the page models a payslip against; a cumulative one would
+be £143.52 out every month after the bonus. What the cumulative basis is *for* is the
+different question of whether the year comes out right, and it does not:
+
+| 2026/27 | |
+|---|---|
+| Taxable pay | 143,068.62 |
+| Charged month by month | 52,020.78 |
+| Due on the year as a whole | 50,583.87 |
+| **Overpaid** | **1,436.91** |
+
+The cause is structural, not an error in either calculation. A bonus month gets one month's
+basic and higher bands and throws the remaining £28k at 45%; across a full year far more of it
+falls below the £125,140 additional-rate threshold. Nothing is wrong — HMRC settles it after
+5 April. The **Tax year to date** tab exists so the refund is visible before it arrives.
+
+`income_tax` gained a `months` argument to do this: it scales every threshold, so `months=1`
+is the monthly charge and is byte-identical to before, and `months=12` is the year. One known
+quirk is pinned rather than fixed — the allowance adjustment applies to the basic and higher
+slices but not to the additional-rate threshold, which leaves a stretch (£122,381–£125,140 a
+year) taxed at nothing at the margin. It bites on no figure in this file, and the monthly form
+of the same formula is what reproduces the payslips.
+
 ## Where everything now lands
 
 | Month | Payslip gross | NI | PAYE | Net |

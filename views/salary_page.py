@@ -207,8 +207,9 @@ if not paid_months.empty:
 
 st.divider()
 
-tab_compare, tab_inputs, tab_bands, tab_spend = st.tabs(
-    ["Actual against expected", "Salary and bonus", "Tax bands", "What's left to spend"]
+tab_compare, tab_cumulative, tab_inputs, tab_bands, tab_spend = st.tabs(
+    ["Actual against expected", "Tax year to date", "Salary and bonus", "Tax bands",
+     "What's left to spend"]
 )
 
 # ------------------------------------------------------------- actual vs expected
@@ -456,6 +457,175 @@ with tab_compare:
                 f"NI + holiday pay + PAYE + net comes to {ui.money(consistency)} against a "
                 f"gross of {ui.money(in_gross)} — the workbook's column N check."
             )
+
+# ---------------------------------------------------------------- tax year to date
+
+with tab_cumulative:
+    st.subheader("Where the tax year lands")
+    st.caption(
+        "Payroll charges each month on its own bands — the recorded payslips say so: June "
+        "and July came to £3,276.86 against a per-month model of £3,277.42. HMRC settles the "
+        "year differently, against **one** set of bands stretched across the months elapsed. "
+        "The two agree in an ordinary year and part company after a bonus, because a single "
+        "month's bands send far more of it to the additional rate than a year's would. "
+        "Neither figure is wrong; the gap is what HMRC reconciles after 5 April."
+    )
+
+    def full_year(year: int) -> pd.DataFrame:
+        """Every month of a tax year, modelled, whether or not the page shows it elsewhere.
+
+        The rest of the page stops a few months past today -- there is nothing to say about
+        next February's spending. A year-end position is the opposite case: it is only a
+        year-end position if it runs to March, so the remaining months are modelled here
+        rather than left out. `actual` marks which rows are payslips.
+        """
+        built = []
+        for period in repo.fiscal_periods(year):
+            actual = (
+                by_period.loc[period]
+                if by_period is not None and period in by_period.index
+                else None
+            )
+            bonus = (
+                bonus_by_period.loc[period]
+                if bonus_by_period is not None and period in bonus_by_period.index
+                else None
+            )
+            expected = expected_for(period, actual)
+
+            def entered(column: str) -> Decimal | None:
+                salary_part = actual[column] if actual is not None else None
+                bonus_part = bonus[column] if bonus is not None else None
+                if (salary_part is None or pd.isna(salary_part)) and (
+                    bonus_part is None or pd.isna(bonus_part)
+                ):
+                    return None
+                return as_decimal(salary_part) + as_decimal(bonus_part)
+
+            # Same test as the table above: a month is only actual once something has been
+            # paid. Standing assumptions carried on a future month are not a payslip.
+            was_paid = entered("gross") is not None or entered("net") is not None
+            built.append(
+                {
+                    "period": period,
+                    "taxable": expected.components.taxable if expected else None,
+                    "actual_paye": entered("paye") if was_paid else None,
+                    "expected_paye": expected.paye if expected else None,
+                }
+            )
+        return pd.DataFrame(built)
+
+    years = sorted({repo.tax_year_of(p) for p in frame["period"]})
+    chosen_year = (
+        st.selectbox(
+            "Tax year", years,
+            index=years.index(repo.tax_year_of(repo.period_of(dt.date.today())))
+            if repo.tax_year_of(repo.period_of(dt.date.today())) in years
+            else len(years) - 1,
+            format_func=lambda y: f"{y}/{str(y + 1)[-2:]}",
+            key="cumulative_year",
+        )
+        if len(years) > 1
+        else years[0]
+    )
+
+    position = repo.cumulative_tax(full_year(chosen_year), bands_for, chosen_year)
+
+    if position.empty:
+        st.info("No month in this tax year has enough behind it to model yet.")
+    else:
+        closing = position.iloc[-1]
+        overpaid = closing["difference"]
+        entered = int(position["actual"].sum())
+
+        cols = st.columns(4)
+        cols[0].metric("Taxable pay", ui.money(closing["taxable_to_date"]))
+        cols[1].metric(
+            "Charged month by month", ui.money(closing["deducted_to_date"]),
+            help="Actual PAYE where a payslip has been entered, the model's where it has not",
+        )
+        cols[2].metric(
+            "Due on the year as a whole", ui.money(closing["due_to_date"]),
+            help="One set of bands across all twelve months — how HMRC reconciles",
+        )
+        cols[3].metric(
+            "Overpaid" if overpaid >= 0 else "Underpaid", ui.money(abs(overpaid))
+        )
+
+        # Deliberately not an error state. An overpayment after a bonus is the expected
+        # outcome of a correctly operated per-month code, not a sign anything went wrong.
+        if abs(overpaid) < Decimal("1"):
+            st.success("The year comes out even — nothing to reclaim or make up.")
+        elif overpaid > 0:
+            st.info(
+                f"On these figures the year ends **{ui.money(overpaid)} overpaid**, which "
+                f"HMRC would refund after 5 April {chosen_year + 1}. "
+                + (
+                    f"{entered} month(s) are from payslips; the rest are modelled, so this "
+                    "will move as the year is entered."
+                    if entered < len(position)
+                    else "Every month is from a payslip, so this is the settled position."
+                )
+            )
+        else:
+            st.warning(
+                f"On these figures the year ends **{ui.money(-overpaid)} underpaid**. That "
+                "usually means a tax code carrying an adjustment the model does not know "
+                "about — worth checking the code on the payslip against **Tax bands**."
+            )
+
+        show = position[
+            ["month", "taxable", "taxable_to_date", "deducted", "deducted_to_date",
+             "due", "due_to_date", "difference"]
+        ].copy()
+        show["source"] = position["actual"].map({True: "Payslip", False: "Model"})
+
+        st.dataframe(
+            ui.money_table(
+                show,
+                ["taxable", "taxable_to_date", "deducted", "deducted_to_date",
+                 "due", "due_to_date", "difference"],
+                labels={
+                    "month": "Month",
+                    "taxable": "Taxable",
+                    "taxable_to_date": "Taxable to date",
+                    "deducted": "PAYE charged",
+                    "deducted_to_date": "Charged to date",
+                    "due": "PAYE due",
+                    "due_to_date": "Due to date",
+                    "difference": "Overpaid to date",
+                    "source": "From",
+                },
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "**PAYE charged** is what the payslip took, or the model where no payslip has "
+            "been entered. **PAYE due** is this month's share of the cumulative charge, and "
+            "can be *lower* than the month before after a bonus — on this basis the bands "
+            "already used up are not charged again. **Overpaid to date** is the running "
+            "difference, and the last row is where the year currently lands."
+        )
+
+        chart = ui.to_float(position, ["deducted_to_date", "due_to_date"]).melt(
+            id_vars="month",
+            value_vars=["deducted_to_date", "due_to_date"],
+            var_name="series", value_name="amount",
+        )
+        chart["series"] = chart["series"].map(
+            {"deducted_to_date": "Charged month by month", "due_to_date": "Due on the year"}
+        )
+        fig = px.line(
+            chart, x="month", y="amount", color="series", markers=True,
+            labels={"amount": "Cumulative PAYE (£)", "month": "", "series": ""},
+        )
+        fig.update_layout(margin=dict(t=10))
+        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.caption(
+            "The gap between the lines is the overpayment building up. It opens in the bonus "
+            "month and closes only at the year end, when HMRC reconciles."
+        )
 
 # ---------------------------------------------------------------- salary and bonus
 

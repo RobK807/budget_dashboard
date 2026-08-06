@@ -8,7 +8,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from budget import repo
+from budget import repo, tax
 
 
 def posting(**kw):
@@ -218,3 +218,98 @@ class TestPeriodsToDate:
     def test_a_year_that_has_not_begun_falls_back_to_the_full_list(self):
         # Better to show a full empty year than a blank page with no months to select.
         assert repo.periods_to_date(self.YEAR, dt.date(2020, 1, 1)) == self.YEAR
+
+
+class TestCumulativeTax:
+    """Assembling the year-to-date position from the Salary page's frame.
+
+    The arithmetic is pinned in test_tax; what matters here is the plumbing -- which months
+    are included, which figure stands in for a month with no payslip, and that two tax years
+    are never accumulated into one another.
+    """
+
+    from tests.test_tax import BANDS
+
+    def bands_for(self, period):
+        return self.BANDS
+
+    def frame(self, rows):
+        return pd.DataFrame(
+            rows, columns=["period", "taxable", "actual_paye", "expected_paye"]
+        )
+
+    def test_actual_paye_is_used_where_a_payslip_exists(self):
+        got = repo.cumulative_tax(
+            self.frame([("2026-04", Decimal("9342.47"), Decimal("3130.86"),
+                         Decimal("3130.65"))]),
+            self.bands_for,
+        )
+        assert got.iloc[0]["deducted"] == Decimal("3130.86")
+        assert bool(got.iloc[0]["actual"]) is True
+
+    def test_the_model_stands_in_where_no_payslip_has_been_entered(self):
+        """Otherwise the closing row would report the year as massively overpaid simply
+        because the months still to come had deducted nothing."""
+        got = repo.cumulative_tax(
+            self.frame([("2026-04", Decimal("9342.47"), None, Decimal("3130.65"))]),
+            self.bands_for,
+        )
+        assert got.iloc[0]["deducted"] == Decimal("3130.65")
+        assert bool(got.iloc[0]["actual"]) is False
+
+    def test_months_the_model_cannot_build_are_dropped(self):
+        got = repo.cumulative_tax(
+            self.frame([
+                ("2026-04", Decimal("9342.47"), None, Decimal("3130.65")),
+                ("2026-05", None, None, None),
+            ]),
+            self.bands_for,
+        )
+        assert list(got["period"]) == ["2026-04"]
+
+    def test_tax_years_accumulate_separately(self):
+        """March and the April after it are different years; running them together would
+        carry a whole year's bands into the first month of the next."""
+        got = repo.cumulative_tax(
+            self.frame([
+                ("2027-03", Decimal("9517.97"), None, Decimal("3270.82")),
+                ("2027-04", Decimal("9517.97"), None, Decimal("3270.82")),
+            ]),
+            self.bands_for,
+        )
+        assert list(got["tax_year"]) == [2026, 2027]
+        # Each year restarts: the April row is month 1 of its own year, not month 13.
+        assert got.iloc[1]["taxable_to_date"] == Decimal("9517.97")
+
+    def test_a_single_year_can_be_asked_for(self):
+        got = repo.cumulative_tax(
+            self.frame([
+                ("2027-03", Decimal("9517.97"), None, Decimal("3270.82")),
+                ("2027-04", Decimal("9517.97"), None, Decimal("3270.82")),
+            ]),
+            self.bands_for,
+            tax_year=2027,
+        )
+        assert list(got["period"]) == ["2027-04"]
+
+    def test_the_bonus_year_reaches_the_known_closing_position(self):
+        """End to end, against the same figures test_tax pins the arithmetic on."""
+        months = [("2026-04", Decimal("9342.47")), ("2026-05", Decimal("38546.45"))] + [
+            (p, Decimal("9517.97"))
+            for p in ["2026-%02d" % m for m in range(6, 13)]
+            + ["2027-%02d" % m for m in (1, 2, 3)]
+        ]
+        rows = [
+            (period, taxable, None,
+             tax.income_tax(taxable, self.BANDS, repo.period_start(period)))
+            for period, taxable in months
+        ]
+        closing = repo.cumulative_tax(self.frame(rows), self.bands_for).iloc[-1]
+        assert closing["taxable_to_date"] == Decimal("143068.62")
+        assert closing["due_to_date"] == Decimal("50583.88")
+        assert closing["difference"] == Decimal("1464.32")
+
+    def test_an_empty_frame_gives_an_empty_result_with_the_right_columns(self):
+        got = repo.cumulative_tax(pd.DataFrame(), self.bands_for)
+        assert got.empty
+        assert "difference" in got.columns

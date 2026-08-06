@@ -267,7 +267,7 @@ views/
   trends_page.py        Cumulative position, rollover and projections
   projections_page.py   Projected against actual spend, and planning a month
   savings_page.py       Savings and investments against target
-  salary_page.py        Payslips, the PAYE/NI model and what is left to spend
+  salary_page.py        Payslips, the PAYE/NI model, the tax year to date, what is left
   cards_page.py         Balance-transfer amortisation
   cycling_page.py       Fares saved against running costs
 budget/

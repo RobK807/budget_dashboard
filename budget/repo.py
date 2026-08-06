@@ -1489,6 +1489,81 @@ def salary_components(
     )
 
 
+def cumulative_tax(
+    frame: pd.DataFrame, bands_for, tax_year: int | None = None
+) -> pd.DataFrame:
+    """The year-to-date PAYE position, month by month, on HMRC's cumulative basis.
+
+    `frame` needs a row per period with `taxable`, `actual_paye` and `expected_paye`;
+    `bands_for` maps a period to the bands in force at its start. Rows without a taxable
+    figure are dropped -- a month the model cannot build says nothing about the year.
+
+    Actual PAYE is used where a payslip has been entered and the model's where it has not, so
+    the closing row is a projection of where the year lands rather than a statement about
+    months that have not happened. `actual` records which it was, so the table can say so.
+
+    Charged and deducted are two different questions, and this answers only the first. See
+    tax.year_to_date: payroll here bills each month on its own bands, and a bonus month
+    therefore throws pay at the additional rate that a full year's bands would have caught
+    lower down. The gap that opens up is not an error in either calculation -- it is the
+    overpayment HMRC settles after 5 April.
+    """
+    columns = [
+        "period", "month", "tax_year", "taxable", "taxable_to_date",
+        "due", "due_to_date", "deducted", "deducted_to_date", "difference", "actual",
+    ]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = frame[frame["taxable"].notna()].copy()
+    if tax_year is not None:
+        rows = rows[rows["period"].map(tax_year_of) == tax_year]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = rows.sort_values("period")
+    out: list[dict] = []
+
+    for year, group in rows.groupby(rows["period"].map(tax_year_of), sort=True):
+        entries = []
+        for _, row in group.iterrows():
+            paid = row.get("actual_paye")
+            is_actual = paid is not None and pd.notna(paid)
+            modelled = row.get("expected_paye")
+            deducted = (
+                Decimal(str(paid)) if is_actual
+                else (Decimal(str(modelled)) if pd.notna(modelled) else Decimal("0"))
+            )
+            entries.append(
+                (
+                    Decimal(str(row["taxable"])),
+                    bands_for(row["period"]),
+                    period_start(row["period"]),
+                    deducted,
+                    bool(is_actual),
+                )
+            )
+
+        for period, point in zip(group["period"], tax.year_to_date(entries)):
+            out.append(
+                {
+                    "period": period,
+                    "month": period_label(period),
+                    "tax_year": year,
+                    "taxable": point.taxable,
+                    "taxable_to_date": point.taxable_to_date,
+                    "due": point.due,
+                    "due_to_date": point.due_to_date,
+                    "deducted": point.deducted,
+                    "deducted_to_date": point.deducted_to_date,
+                    "difference": point.difference,
+                    "actual": point.actual,
+                }
+            )
+
+    return pd.DataFrame(out, columns=columns)
+
+
 def rate_in_force(rates: pd.DataFrame, kind: str, on: dt.date) -> Decimal:
     """The cycling rate applying to a day -- the last change on or before it."""
     if rates.empty:
