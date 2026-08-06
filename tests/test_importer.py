@@ -244,3 +244,57 @@ class TestCategoryCommentDefault:
     def test_no_comment_to_inherit_leaves_it_blank(self):
         candidates, _ = importer.parse(self.frame("Other", None))
         assert candidates[0].category_comment is None
+
+
+class TestBlankRowsFromTheEditor:
+    """A row nobody has touched. st.data_editor cannot return None for every column: a date
+    column gives NaT, a float column NaN, and a bool column a real False, because none of
+    those dtypes hold a null. Testing them as text turned 'NaT' and 'False' into content, so
+    ten blank rows became ten candidates -- and NaN reached `amount <= 0`, where Decimal
+    raises InvalidOperation and took the whole page down."""
+
+    def test_blank_rows_produce_nothing(self):
+        blanks = importer.with_blank_rows(importer.template(), 10)
+        candidates, problems = importer.parse(blanks)
+        assert candidates == []
+        assert problems == []
+
+    def test_one_real_row_among_blanks_survives(self):
+        frame = importer.with_blank_rows(importer.template(), 5)
+        frame.loc[2, "Date"] = pd.Timestamp("2026-08-01")
+        frame.loc[2, "Type"] = "Debit"
+        frame.loc[2, "Amount"] = 12.50
+        frame.loc[2, "Account From"] = "HSBC"
+
+        candidates, _ = importer.parse(frame)
+        assert len(candidates) == 1
+        assert candidates[0].txn_date == dt.date(2026, 8, 1)
+        assert candidates[0].source_row == 4  # header is 1, so row index 2 is row 4
+
+    def test_an_unticked_donation_box_is_not_content(self):
+        """A bool column cannot hold a null, so every untouched row carries False."""
+        blanks = importer.with_blank_rows(importer.template(), 3)
+        assert blanks["Donation"].tolist() == [False, False, False]
+        assert importer.parse(blanks)[0] == []
+
+    def test_a_ticked_box_alone_is_content(self):
+        """The other side of it: a row with only the box ticked is a mistake worth showing,
+        not something to drop silently."""
+        frame = importer.with_blank_rows(importer.template(), 1)
+        frame.loc[0, "Donation"] = True
+        assert len(importer.parse(frame)[0]) == 1
+
+    def test_empty_dates_do_not_become_the_text_NaT(self):
+        frame = importer.with_blank_rows(importer.template(), 1)
+        frame.loc[0, "Comment"] = "a note and nothing else"
+        candidate = importer.parse(frame)[0][0]
+        assert candidate.txn_date is None
+        assert candidate.comment == "a note and nothing else"
+
+    def test_a_row_with_no_amount_reports_rather_than_raising(self):
+        """The crash itself. str(nan) is 'nan', which Decimal accepts, giving a number that
+        is neither None nor comparable -- so `amount <= 0` raised instead of validating."""
+        frame = importer.with_blank_rows(importer.template(), 1)
+        frame.loc[0, "Comment"] = "typed a note, forgot the amount"
+        candidate = importer.parse(frame)[0][0]
+        assert candidate.amount is None  # not Decimal('NaN')

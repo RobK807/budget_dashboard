@@ -2003,6 +2003,25 @@ def investment_return_series(
     return pd.DataFrame(rows, columns=columns)
 
 
+def completed_through(series: pd.DataFrame, today: dt.date | None = None) -> str | None:
+    """The last period in `series` whose month has actually ended.
+
+    The same test `investment_return_summary` applies to decide what it measures, exposed so
+    that a heading cannot drift away from the figures underneath it. Naming the month with
+    `series['period'].max()` instead described the end of the *data*, which runs to the end
+    of the fiscal year: on 6 August it announced 'to end of August 2026' over July's numbers,
+    and August had been deliberately excluded because it has not finished.
+
+    Falls back to the earliest period exactly as the summary does, so the two agree even
+    before a single month has closed.
+    """
+    if series.empty:
+        return None
+    today = today or dt.date.today()
+    done = series[series["date"].map(lambda d: d <= today)]
+    return done["period"].max() if not done.empty else series["period"].min()
+
+
 def investment_return_summary(
     series: pd.DataFrame, today: dt.date | None = None
 ) -> pd.DataFrame:

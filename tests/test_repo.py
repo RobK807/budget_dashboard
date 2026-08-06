@@ -482,3 +482,69 @@ class TestRolledForwardOpenings:
             "2026-05",
         )
         assert got.empty or got.get("HSBC") == Decimal("10")
+
+
+class TestCompletedThrough:
+    """Which month a summary has actually measured to.
+
+    Kept beside investment_return_summary and using the same test, so a heading cannot drift
+    from the figures under it. Naming the month with series['period'].max() described the end
+    of the *data*, which runs to the fiscal year end: on 6 August it announced 'to end of
+    August 2026' over July's numbers, August having been excluded for not having finished.
+    """
+
+    def series(self, periods):
+        return pd.DataFrame(
+            {
+                "period": periods,
+                "date": [repo.month_end(p) for p in periods],
+                "account": ["ISA"] * len(periods),
+            }
+        )
+
+    def test_a_month_still_running_is_not_counted(self):
+        got = repo.completed_through(
+            self.series(["2026-06", "2026-07", "2026-08"]), dt.date(2026, 8, 6)
+        )
+        assert got == "2026-07"
+
+    def test_the_last_day_of_a_month_completes_it(self):
+        got = repo.completed_through(
+            self.series(["2026-07", "2026-08"]), dt.date(2026, 8, 31)
+        )
+        assert got == "2026-08"
+
+    def test_months_beyond_today_are_ignored(self):
+        """The series runs to the fiscal year end whether or not those months have happened."""
+        got = repo.completed_through(
+            self.series(["2026-%02d" % m for m in range(4, 13)]), dt.date(2026, 8, 6)
+        )
+        assert got == "2026-07"
+
+    def test_before_any_month_has_closed_it_falls_back_to_the_first(self):
+        """Matching the summary's own fallback, so the two still agree."""
+        got = repo.completed_through(self.series(["2026-04"]), dt.date(2026, 4, 15))
+        assert got == "2026-04"
+
+    def test_an_empty_series_has_no_answer(self):
+        assert repo.completed_through(pd.DataFrame(columns=["period", "date"])) is None
+
+    def test_it_agrees_with_what_the_summary_counts(self):
+        """The property that matters: heading and figures derived from one rule."""
+        periods = ["2026-%02d" % m for m in range(4, 10)]
+        series = pd.DataFrame(
+            {
+                "period": periods,
+                "date": [repo.month_end(p) for p in periods],
+                "account": ["ISA"] * len(periods),
+                "opening": [Decimal("100")] * len(periods),
+                "contributions": [Decimal("0")] * len(periods),
+                "gain": [Decimal("1")] * len(periods),
+                "closing": [Decimal("101")] * len(periods),
+                "monthly_return": [Decimal("0.01")] * len(periods),
+            }
+        )
+        today = dt.date(2026, 8, 6)
+        through = repo.completed_through(series, today)
+        counted = int(repo.investment_return_summary(series, today)["months"].max())
+        assert periods.index(through) + 1 == counted

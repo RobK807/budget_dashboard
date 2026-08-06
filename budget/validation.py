@@ -86,9 +86,13 @@ def to_decimal(value) -> Decimal | None:
     if value is None or value == "":
         return None
     try:
-        return Decimal(str(value).replace(",", "").replace("£", "").strip())
+        parsed = Decimal(str(value).replace(",", "").replace("£", "").strip())
     except (InvalidOperation, ValueError):
         return None
+    # An empty cell in a float column arrives as NaN, and str(nan) is 'nan', which Decimal
+    # accepts happily. The result is a number that is not None and not comparable: every
+    # later `amount <= 0` raises InvalidOperation rather than reporting a missing amount.
+    return None if parsed.is_nan() else parsed
 
 
 def validate(c: Candidate, ref: Reference) -> Result:

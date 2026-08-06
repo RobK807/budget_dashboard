@@ -89,8 +89,16 @@ def _to_date(value) -> dt.date | None:
     trip that exists to rescue a machine's transactions -- export, pull, re-import -- was the
     one path guaranteed to hit it.
     """
-    if value is None or (isinstance(value, float) and pd.isna(value)) or value == "":
+    if value is None or value == "":
         return None
+    # Before the datetime check, not after: pd.NaT *is* an instance of datetime, and
+    # NaT.date() is NaT again -- so an empty date cell came back as a Candidate whose
+    # txn_date was neither a date nor None, and `txn_date is None` never reported it missing.
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     if isinstance(value, dt.datetime):
         return value.date()
     if isinstance(value, dt.date):
@@ -107,11 +115,19 @@ def _to_date(value) -> dt.date | None:
 
 
 def _text(value) -> str | None:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if value is None:
         return None
+    # Not just float NaN: an empty date cell is NaT and an empty nullable cell is pd.NA,
+    # neither of which is a float. Both used to fall through to str(), which turned them
+    # into the text 'NaT' -- so a row the user had never touched read as having content.
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass  # not a scalar; fall through and stringify
     text = str(value).strip()
     # The workbook writes 0 into optional text fields rather than leaving them empty.
-    return None if text in ("", "0", "nan", "None") else text
+    return None if text in ("", "0", "nan", "None", "NaT", "<NA>") else text
 
 
 def _flag(value) -> bool:
@@ -178,10 +194,26 @@ def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
         col = mapping.get(field)
         return row[col] if col else None
 
+    def is_blank(row) -> bool:
+        """Nothing in the row at all.
+
+        Common when pasting from a spreadsheet, and now the normal state of every row added
+        by the 'add blank rows' button. An unticked checkbox counts as nothing: a bool
+        column cannot hold a null, so st.data_editor returns a real False for a box the user
+        never saw, and testing it as text made every blank row look occupied.
+        """
+        for field in mapping:
+            value = get(row, field)
+            if field == "is_donation":
+                if _flag(value):
+                    return False
+            elif _text(value) is not None:
+                return False
+        return True
+
     candidates = []
     for offset, (_, row) in enumerate(df.iterrows(), start=2):
-        # Skip rows that are entirely blank -- common when pasting from a spreadsheet.
-        if all(_text(get(row, f)) is None for f in mapping):
+        if is_blank(row):
             continue
         category = _text(get(row, "category"))
         comment = _text(get(row, "comment"))

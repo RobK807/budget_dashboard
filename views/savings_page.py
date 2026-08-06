@@ -483,11 +483,10 @@ with tab_return:
                 "by dividing by twelve."
             )
 
-        # A month only enters the series once it has closed, so this stops at the last
-        # complete one rather than at today. That is the right calculation -- a part-month's
-        # return annualises to nonsense -- but the heading said 'Summary' and left you to
-        # work out why it disagreed with the balances above it.
-        closed_to = repo.period_label(returns["period"].max())
+        # The month the summary actually measures to, from the same rule it uses: the last
+        # one whose end has passed. Taking the series maximum named the end of the *data*,
+        # which runs to March, so in August it claimed August over July's figures.
+        closed_to = repo.period_label(repo.completed_through(returns))
         st.subheader(f"Summary to end of {closed_to}")
         summary = repo.investment_return_summary(returns)
         if summary.empty:
