@@ -138,12 +138,48 @@ def _has_sidecar(path) -> bool:
         return False
 
 
+def db_fingerprint() -> tuple:
+    """Cheap identity for the database file: when it was last written, and how big it is.
+
+    Used as a cache key so a cached read cannot outlive its source. Anything that changes the
+    file changes this -- a one-off script, a sync pull, a restore, the seed -- and the next
+    script run reads afresh rather than serving what was true when the process started.
+
+    Without it the cache was keyed on nothing at all, so a dashboard that happened to load
+    while a table was empty went on reporting it empty for as long as it stayed open. That is
+    exactly what made 25 stored savings targets read as 'no plan set yet', on a database that
+    had them, in a process running the right code.
+
+    Size as well as mtime because a filesystem timestamp is only so precise, and two writes
+    within the same tick are not far-fetched when a script is doing the writing.
+
+    **The -wal matters as much as the database.** This application runs SQLite in WAL mode,
+    where a write lands in budget.db-wal and the main file is not touched until a checkpoint.
+    Fingerprinting budget.db alone therefore misses every recent write -- which the first
+    version of this did, and it was caught only by changing a target from outside a running
+    dashboard and watching it go on showing the old figure.
+    """
+    parts = []
+    for suffix in ("", "-wal"):
+        path = config.DB_PATH.with_name(config.DB_PATH.name + suffix)
+        try:
+            stat = path.stat()
+            parts.append((stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            # Missing or unreadable: a constant, so the cache behaves as it used to rather
+            # than thrashing on every rerun. A checkpointed database has no -wal at all.
+            parts.append((0, 0))
+    return tuple(parts)
+
+
 @st.cache_data(ttl=300)
-def load_all() -> dict:
+def _load_all(fingerprint: tuple) -> dict:
     """Everything the dashboard needs, in one cached read.
 
     The whole year is a few thousand rows, so loading it wholesale and slicing in pandas is
     simpler than round-tripping per page and fast enough not to matter.
+
+    `fingerprint` is not read -- it is the cache key. See `db_fingerprint`.
     """
     with _session_factory()() as session:
         reference = repo.load_reference(session)
@@ -224,6 +260,16 @@ def load_all() -> dict:
         data["savings_adjustments"],
     )
     return data
+
+
+def load_all() -> dict:
+    """The cached read, keyed on the state of the database file."""
+    return _load_all(db_fingerprint())
+
+
+# Every page and every write path calls ui.load_all.clear(); keep that working now that the
+# cache lives on the inner function.
+load_all.clear = _load_all.clear
 
 
 # What this build of the code expects the loaded data to carry.

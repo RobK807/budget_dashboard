@@ -560,6 +560,74 @@ class TestIdleWatchdog:
         assert watchdog._session_count() is None
 
 
+class TestDatabaseFingerprint:
+    """The cache key for load_all. Without one the read was keyed on nothing, so a dashboard
+    that loaded while a table was empty went on reporting it empty for as long as it stayed
+    open -- which is how 25 stored savings targets read as 'no plan set yet'."""
+
+    def prepare(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        from budget import config, ui
+
+        path = tmp_path / "fingerprint.db"
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        monkeypatch.setattr(config, "DB_PATH", path)
+        return conn, ui
+
+    def test_it_is_stable_when_nothing_changes(self, tmp_path, monkeypatch):
+        conn, ui = self.prepare(tmp_path, monkeypatch)
+        try:
+            assert ui.db_fingerprint() == ui.db_fingerprint()
+        finally:
+            conn.close()
+
+    def test_a_write_changes_it(self, tmp_path, monkeypatch):
+        """In WAL mode the write lands in the -wal and the database file is not touched, so
+        fingerprinting budget.db alone misses every recent change. That was the first
+        version of this, and it silently did nothing."""
+        conn, ui = self.prepare(tmp_path, monkeypatch)
+        try:
+            before = ui.db_fingerprint()
+            conn.execute("INSERT INTO t (id) VALUES (1)")
+            conn.commit()
+            assert ui.db_fingerprint() != before
+        finally:
+            conn.close()
+
+    def test_the_wal_is_part_of_it(self, tmp_path, monkeypatch):
+        conn, ui = self.prepare(tmp_path, monkeypatch)
+        try:
+            conn.execute("INSERT INTO t (id) VALUES (1)")
+            conn.commit()
+            wal = tmp_path / "fingerprint.db-wal"
+            assert wal.exists(), "expected WAL mode to produce a -wal"
+            assert len(ui.db_fingerprint()) == 2
+        finally:
+            conn.close()
+
+    def test_a_missing_database_does_not_raise(self, tmp_path, monkeypatch):
+        """Startup, a restore mid-flight, a path that is briefly unreadable."""
+        from budget import config, ui
+
+        monkeypatch.setattr(config, "DB_PATH", tmp_path / "nothing-here.db")
+        assert ui.db_fingerprint() == ((0, 0), (0, 0))
+
+    def test_clear_still_reaches_the_cache(self):
+        """Every write path calls ui.load_all.clear(); the cache now lives on the inner
+        function, so this has to have been carried across. Compared by what the bound method
+        is attached to -- `is` on the methods themselves is always False, since attribute
+        access makes a fresh binding each time."""
+        from budget import ui
+
+        assert callable(ui.load_all.clear)
+        assert ui.load_all.clear.__self__ is ui._load_all.clear.__self__
+        ui.load_all.clear()  # and it runs without raising
+
+
 class TestStaleBuildGuard:
     """A process that started before the code changed runs a new page against an old module,
     and the page dies with a KeyError naming a column but not the cause."""
