@@ -36,10 +36,16 @@ if not errorlevel 1 (
     exit /b 1
 )
 
+rem Stop the server once the last browser tab closes, so this window does not outlive it.
+rem See budget\watchdog.py. Set here rather than in the code so that `streamlit run app.py`
+rem from a terminal still behaves like a server.
+set BUDGET_EXIT_WHEN_IDLE=1
+
 echo.
 echo   Budget dashboard starting at http://127.0.0.1:8501
 echo.
-echo   Leave this window open. Press Ctrl+C, or close it, to stop.
+echo   Closing the browser tab shuts the dashboard down and closes this window.
+echo   Press Ctrl+C to stop it sooner.
 echo.
 
 rem Open the browser once the server has had a moment to bind the port. Streamlit is set
@@ -50,6 +56,13 @@ rem The port is pinned rather than left to Streamlit. Without this it falls back
 rem free one when 8501 is busy, which is what let the browser and the server disagree.
 ".venv\Scripts\python.exe" -m streamlit run app.py --server.port 8501
 
-echo.
-echo   Dashboard stopped.
-pause
+rem No pause: the server exits when the last tab closes, and a prompt here would leave the
+rem window sitting open afterwards, which is the thing this is meant to stop. A crash still
+rem gets a pause below so the reason stays on screen long enough to read.
+if errorlevel 1 (
+    echo.
+    echo   The dashboard stopped with an error. The message above says why.
+    echo.
+    pause
+)
+exit /b 0

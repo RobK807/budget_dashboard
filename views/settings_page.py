@@ -927,20 +927,44 @@ with tab_savings:
     # is a revision dated May 2027 -- and opening on that would show a future set as though
     # it were current.
     started = [d for d in stored_dates if d <= dt.date.today()]
-    date_cols = st.columns([1, 2])
-    plan_from = date_cols[0].date_input(
-        "Set in force from",
-        value=(
-            started[-1] if started
-            else (stored_dates[0] if stored_dates else dt.date.today().replace(day=1))
-        ),
-        format="DD/MM/YYYY",
-        key="plan_effective",
+    current = (
+        started[-1] if started
+        else (stored_dates[0] if stored_dates else dt.date.today().replace(day=1))
     )
-    date_cols[1].caption("")
-    date_cols[1].caption(
+
+    # Every revision is kept, so an earlier plan can be read back rather than reconstructed.
+    # The dropdown is the stored ones; the date picker beside it is for starting a new set,
+    # which is the only case where a date that is not already in the list makes sense.
+    NEW = "Start a new revision…"
+    date_cols = st.columns([2, 1, 2])
+    choice = date_cols[0].selectbox(
+        "Revision",
+        options=[NEW] + list(reversed(stored_dates)),
+        index=(list(reversed(stored_dates)).index(current) + 1) if stored_dates else 0,
+        format_func=lambda d: (
+            d if isinstance(d, str)
+            else f"{d:%d %b %Y}"
+            + ("  ← in force" if d == current else "")
+            + ("  (future)" if d > dt.date.today() else "")
+        ),
+        key="plan_revision",
+    )
+    if choice == NEW:
+        plan_from = date_cols[1].date_input(
+            "From", value=dt.date.today().replace(day=1), format="DD/MM/YYYY",
+            key="plan_effective_new",
+        )
+    else:
+        plan_from = choice
+        date_cols[1].caption("")
+        date_cols[1].caption(f"Editing {plan_from:%d %b %Y}")
+
+    date_cols[2].caption("")
+    date_cols[2].caption(
         f"{len(stored_dates)} revision(s) stored: "
         + (", ".join(f"{d:%d/%m/%Y}" for d in stored_dates) or "none")
+        + ". Earlier ones stay as they are — a past month keeps the plan it was measured "
+        "against."
     )
 
     in_force = repo.plan_in_force(plan, plan_from).set_index("account")
@@ -977,7 +1001,9 @@ with tab_savings:
         f"That set totals **{ui.money(totals.get('Savings', 0))}** into savings and "
         f"**{ui.money(totals.get('Investments', 0))}** into investments each month — "
         f"{ui.money(sum(totals.values()))} altogether. The overview below is this sum, not a "
-        "second figure typed beside it."
+        "second figure typed beside it. A **negative** target is allowed and means what it "
+        "says: money leaving that pot, usually because it is going into another one, where "
+        "the matching positive target sits."
     )
 
     buttons = st.columns([1, 1, 3])
@@ -1003,6 +1029,78 @@ with tab_savings:
         with ui.session() as session, session.begin():
             outcome = reference.remove_savings_plan_date(session, plan_from)
         show_outcome(outcome)
+
+    # ---- one-offs ------------------------------------------------------------------
+    st.markdown("**One-off additions and withdrawals**")
+    st.caption(
+        "A lump sum planned into or out of a pot in a single month, and not again — a "
+        "windfall going in, or a deposit coming out. Folding one into the plan above would "
+        "misstate every month after it, and leaving it out means the target is knowingly "
+        "wrong for the month it lands in. These are **netted into** the monthly target for "
+        "their month. Negative means money coming out."
+    )
+
+    adjustments = data["savings_adjustments"]
+    if adjustments.empty:
+        st.caption("None recorded.")
+    else:
+        shown = adjustments.copy()
+        shown["month"] = shown["period"].map(repo.period_label)
+        st.dataframe(
+            ui.money_table(
+                repo.sort_human(shown, by=["period", "account"])[
+                    ["month", "account", "amount", "note"]
+                ],
+                ["amount"],
+                labels={"month": "Month", "account": "Account", "amount": "Amount",
+                        "note": "Note"},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.form("savings_adjustment"):
+        fields = st.columns([1, 1, 1, 2])
+        one_off_period = fields[0].selectbox(
+            "Month", data["all_periods"], index=len(data["periods"]) - 1,
+            format_func=repo.period_label, key="one_off_period",
+        )
+        one_off_account = fields[1].selectbox(
+            "Account", ui.alphabetical(pots["name"]), key="one_off_account",
+        )
+        one_off_amount = fields[2].number_input(
+            "Amount (£)", step=100.0, format="%.2f", value=0.0,
+            help="Negative for money coming out of the pot.",
+        )
+        one_off_note = fields[3].text_input(
+            "Note", placeholder="e.g. deposit for the flat", key="one_off_note"
+        )
+        if st.form_submit_button("Add one-off", disabled=READ_ONLY):
+            account_id = int(pots.loc[pots["name"] == one_off_account, "id"].iloc[0])
+            with ui.session() as session, session.begin():
+                _, outcome = reference.add_savings_adjustment(
+                    session, one_off_period, account_id,
+                    Decimal(str(one_off_amount)), one_off_note or None,
+                )
+            show_outcome(outcome)
+
+    if not adjustments.empty:
+        options = list(adjustments["id"])
+        indexed = adjustments.set_index("id")
+        drop = st.selectbox(
+            "Remove a one-off",
+            options=options,
+            format_func=lambda i: (
+                f"{repo.period_label(indexed.loc[i, 'period'])} · "
+                f"{indexed.loc[i, 'account']} · {ui.money(indexed.loc[i, 'amount'])}"
+                + (f" · {indexed.loc[i, 'note']}" if indexed.loc[i, "note"] else "")
+            ),
+            key="drop_one_off",
+        )
+        if st.button("Remove one-off", disabled=READ_ONLY, key="do_drop_one_off"):
+            with ui.session() as session, session.begin():
+                outcome = reference.remove_savings_adjustment(session, int(drop))
+            show_outcome(outcome)
 
     # ---- the expected return -------------------------------------------------------
     st.markdown("**Expected investment return**")

@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from budget import config, ui
+from budget import config, ui, watchdog
 
 st.set_page_config(page_title="Budget", page_icon="💷", layout="wide")
+
+# Closing the last tab stops the server, so the console window that launched it closes too.
+# Only when the launcher asks for it -- see budget/watchdog.py. Started here rather than in
+# budget.bat because it needs to be inside the Streamlit process to see its sessions;
+# @st.cache_resource makes it once per process rather than once per script run.
+st.cache_resource(watchdog.start)()
 
 check = ui.database_check()
 if not check["ok"]:

@@ -586,16 +586,80 @@ Recovery was lossless apart from the plan, which the seed rebuilds: `REINDEX` re
 survived, and the repaired file reconciled against the workbook before it was promoted. The
 corrupt original is kept as `budget.corrupt-<stamp>.db` rather than discarded.
 
+## Targets that can be negative, and targets that happen once
+
+Two things the plan could not say.
+
+**Negative.** Moving money from one pot to another is a negative target in the first and a
+positive one in the second. The pair nets to nothing overall, which is right — the month has
+saved no more than it started with — while the breakdown still shows one pot up and the other
+down. The non-negative check in `set_savings_plan` is gone.
+
+**One-off.** `savings_adjustment` holds a lump sum planned into or out of a pot in a single
+named month: a windfall going in, a deposit coming out. Folding one into the standing plan
+would misstate every month after it; leaving it out means the target is knowingly wrong for
+the month it lands in. They are netted into that month's target and carried as their own rows
+in the breakdown, with a `source` of `Plan` or `One-off`, so a month whose target looks odd
+can be read back to the thing that moved it. Several are allowed in a month — two unrelated
+lump sums are two facts, and the note is what tells them apart.
+
+Every revision of the plan is kept and selectable from a dropdown rather than reachable only
+by typing its date, so an earlier plan can be read back instead of reconstructed.
+
 ## Added against target, again
 
 The chart had been made cumulative on both sides so the comparison would be like for like.
 But the table's **Added** is a single month, so the bars matched nothing on screen and the
 chart quietly disagreed with the numbers printed beside it.
 
-Both scales now coexist on one chart instead: bars are the month's Added against the left
-axis, lines are the Cumulative target against the right. Every figure in the chart appears in
-the table above it, which is the property that was missing. The investment balance chart
-takes a second axis on the same reasoning — one account is four times the size of the others,
-so the smaller two were flat lines along the bottom. Which accounts go on the right is a
-multiselect, defaulted to those materially below the largest, rather than a hard-coded pair
-of names.
+It became bars for the month's Added against a left axis and the Cumulative target as a line
+against a right one — every figure then appearing in the table, which was the property that
+had been missing.
+
+Then again, and better: the second axis is gone and the target is a **hollow column drawn
+over** the solid column of what was added. Traces sharing an `offsetgroup` take the same slot
+instead of standing side by side, which is what puts one on top of the other. A monthly
+target against a monthly addition needs no second scale at all.
+
+Savings targets now split the way the balances do — an account's target counts as reserved if
+its pot is earmarked and available if not — so every column has a target of its own rather
+than one savings figure spanning two columns. On the live data: 550 available (NS&I 250 +
+Marcus 300), 350 reserved (Wedding), 350 investments, and the first two sum to the 900 the
+table shows.
+
+The investment balance chart keeps its second axis, for a different reason — one account is
+four times the size of the others, so the smaller two were flat lines along the bottom. Which
+accounts go on the right is a multiselect defaulted to those materially below the largest,
+rather than a hard-coded pair of names.
+
+## Three ways to read a payslip
+
+Grouped columns are for scanning one side; they are the wrong shape for finding where a month
+diverges, which needs each pair adjacent rather than eight columns apart. So the comparison
+takes a choice of three: **Actual** and **Expected** each show one side in the payslip's own
+order, and **Actual vs expected** interleaves them — Gross (E), Gross (A), Bonus (E), Bonus
+(A) — with the net difference last. The difference column is dropped from the expected-only
+view, where it would be comparing a figure against something not on screen.
+
+## The window that would not close
+
+Reported as a nuisance; it was also the cause of the worst hour of this project. `streamlit
+run` is a server and keeps running whether or not anybody is looking at it, so closing the
+tab left the console window — and the process — behind. That is how a dashboard from 18:52
+was still serving port 8501 hours later, with every page failing on columns that existed.
+
+`budget/watchdog.py` polls the runtime's session registry, the closest thing Streamlit has to
+'is anyone connected'. A browser tab is a session; closing it drops the websocket and the
+session with it. Two things keep it from firing wrongly: a grace period, because a refresh
+briefly drops to zero and is not someone finishing up, and a startup window, because zero is
+legitimate between binding the port and the browser arriving. If no browser *ever* connects
+it keeps waiting rather than exiting — that state means something else is wrong, and quietly
+exiting would hide it.
+
+`os._exit`, not `sys.exit`: this runs on a daemon thread, where `SystemExit` is caught by the
+thread and the server carries on regardless.
+
+Off unless `BUDGET_EXIT_WHEN_IDLE` is set, so `streamlit run app.py` from a terminal still
+behaves like a server and a headless test run cannot kill itself. `budget.bat` sets it, and
+its trailing `pause` is gone — a prompt there would leave the window open, which is the whole
+point of the change.

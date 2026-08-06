@@ -401,6 +401,165 @@ class TestMonthlyRate:
         assert repo.monthly_rate(Decimal("0")) == Decimal("0")
 
 
+class TestNegativeAndOneOffTargets:
+    """Two things the plan could not previously say: money moving *out* of a pot, and a lump
+    sum that happens once rather than every month."""
+
+    PLAN = pd.DataFrame(
+        [
+            {"id": 1, "account_id": 2, "account": "Marcus",
+             "effective_from": dt.date(2026, 3, 1), "amount": Decimal("300")},
+            # Moving money out of the wedding pot and into Marcus: the pair nets to nothing.
+            {"id": 2, "account_id": 4, "account": "Wedding",
+             "effective_from": dt.date(2026, 3, 1), "amount": Decimal("-300")},
+            {"id": 3, "account_id": 3, "account": "Stocks",
+             "effective_from": dt.date(2026, 3, 1), "amount": Decimal("250")},
+        ]
+    )
+    ACCOUNTS = pd.DataFrame(
+        [
+            {"id": 2, "name": "Marcus", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False},
+            {"id": 3, "name": "Stocks", "type": "bank", "is_savings": False,
+             "is_investment": True, "is_isa": False, "exclude_from_savings": False},
+            {"id": 4, "name": "Wedding", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": True},
+        ]
+    )
+
+    def test_a_negative_target_is_kept(self):
+        in_force = repo.plan_in_force(self.PLAN, dt.date(2026, 6, 1)).set_index("account")
+        assert in_force.loc["Wedding", "amount"] == Decimal("-300")
+
+    def test_a_transfer_between_pots_nets_to_nothing(self):
+        """Which is right: the month has saved no more than it started with."""
+        derived = repo.targets_from_plan(self.PLAN, self.ACCOUNTS, ["2026-06"])
+        assert derived.iloc[0]["savings"] == Decimal("0")
+
+    def test_the_buckets_still_show_the_two_halves(self):
+        """Netting to zero overall must not hide that one pot is up 300 and another down."""
+        buckets = repo.targets_by_bucket(self.PLAN, self.ACCOUNTS, ["2026-06"]).iloc[0]
+        assert buckets["available"] == Decimal("300")    # Marcus
+        assert buckets["reserved"] == Decimal("-300")    # Wedding, earmarked
+        assert buckets["investments"] == Decimal("250")
+
+    def test_buckets_sum_to_the_overview(self):
+        periods = ["2026-06"]
+        overview = repo.targets_from_plan(self.PLAN, self.ACCOUNTS, periods).iloc[0]
+        buckets = repo.targets_by_bucket(self.PLAN, self.ACCOUNTS, periods).iloc[0]
+        assert buckets["available"] + buckets["reserved"] == overview["savings"]
+        assert buckets["investments"] == overview["investments"]
+
+    # ---- one-offs ----------------------------------------------------------------
+
+    ONE_OFFS = pd.DataFrame(
+        [
+            {"id": 1, "period": "2026-07", "account_id": 2, "account": "Marcus",
+             "amount": Decimal("5000"), "note": "bonus"},
+            {"id": 2, "period": "2026-07", "account_id": 4, "account": "Wedding",
+             "amount": Decimal("-2000"), "note": "deposit"},
+            {"id": 3, "period": "2026-09", "account_id": 3, "account": "Stocks",
+             "amount": Decimal("1000"), "note": "top up"},
+        ]
+    )
+
+    def test_a_one_off_only_moves_its_own_month(self):
+        periods = ["2026-06", "2026-07", "2026-08"]
+        derived = repo.targets_from_plan(
+            self.PLAN, self.ACCOUNTS, periods, self.ONE_OFFS
+        ).set_index("period")
+        assert derived.loc["2026-06", "savings"] == Decimal("0")
+        assert derived.loc["2026-07", "savings"] == Decimal("3000")   # 0 + 5000 - 2000
+        assert derived.loc["2026-08", "savings"] == Decimal("0")
+
+    def test_a_one_off_outside_the_periods_is_ignored(self):
+        derived = repo.targets_from_plan(
+            self.PLAN, self.ACCOUNTS, ["2026-07"], self.ONE_OFFS
+        )
+        assert derived.iloc[0]["investments"] == Decimal("250")  # September's 1000 excluded
+
+    def test_the_breakdown_says_which_is_which(self):
+        """A month whose target looks wrong has to be readable back to the thing that
+        moved it, so a one-off is its own row rather than added into the standing figure."""
+        detail = repo.plan_by_period(
+            self.PLAN, self.ACCOUNTS, ["2026-07"], self.ONE_OFFS
+        )
+        marcus = detail[detail["account"] == "Marcus"].set_index("source")
+        assert marcus.loc["Plan", "amount"] == Decimal("300")
+        assert marcus.loc["One-off", "amount"] == Decimal("5000")
+
+    def test_no_adjustments_behaves_as_before(self):
+        with_none = repo.targets_from_plan(self.PLAN, self.ACCOUNTS, ["2026-07"], None)
+        empty = repo.targets_from_plan(
+            self.PLAN, self.ACCOUNTS, ["2026-07"],
+            pd.DataFrame(columns=["id", "period", "account_id", "account", "amount", "note"]),
+        )
+        assert with_none.iloc[0]["savings"] == empty.iloc[0]["savings"] == Decimal("0")
+
+
+class TestIdleWatchdog:
+    """Closing the last tab stops the server, so the console window closes with it."""
+
+    def test_it_is_off_unless_asked_for(self, monkeypatch):
+        """`streamlit run` from a terminal must still behave like a server -- and a headless
+        test run must not be killed by its own watchdog."""
+        from budget import watchdog
+
+        monkeypatch.delenv(watchdog.ENV_FLAG, raising=False)
+        assert watchdog.enabled() is False
+        assert watchdog.start() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+    def test_the_flag_is_read_generously(self, monkeypatch, value):
+        from budget import watchdog
+
+        monkeypatch.setenv(watchdog.ENV_FLAG, value)
+        assert watchdog.enabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "", "  "])
+    def test_anything_else_is_off(self, monkeypatch, value):
+        from budget import watchdog
+
+        monkeypatch.setenv(watchdog.ENV_FLAG, value)
+        assert watchdog.enabled() is False
+
+    def test_shutting_down_closes_the_database_first(self, monkeypatch):
+        """The whole reason this is not a bare os._exit. SQLite runs in WAL mode, so
+        committed data sits in budget.db-wal until a checkpoint folds it back in, and that
+        happens when the last connection closes. Exiting without closing leaves a WAL that
+        outlives its database -- twice the cause of 'disk image is malformed' here."""
+        from budget import ui, watchdog
+
+        order = []
+        monkeypatch.setattr(ui, "close_connections", lambda: order.append("closed"))
+        monkeypatch.setattr(watchdog.os, "_exit", lambda code: order.append(f"exit {code}"))
+
+        watchdog._shut_down()
+        assert order == ["closed", "exit 0"]
+
+    def test_it_exits_even_if_closing_fails(self, monkeypatch):
+        """A broken engine must not leave the process wedged with nobody watching it."""
+        from budget import ui, watchdog
+
+        exited = []
+
+        def boom():
+            raise RuntimeError("engine already gone")
+
+        monkeypatch.setattr(ui, "close_connections", boom)
+        monkeypatch.setattr(watchdog.os, "_exit", lambda code: exited.append(code))
+
+        watchdog._shut_down()
+        assert exited == [0]
+
+    def test_an_unavailable_runtime_reads_as_unknown(self):
+        """Outside a Streamlit process there is no runtime to ask. None means 'do not know',
+        which the loop treats as somebody being there -- the safe way to be wrong."""
+        from budget import watchdog
+
+        assert watchdog._session_count() is None
+
+
 class TestStaleBuildGuard:
     """A process that started before the code changed runs a new page against an old module,
     and the page dies with a KeyError naming a column but not the cause."""

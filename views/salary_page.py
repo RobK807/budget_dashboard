@@ -219,15 +219,46 @@ with tab_compare:
         ("Net", "expected_net", "actual_net"),
     ]
 
+    # Three ways to read the same eight lines. Grouped is for scanning one side; interleaved
+    # is for finding where a month diverges, which means putting each pair adjacent rather
+    # than eight columns apart.
+    ACTUAL_ONLY = "Actual"
+    EXPECTED_ONLY = "Expected"
+    BOTH = "Actual vs expected"
+
+    view = st.radio(
+        "Show",
+        options=[ACTUAL_ONLY, EXPECTED_ONLY, BOTH],
+        index=2,
+        horizontal=True,
+        key="salary_view",
+        help="Actual and Expected each show one side in the payslip's own order. Actual vs "
+             "expected pairs them line by line.",
+    )
+
     display = frame[["month", "payday"]].copy()
     money_columns = []
-    for index, group in enumerate(("Expected", "Actual")):
-        for label, *sources in PAYSLIP_LINES:
-            column = f"{group} — {label}"
-            display[column] = frame[sources[index]]
-            money_columns.append(column)
-    display["Net difference"] = frame["actual_net"] - frame["expected_net"]
-    money_columns.append("Net difference")
+
+    def add(column: str, source: str) -> None:
+        display[column] = frame[source]
+        money_columns.append(column)
+
+    if view == ACTUAL_ONLY:
+        for label, _expected, actual in PAYSLIP_LINES:
+            add(label, actual)
+    elif view == EXPECTED_ONLY:
+        for label, expected, _actual in PAYSLIP_LINES:
+            add(label, expected)
+    else:
+        # (E) then (A) for each line, so a discrepancy is read across two neighbouring
+        # columns rather than by counting places along the row.
+        for label, expected, actual in PAYSLIP_LINES:
+            add(f"{label} (E)", expected)
+            add(f"{label} (A)", actual)
+
+    if view != EXPECTED_ONLY:
+        display["Net difference"] = frame["actual_net"] - frame["expected_net"]
+        money_columns.append("Net difference")
 
     st.dataframe(
         ui.money_table(
@@ -238,7 +269,8 @@ with tab_compare:
         hide_index=True,
     )
     st.caption(
-        "**Expected gross** is stated as a payslip states it — net of the salary-sacrifice "
+        ("**(E)** is expected, **(A)** actual. " if view == BOTH else "")
+        + "**Expected gross** is stated as a payslip states it — net of the salary-sacrifice "
         "pension and inclusive of the home working allowance — so the two gross figures are "
         "like for like. **Actual gross** is salary **plus** bonus, since the two are separate "
         "payments in the same month, and the bonus line shows how much of it came from the "

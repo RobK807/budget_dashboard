@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Columns added to tables that already existed. create_all only creates whole tables, so a
 # new column on an existing one needs an explicit ALTER -- cheap in SQLite, unlike a CHECK.

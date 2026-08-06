@@ -555,6 +555,29 @@ class SavingsPlan(Base):
     )
 
 
+class SavingsAdjustment(Base):
+    """A one-off planned addition to, or withdrawal from, a pot in a single month.
+
+    The plan is a standing figure that repeats until it is revised. This is the other kind:
+    a lump sum going in, or coming out, in one named month and not again. Folding it into
+    the plan would misstate every month after it, and leaving it out means the target is
+    knowingly wrong for the month it lands in.
+
+    Signed, so a withdrawal is negative. Several are allowed in a month -- each carries its
+    own note, which is the only way to tell two of them apart afterwards.
+    """
+
+    __tablename__ = "savings_adjustment"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    period: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    account: Mapped[Account] = relationship()
+
+
 class Setting(Base):
     """Replaces the Control tab. DeveloperParameters is not carried over -- it only ever
     described sheet geometry."""

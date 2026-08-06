@@ -225,56 +225,56 @@ st.caption(
 
 st.subheader("Added against target")
 
-# Every figure here is one that can be found in the table above -- which the previous version
-# could not claim. It made both sides cumulative so the comparison would be like for like,
-# but the table's 'Added' is a single month, so the bars matched nothing on screen and the
-# chart quietly disagreed with the numbers beside it.
+# Each target sits directly over the column it measures, drawn as an outline so the solid bar
+# behind it stays readable. Traces sharing an `offsetgroup` take the same slot rather than
+# standing side by side, which is what puts the two on top of each other instead of beside.
 #
-# The two scales are reconciled with a second axis instead: bars are the month's Added, the
-# lines are Cumulative target. A month's 900 beside a target that has reached 4,500 would
-# otherwise flatten the bars to nothing by the end of the year.
+# One axis, and a monthly target against a monthly addition. The cumulative line this
+# replaces needed a second axis to be visible at all, and compared a running total against a
+# single month -- so nothing on the chart could be found in the table beneath it.
+targets = data["bucket_targets"].set_index("period")
 plot = ui.to_float(
-    series,
-    ["available_added", "reserved_added", "investments_added",
-     "savings_target_eom", "investments_target_eom"],
-)
+    series, ["available_added", "reserved_added", "investments_added"]
+).copy()
+for bucket in ("available", "reserved", "investments"):
+    plot[f"{bucket}_target"] = [
+        float(targets.loc[p, bucket]) if p in targets.index else 0.0
+        for p in series["period"]
+    ]
 
-fig = make_subplots(specs=[[{"secondary_y": True}]])
-for column, label, colour in (
-    ("available_added", "Savings added (available)", ui.ACCENT),
-    ("reserved_added", "Savings added (reserved)", "#8C9EC4"),
-    ("investments_added", "Investments added", ui.POSITIVE),
+fig = go.Figure()
+for bucket, added, label, colour in (
+    ("available", "available_added", "Savings (available)", ui.ACCENT),
+    ("reserved", "reserved_added", "Savings (reserved)", "#8C9EC4"),
+    ("investments", "investments_added", "Investments", ui.POSITIVE),
 ):
     fig.add_trace(
-        go.Bar(name=label, x=plot["month"], y=plot[column], marker_color=colour),
-        secondary_y=False,
+        go.Bar(
+            name=f"{label} — added", x=plot["month"], y=plot[added],
+            marker_color=colour, offsetgroup=bucket, legendgroup=bucket,
+        )
     )
-for column, label, dash in (
-    ("savings_target_eom", "Savings target (cumulative)", "dash"),
-    ("investments_target_eom", "Investments target (cumulative)", "dot"),
-):
     fig.add_trace(
-        go.Scatter(
-            name=label, x=plot["month"], y=plot[column],
-            mode="lines+markers", line=dict(dash=dash),
-        ),
-        secondary_y=True,
+        go.Bar(
+            name=f"{label} — target", x=plot["month"], y=plot[f"{bucket}_target"],
+            offsetgroup=bucket, legendgroup=bucket,
+            marker=dict(
+                color="rgba(0,0,0,0)",           # hollow, so the bar behind still reads
+                line=dict(color=colour, width=2),
+                pattern=dict(shape="/", fgcolor=colour, fgopacity=0.25, size=6),
+            ),
+        )
     )
 
 fig.update_layout(barmode="group", hovermode="x unified", margin=dict(t=10))
-fig.update_yaxes(
-    title_text="Added in the month (£)", tickformat=",.2f", hoverformat=",.2f",
-    secondary_y=False,
-)
-fig.update_yaxes(
-    title_text="Cumulative target (£)", tickformat=",.2f", hoverformat=",.2f",
-    secondary_y=True, showgrid=False,
-)
+fig.update_yaxes(title_text="£ in the month", tickformat=",.2f", hoverformat=",.2f")
 st.plotly_chart(fig, use_container_width=True)
 st.caption(
-    "Bars are the month's **Added**, read against the left axis; the lines are **Cumulative "
-    "target**, against the right. Both columns are in the table above, so every figure here "
-    "can be found there. The two savings bars sum to the change in the total balance."
+    "The hollow column is the month's **target**, drawn over the solid column of what was "
+    "actually **added**, so a bar short of its outline is a month that fell behind. Savings "
+    "targets are split the same way the balances are: an account's target counts as reserved "
+    "if the pot is earmarked, available if it is not, and the two sum to the savings figure "
+    "in the table. One-offs are already included."
 )
 
 st.divider()

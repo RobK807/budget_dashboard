@@ -41,6 +41,7 @@ from budget.models import (
     Projection,
     SalaryAssumption,
     SalaryProfile,
+    SavingsAdjustment,
     SavingsPlan,
     SavingsTarget,
     Setting,
@@ -886,9 +887,8 @@ def set_savings_plan(
             return Outcome(True, "Target removed.")
         return Outcome(True, "Nothing to remove.")
 
-    if Decimal(amount) < 0:
-        return Outcome(False, "A contribution target cannot be negative.")
-
+    # Negatives are allowed and meaningful: moving money between two pots is a negative
+    # target in one and a positive one in the other, and the pair nets to nothing overall.
     if existing:
         existing.amount = Decimal(amount)
     else:
@@ -918,6 +918,43 @@ def remove_savings_plan_date(session: Session, effective_from: dt.date) -> Outco
     session.flush()
     bump_revision(session)
     return Outcome(True, f"Removed {len(rows)} target(s) from {effective_from:%d %b %Y}.")
+
+
+def add_savings_adjustment(
+    session: Session,
+    period: str,
+    account_id: int,
+    amount: Decimal,
+    note: str | None = None,
+) -> tuple[SavingsAdjustment | None, Outcome]:
+    """A one-off planned addition to, or withdrawal from, a pot in a single month.
+
+    Signed: a withdrawal is negative. Several are allowed in a month, since two unrelated
+    lump sums in the same month are two facts, not one -- the note is what tells them apart.
+    """
+    if amount is None or Decimal(amount) == 0:
+        return None, Outcome(False, "A one-off of nothing has no effect. Enter an amount.")
+
+    row = SavingsAdjustment(
+        period=period,
+        account_id=account_id,
+        amount=Decimal(amount),
+        note=(note or None),
+    )
+    session.add(row)
+    session.flush()
+    bump_revision(session)
+    return row, Outcome(True, f"One-off saved against {period}.")
+
+
+def remove_savings_adjustment(session: Session, adjustment_id: int) -> Outcome:
+    row = session.get(SavingsAdjustment, adjustment_id)
+    if row is None:
+        return Outcome(False, "One-off not found")
+    session.delete(row)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, "One-off removed.")
 
 
 def set_donation_flag(session: Session, txn_id: int, is_donation: bool) -> Outcome:

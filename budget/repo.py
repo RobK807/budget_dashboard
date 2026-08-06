@@ -40,6 +40,7 @@ from budget.models import (
     Projection,
     SalaryAssumption,
     SalaryProfile,
+    SavingsAdjustment,
     SavingsPlan,
     SavingsTarget,
     Setting,
@@ -1152,53 +1153,115 @@ def plan_in_force(plan: pd.DataFrame, on: dt.date) -> pd.DataFrame:
     return latest[columns]
 
 
-def plan_by_period(
-    plan: pd.DataFrame, accounts: pd.DataFrame, periods: list[str]
-) -> pd.DataFrame:
-    """The monthly target for every account, month by month.
+def load_savings_adjustments(session: Session) -> pd.DataFrame:
+    accounts = {a.id: a.name for a in session.scalars(select(Account))}
+    rows = [
+        {
+            "id": a.id,
+            "period": a.period,
+            "account_id": a.account_id,
+            "account": accounts.get(a.account_id),
+            "amount": a.amount,
+            "note": a.note,
+        }
+        for a in session.scalars(
+            select(SavingsAdjustment).order_by(
+                SavingsAdjustment.period, SavingsAdjustment.account_id
+            )
+        )
+    ]
+    return pd.DataFrame(
+        rows, columns=["id", "period", "account_id", "account", "amount", "note"]
+    )
 
-    Columns: period, month, account, kind ('Savings' or 'Investments'), amount. Accounts with
-    no target in force in a month are omitted rather than shown as zero -- a pot that has not
-    started yet and a pot with a target of nothing are different things.
+
+def account_kinds(accounts: pd.DataFrame) -> dict[str, str]:
+    """Which side of the page an account counts towards.
+
+    'Savings' splits again into available and reserved for the charts, since an earmarked pot
+    is money saved but already spoken for -- the same distinction the balances make.
     """
-    columns = ["period", "month", "account", "kind", "amount"]
-    if plan.empty:
-        return pd.DataFrame(columns=columns)
-
     kinds = {}
     for _, acct in accounts.iterrows():
         if acct.get("is_investment"):
             kinds[acct["name"]] = "Investments"
         elif acct.get("is_savings"):
             kinds[acct["name"]] = "Savings"
+    return kinds
 
+
+def plan_by_period(
+    plan: pd.DataFrame,
+    accounts: pd.DataFrame,
+    periods: list[str],
+    adjustments: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The monthly target for every account, month by month.
+
+    Columns: period, month, account, kind ('Savings' or 'Investments'), source and amount.
+    Accounts with no target in force in a month are omitted rather than shown as zero -- a
+    pot that has not started yet and a pot with a target of nothing are different things.
+
+    `adjustments` are the one-offs: a lump sum planned into or out of a pot in one named
+    month. They arrive as their own rows rather than being added to the standing figure, so
+    a month whose target looks wrong can be read back to the thing that moved it.
+    """
+    columns = ["period", "month", "account", "kind", "source", "amount"]
+    kinds = account_kinds(accounts)
     rows = []
-    for period in periods:
-        for _, row in plan_in_force(plan, period_start(period)).iterrows():
+
+    if not plan.empty:
+        for period in periods:
+            for _, row in plan_in_force(plan, period_start(period)).iterrows():
+                rows.append(
+                    {
+                        "period": period,
+                        "month": period_label(period),
+                        "account": row["account"],
+                        "kind": kinds.get(row["account"], "Other"),
+                        "source": "Plan",
+                        "amount": row["amount"],
+                    }
+                )
+
+    if adjustments is not None and not adjustments.empty:
+        wanted = set(periods)
+        for _, row in adjustments.iterrows():
+            if row["period"] not in wanted:
+                continue
             rows.append(
                 {
-                    "period": period,
-                    "month": period_label(period),
+                    "period": row["period"],
+                    "month": period_label(row["period"]),
                     "account": row["account"],
                     "kind": kinds.get(row["account"], "Other"),
+                    "source": "One-off",
                     "amount": row["amount"],
                 }
             )
+
     return pd.DataFrame(rows, columns=columns)
 
 
 def targets_from_plan(
-    plan: pd.DataFrame, accounts: pd.DataFrame, periods: list[str]
+    plan: pd.DataFrame,
+    accounts: pd.DataFrame,
+    periods: list[str],
+    adjustments: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """The savings/investments overview, summed from the per-account plan.
+    """The savings/investments overview, summed from the per-account plan and its one-offs.
 
     Derived rather than stored, so the headline and the breakdown cannot disagree. The two
     used to be typed separately, which is how the dashboard came to hold 900 and 350 while
     the plan behind them said 250 + 350 + 300 and 250 + 100 -- the same figures, but only by
     coincidence of nobody having changed one without the other.
+
+    Targets are signed. Moving money between two pots is a negative target in one and a
+    positive one in the other, and they net to nothing overall, which is exactly right: the
+    month has saved no more than it started with.
     """
     columns = ["period", "savings", "investments"]
-    detail = plan_by_period(plan, accounts, periods)
+    detail = plan_by_period(plan, accounts, periods, adjustments)
     if detail.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1210,6 +1273,48 @@ def targets_from_plan(
                 "period": period,
                 "savings": mine.loc[mine["kind"] == "Savings", "amount"].sum()
                 or Decimal("0"),
+                "investments": mine.loc[mine["kind"] == "Investments", "amount"].sum()
+                or Decimal("0"),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def targets_by_bucket(
+    plan: pd.DataFrame,
+    accounts: pd.DataFrame,
+    periods: list[str],
+    adjustments: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The same targets, split the way the *added* figures are split.
+
+    Savings divides into available and reserved on the earmarked flag, so every bar on the
+    chart has a target of its own to be measured against rather than a single savings figure
+    covering two columns.
+    """
+    columns = ["period", "available", "reserved", "investments"]
+    detail = plan_by_period(plan, accounts, periods, adjustments)
+    if detail.empty:
+        return pd.DataFrame(columns=columns)
+
+    earmarked = set()
+    if "exclude_from_savings" in accounts.columns:
+        flag = accounts["exclude_from_savings"].fillna(False).astype(bool)
+        earmarked = set(accounts.loc[flag, "name"])
+
+    rows = []
+    for period in periods:
+        mine = detail[detail["period"] == period]
+        savings = mine[mine["kind"] == "Savings"]
+        rows.append(
+            {
+                "period": period,
+                "available": savings.loc[
+                    ~savings["account"].isin(earmarked), "amount"
+                ].sum() or Decimal("0"),
+                "reserved": savings.loc[
+                    savings["account"].isin(earmarked), "amount"
+                ].sum() or Decimal("0"),
                 "investments": mine.loc[mine["kind"] == "Investments", "amount"].sum()
                 or Decimal("0"),
             }

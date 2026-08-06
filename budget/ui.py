@@ -171,6 +171,7 @@ def load_all() -> dict:
             "card_statements": repo.load_card_statements(session),
             "account_targets": repo.load_account_targets(session),
             "savings_plan": repo.load_savings_plan(session),
+            "savings_adjustments": repo.load_savings_adjustments(session),
             # The pre-split record, kept so the old figures can still be seen. The live
             # targets are derived from the plan below.
             "stored_savings_targets": repo.load_savings_targets(session),
@@ -211,10 +212,16 @@ def load_all() -> dict:
     # breakdown cannot disagree. Over `all_periods`, since a target for a month that has not
     # arrived yet is the point of having one.
     data["savings_targets"] = repo.targets_from_plan(
-        data["savings_plan"], data["accounts"], data["all_periods"]
+        data["savings_plan"], data["accounts"], data["all_periods"],
+        data["savings_adjustments"],
     )
     data["plan_detail"] = repo.plan_by_period(
-        data["savings_plan"], data["accounts"], data["all_periods"]
+        data["savings_plan"], data["accounts"], data["all_periods"],
+        data["savings_adjustments"],
+    )
+    data["bucket_targets"] = repo.targets_by_bucket(
+        data["savings_plan"], data["accounts"], data["all_periods"],
+        data["savings_adjustments"],
     )
     return data
 
