@@ -85,3 +85,35 @@ def test_no_page_uses_the_retired_width_flag():
         if "use_container_width" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
+
+
+def test_every_sync_action_reports_through_finish():
+    """A sync action must not write its result and then rerun.
+
+    Each of these changes the state the page is drawn from, so each has to redraw or the
+    banner keeps describing the position before the button was pressed -- which is how a
+    pull that had worked went on reporting a conflict it had already resolved. But
+    st.rerun() discards whatever was written in the same run, so writing the message first
+    threw it away: a push reporting 'promoted; previous master kept as budget.db.bak' showed
+    that to nobody, and a *refused* push lost both the reason and the remedy.
+
+    `finish` stashes the outcome and reruns; `show_outcome` renders it on the far side.
+    Pinned structurally because the failure is invisible -- the page looks right, it is
+    simply silent, and the next action added by copying its neighbour inherits it.
+    """
+    import re
+
+    source = (ROOT / "views" / "sync_page.py").read_text(encoding="utf-8")
+    actions = list(
+        re.finditer(r"result = sync\.(push|pull|force_take|checkin|checkout)\(", source)
+    )
+    assert actions, "no sync actions found -- has the page been restructured?"
+
+    for action in actions:
+        following = source[action.end(): action.end() + 400]
+        verb = action.group(1)
+        assert "finish(result" in following, f"sync.{verb} does not report through finish()"
+        # And not the old shape, which finish() exists to replace.
+        before_finish = following[: following.index("finish(result")]
+        assert "st.rerun()" not in before_finish, f"sync.{verb} reruns before reporting"
+        assert "st.success(" not in before_finish, f"sync.{verb} writes a message it discards"

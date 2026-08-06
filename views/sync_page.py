@@ -105,8 +105,7 @@ if state.blocked_by:
         if st.button("Force take the lock"):
             with ui.session() as session, session.begin():
                 result = sync.force_take(session)
-            st.success(result.message) if result.ok else st.error(result.message)
-            st.rerun()
+            finish(result)
 
 st.divider()
 
@@ -135,8 +134,7 @@ if state.behind:
         ui.close_connections()
         result = sync.pull()
         ui.load_all.clear()
-        st.success(result.message) if result.ok else st.error(result.message)
-        st.rerun()
+        finish(result)
     st.divider()
 
 if state.conflict:
@@ -230,15 +228,7 @@ with push_col:
         with ui.session() as session, session.begin():
             result = sync.push(session)
         ui.load_all.clear()
-        if result.ok:
-            st.success(result.message)
-            for line in result.detail:
-                st.caption(f"· {line}")
-        else:
-            st.error(result.message)
-            for line in result.detail:
-                st.caption(f"· {line}")
-        st.rerun()
+        finish(result)
 
 with pull_col:
     st.markdown("**Pull from the NAS**")
@@ -259,10 +249,7 @@ with pull_col:
         ui.close_connections()
         result = sync.pull()
         ui.load_all.clear()
-        st.success(result.message) if result.ok else st.error(result.message)
-        for line in result.detail:
-            st.caption(f"· {line}")
-        st.rerun()
+        finish(result)
 
 if state.nas.reachable and not state.nas.has_master:
     st.info(
@@ -292,8 +279,7 @@ if state.local.mode == sync.OFFLINE:
         with ui.session() as session, session.begin():
             result = sync.checkin(session)
         ui.load_all.clear()
-        st.success(result.message) if result.ok else st.error(result.message)
-        st.rerun()
+        finish(result)
 else:
     st.caption(
         "Take a lease before going away with the laptop. The other machine then sees a "
@@ -312,8 +298,7 @@ else:
         with ui.session() as session, session.begin():
             result = sync.checkout(session, expected)
         ui.load_all.clear()
-        st.success(result.message) if result.ok else st.error(result.message)
-        st.rerun()
+        finish(result)
 
 st.divider()
 
