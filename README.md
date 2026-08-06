@@ -117,16 +117,23 @@ second copy will not clash with the first, it will just be on 8502.
 
 ## When it will not start
 
-Two double-clickable helpers sit beside `budget.bat`:
+Double-clickable helpers sit beside `budget.bat`:
 
 | | What it does |
 |---|---|
-| **`diagnose.bat`** | Reports what the app sees: the resolved database path, the environment behind it, what is actually in the folder, and the exact error if the file cannot be read. Read-only — it changes nothing. |
+| **`diagnose.bat`** | Reports what the app sees: the resolved database path, the file's own sha256 and index, what is in the folder, the row counts for the tables the pages report on, and the exact error if it cannot be read. Read-only — it changes nothing. |
+| **`repair.bat`** | Rebuilds damaged *indexes* with REINDEX. Lossless, because the rows were never the problem. Backs up first, refuses while anything holds the file, and says plainly when the damage is to the pages instead, where REINDEX cannot help. |
+| **`restore-data.bat`** | Re-applies the data work that lives in scripts: the savings plan, the interest gross/net basis, the expected return, the split of transaction 582, and clearing the workbook's assumptions off unpaid months. Idempotent. |
+| **`stop.bat`** | Kills whatever holds port 8501. Closing the console window does not reliably stop the server on Windows, and a leftover process serves stale code to the browser. |
 | **`restore.bat`** | Rebuilds the local database from the NAS master, for when the dashboard will not start and the Sync page therefore cannot be reached. Refuses outright if there is unpushed work locally. |
 
-Run `diagnose.bat` first. If it reports the database present and readable, the problem is
-something holding the file while the app runs. If it reports the folder missing, `restore.bat`
-brings it back from the NAS at whatever revision was last pushed.
+Run `diagnose.bat` first — it is a fresh process with nothing cached between it and the file,
+which is what makes it the reading to trust when the app and the database appear to disagree.
+
+**`wrong # of entries in index …`** is index damage: run `repair.bat`, then `restore-data.bat`
+if the savings targets are missing afterwards. **A page reporting nothing** where the file has
+rows is a stale read — press *Refresh data*, and if that fails the process is older than the
+code, so use `stop.bat` and start again. **The folder missing** is what `restore.bat` is for.
 
 Rebuilding from the workbook (`migrate_xlsm`) is the last resort, not the first: it resets the
 sync revision and loses anything entered since the workbook stopped being the source of truth.
