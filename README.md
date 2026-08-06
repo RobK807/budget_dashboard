@@ -99,6 +99,20 @@ overridden by environment variable:
 
 ## Launching it
 
+**Closing the browser tab closes the dashboard**, and the console window with it. The window
+prints what it is waiting for:
+
+```
+  [dashboard] will close this window 15s after the last browser tab is closed.
+  [dashboard] browser closed; stopping in 15s unless you come back.
+```
+
+If it does not close, **something is still connected** — most often the dashboard open in a
+second tab or another browser, since it stays up while anything is looking at it. `stop.bat`
+ends it outright. There is a delay of up to `server.disconnectedSessionTTL` (30 seconds, in
+`.streamlit/config.toml`) before a closed tab is noticed, because Streamlit holds a session
+briefly in case the browser comes back.
+
 **Double-click `budget.bat`.** It starts the server and opens
 <http://127.0.0.1:8501> after a few seconds. The dashboard runs for as long as that window
 stays open — closing it, or pressing Ctrl+C, stops the server.

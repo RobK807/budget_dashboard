@@ -552,6 +552,68 @@ class TestIdleWatchdog:
         watchdog._shut_down()
         assert exited == [0]
 
+    def run_watch(self, monkeypatch, counts, grace=15.0, startup=90.0):
+        """Drive _watch through a scripted sequence of session counts.
+
+        Time is faked and sleep is a no-op, so a two-minute decision is tested in no time at
+        all -- and `_shut_down` raises to break the loop, since the real one never returns.
+        """
+        from budget import watchdog
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr(watchdog.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(watchdog.time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s))
+
+        class Exhausted(Exception):
+            """The script ran out. _watch loops for ever by design, so the end of the
+            scripted counts is how a 'it should not stop' case terminates."""
+
+        remaining = list(counts)
+
+        def next_count():
+            if not remaining:
+                raise Exhausted
+            return remaining.pop(0)
+
+        monkeypatch.setattr(watchdog, "_session_count", next_count)
+
+        stopped = {}
+
+        def fake_stop():
+            stopped["at"] = clock["now"]
+            raise Exhausted  # the real one never returns either
+
+        monkeypatch.setattr(watchdog, "_shut_down", fake_stop)
+        monkeypatch.setattr(watchdog, "_say", lambda message: None)
+
+        try:
+            watchdog._watch(grace, startup)
+        except Exhausted:
+            pass
+        return stopped
+
+    def test_it_stops_once_the_last_tab_has_been_gone_for_the_grace_period(
+        self, monkeypatch
+    ):
+        # connected for three polls, then nothing for far longer than the grace.
+        counts = [1, 1, 1] + [0] * 20
+        assert "at" in self.run_watch(monkeypatch, counts, grace=15.0)
+
+    def test_it_waits_out_the_grace_rather_than_stopping_at_once(self, monkeypatch):
+        """A refresh drops the count for a moment and is not someone finishing up."""
+        counts = [1, 1] + [0] * 3 + [1] * 5   # back within the grace period
+        assert self.run_watch(monkeypatch, counts, grace=15.0) == {}
+
+    def test_it_never_stops_if_no_browser_ever_connected(self, monkeypatch):
+        """Zero sessions at startup is normal -- the server binds before the browser opens.
+        Exiting then would hide whatever stopped the browser from arriving."""
+        assert self.run_watch(monkeypatch, [0] * 100, startup=90.0) == {}
+
+    def test_an_unreadable_count_never_stops_the_server(self, monkeypatch):
+        """'Cannot tell' is treated as 'somebody is there': the cost of being wrong that way
+        is a window left open, and the other way is a server killed underneath someone."""
+        assert self.run_watch(monkeypatch, [1, 1] + [None] * 100) == {}
+
     def test_an_unavailable_runtime_reads_as_unknown(self):
         """Outside a Streamlit process there is no runtime to ask. None means 'do not know',
         which the loop treats as somebody being there -- the safe way to be wrong."""

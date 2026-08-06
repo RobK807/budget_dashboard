@@ -5,5 +5,16 @@ headless = true
 address = "127.0.0.1"
 port = 8501
 
+# How long a closed tab's session is kept in case the browser comes back. The default is two
+# minutes, which is right for a served app behind a flaky network and much too long here:
+# budget/watchdog.py stops the server once nothing is connected, and it cannot see that the
+# last tab has gone until this expires. Two and a half minutes of a console window sitting
+# there after the browser closed reads as broken.
+#
+# Thirty seconds still absorbs a refresh or a lid closed for a moment. Longer than that and
+# the session is rebuilt on reconnect, which costs the widget selections on the page and
+# nothing else -- every figure is read from the database.
+disconnectedSessionTTL = 30
+
 [browser]
 gatherUsageStats = false

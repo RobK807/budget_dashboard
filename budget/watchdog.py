@@ -34,7 +34,11 @@ import threading
 import time
 
 ENV_FLAG = "BUDGET_EXIT_WHEN_IDLE"
-DEFAULT_GRACE = 20.0     # seconds with nobody connected before giving up
+# Kept short because it is *added* to Streamlit's own disconnect delay, not overlapped with
+# it: the session count cannot drop until server.disconnectedSessionTTL expires, so the wait
+# a person actually sees is that plus this. Thirty seconds there and fifteen here is about
+# forty-five in total, which reads as deliberate. Two minutes plus twenty read as broken.
+DEFAULT_GRACE = 15.0     # seconds with nobody connected before giving up
 DEFAULT_STARTUP = 90.0   # seconds to wait for the first browser to arrive
 POLL = 2.0
 
@@ -61,20 +65,60 @@ def _session_count() -> int | None:
         return None
 
 
+def _say(message: str) -> None:
+    """To the console the launcher opened, which is the only place anyone would look.
+
+    Only on a change of state, so the window does not fill with polling noise -- but every
+    change, because the failure this had was silent: it decided it could not tell how many
+    sessions there were and went on saying nothing for as long as the server ran.
+    """
+    print(f"  [dashboard] {message}", flush=True)
+
+
 def _watch(grace: float, startup: float) -> None:
     deadline = time.monotonic() + startup
     seen_anyone = False
+    unreadable = 0
+    had_someone = False
+
+    _say(
+        f"will close this window {grace:.0f}s after the last browser tab is closed."
+    )
+
+    debug = os.environ.get("BUDGET_IDLE_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
     while True:
         time.sleep(POLL)
         count = _session_count()
+        if debug:
+            _say(f"debug: sessions={count} seen_anyone={seen_anyone} "
+                 f"deadline_in={deadline - time.monotonic():.0f}s")
 
         if count is None:
+            # Cannot tell. Treated as 'somebody is there', because the cost of guessing
+            # wrong that way is a window left open and the other way is a server killed
+            # underneath someone. But say so rather than failing silently for ever.
+            unreadable += 1
+            if unreadable in (5, 60):
+                _say(
+                    "cannot see how many browser tabs are open, so this window will not "
+                    "close by itself. Press Ctrl+C when you have finished."
+                )
             continue
+
+        if unreadable:
+            unreadable = 0
+
         if count > 0:
+            if not had_someone:
+                had_someone = True
             seen_anyone = True
             deadline = time.monotonic() + grace
             continue
+
+        if had_someone:
+            had_someone = False
+            _say(f"browser closed; stopping in {grace:.0f}s unless you come back.")
 
         # Nobody connected. Before the first tab arrives that is normal, so the startup
         # window applies; afterwards the grace period does.
@@ -86,6 +130,7 @@ def _watch(grace: float, startup: float) -> None:
             deadline = time.monotonic() + startup
             continue
 
+        _say("stopping.")
         _shut_down()
 
 
