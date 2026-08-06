@@ -94,6 +94,28 @@ def main(argv: list[str] | None = None) -> int:
                 "SELECT count(*) FROM txn WHERE deleted_at IS NULL"
             ).fetchone()
             line("transactions", f"{count[0]:,}")
+
+            version = conn.execute(
+                "SELECT value FROM setting WHERE key = 'schema_version'"
+            ).fetchone()
+            line("schema version", version[0] if version else "(none)")
+
+            # What is actually in the tables the dashboard reports on. A page that says it
+            # has nothing, against a file that has plenty, is a different fault from a file
+            # that really is empty -- and the two are indistinguishable from the page alone.
+            for table in (
+                "savings_plan",
+                "savings_adjustment",
+                "savings_target",
+                "account",
+                "payslip",
+            ):
+                try:
+                    rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    line(f"  {table}", f"{rows:,} row(s)")
+                except sqlite3.Error as exc:
+                    line(f"  {table}", f"unavailable -- {exc}")
+
             readable = True
     except Exception as exc:  # noqa: BLE001 -- reporting the failure is the whole point
         line("could not open", f"{type(exc).__name__}: {exc}")
