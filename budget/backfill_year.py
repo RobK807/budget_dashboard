@@ -42,7 +42,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from budget import config, service, xlsm_reader as xr
+from budget import config, repo, service, xlsm_reader as xr
 from budget.db import create_all, make_engine, make_session_factory
 from budget.models import (
     Account,
@@ -142,10 +142,16 @@ PRE_TRACKER_PLAN: dict[int, dict[dt.date, dict[str, Decimal]]] = {
     },
 }
 
-# Planned one-off withdrawals, the figures the user gave from Summary column G. All three
-# land on Savings - Marcus, which is where the money actually left from: 6,757.54 on 14
-# October, 6,796.29 on 5 December, and February's 823.37 and 1,860.82. It is the working
-# pot the standing plan also feeds.
+# Planned one-off withdrawals, from Summary column G. All three land on Savings - Marcus,
+# which is where the money actually left from: 6,757.54 on 14 October, 6,796.29 on 5
+# December, and February's 823.37 and 1,860.82. It is the working pot the standing plan
+# also feeds.
+#
+# The figure here is the month's **net** savings target -- what column G says the month
+# should add once everything is counted -- and the adjustment written is whatever reaches it
+# from the standing plan in force. Stated net because that is what the user means by it, and
+# because the plan underneath is the interest tracker's rather than this workbook's: the two
+# differ, and a hard-coded difference would quietly stop being right the day either moves.
 SAVINGS_ADJUSTMENTS: dict[int, tuple[tuple[str, str, Decimal, str], ...]] = {
     2025: (
         ("2025-10", "Savings - Marcus", Decimal("-6700"), "Planned withdrawal"),
@@ -505,17 +511,35 @@ def _backfill_savings_plan(session, ref: xr.RefData) -> list[str]:
     if existing:
         raise ValueError(f"Savings adjustments already exist in {year}/{str(year + 1)[-2:]}.")
 
+    # Derived against the plan that is actually in force, so the month lands on the net the
+    # user stated rather than on it plus whatever the standing contributions happen to be.
+    plan = repo.load_savings_plan(session)
+    kinds = repo.account_kinds(repo.load_reference(session)["accounts"])
+
     one_offs = SAVINGS_ADJUSTMENTS.get(year, ())
-    for period, name, amount, note in one_offs:
+    for period, name, net, note in one_offs:
         account = accounts.get(name)
         if account is None:
             raise ValueError(f"No account named {name!r} for a savings adjustment.")
+        in_force = repo.plan_in_force(plan, repo.period_start(period))
+        standing = sum(
+            (
+                row["amount"]
+                for _, row in in_force.iterrows()
+                if kinds.get(row["account"]) == "Savings"
+            ),
+            Decimal("0"),
+        )
+        amount = net - standing
         session.add(
             SavingsAdjustment(
                 period=period, account_id=account.id, amount=amount, note=note
             )
         )
-        done.append(f"    {period}: {name} {amount} ({note})")
+        done.append(
+            f"    {period}: {name} {amount} ({note}) -- {standing} standing, "
+            f"so the month nets {net}"
+        )
     done.append(f"savings adjustments: {len(one_offs)}")
 
     session.flush()
