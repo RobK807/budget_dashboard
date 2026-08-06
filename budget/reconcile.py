@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 
 from budget import config, repo, xlsm_reader as xr
@@ -67,6 +68,35 @@ ACCEPTED: dict[tuple[str, str], str] = {
         "Debug row 1796, 27 Feb, Mastercard, GBP 85.05 'Lottery'. The workbook posted it to "
         "the March tab; the ledger dates it correctly. Confirmed by the user."
     ),
+    # 25-26, the category accumulator drifting one row. 'Expenses' sits directly above
+    # 'Other' in the month tab's category block, and for a run of entries the macro added
+    # an 'Other' amount to the Expenses row instead. The ledger is right in both months --
+    # confirmed by the user for March, and the same reading applies to October.
+    #
+    # These are accumulators, not formulas (New_entry does `ActiveCell = dblAmt +
+    # dblCatAmt`), so nothing recomputes them and the drift is permanent in the workbook.
+    # The classification totals reconcile in both months, which is what says the dates,
+    # amounts and purchase types are sound and only the category landed wrong.
+    ("October", "Expenses [Income]"): (
+        "GBP 2,034.27 of 'Other' income added to the Expenses row: the four 31 October "
+        "'Emma -' credits (food 190.66, excess 31.55, other 378.01, bills 1,434.05), named "
+        "in the cell comment on C35. The same five credits in March are 'Other' in the "
+        "workbook as well as the ledger, so the workbook disagrees with itself here."
+    ),
+    ("October", "Other [Income]"): "Counterpart of Expenses [Income]: the same GBP 2,034.27.",
+    ("October", "Expenses [Spent]"): (
+        "GBP 1,019.14 of 'Other' spend added to the Expenses row -- every 'Other' debit "
+        "from 21 October to month end without exception, ten of them, from the 500.00 "
+        "photographer deposit to the 31.05 haircut. Named in the cell comment on E35. "
+        "Expenses' own GBP 1,307.00 IFOA conference charge is the remainder."
+    ),
+    ("October", "Other [Spent]"): "Counterpart of Expenses [Spent]: the same GBP 1,019.14.",
+    ("March", "Expenses [Spent]"): (
+        "GBP 249.95 of 'Other' spend added to the Expenses row: Debug rows 1824 (20.00), "
+        "1827 (14.55), 1830 (34.90), 1832 (15.50) and 1833 (165.00), 3-5 March. Named one "
+        "by one in the cell comment on E34. Expenses' own GBP 51.26 is the remainder."
+    ),
+    ("March", "Other [Spent]"): "Counterpart of Expenses [Spent]: the same GBP 249.95.",
 }
 
 # Differences that are understood but not yet decided. Listed so the run stays usable as a
@@ -329,19 +359,19 @@ def check_summary_matrix(session, values, ref: xr.RefData, verbose: bool) -> lis
     _, closes = _running_closes(session, ref)
     lookup = closes.set_index(["period", "classification"])["closing"]
 
-    headers = {}
-    for col in range(18, 26):  # R..Y
-        label = ws.cell(19, col).value
-        if label:
-            headers[col] = str(label).strip()
+    month_col, headers, rows = xr.summary_matrix(values, ref)
 
     diffs: list[Diff] = []
-    print("\nD. Summary classification matrix  (Summary!Q19:Y31, cumulative + projected)")
+    print(
+        f"\nD. Summary classification matrix  (Summary!"
+        f"{get_column_letter(month_col)}{rows.start}:"
+        f"{get_column_letter(max(headers))}{rows.stop - 1}, cumulative + projected)"
+    )
     print("   " + "-" * 74)
 
     checked = 0
-    for row in range(20, 32):
-        month = ws.cell(row, 17).value
+    for row in rows:
+        month = ws.cell(row, month_col).value
         if not month:
             continue
         month = str(month).strip()

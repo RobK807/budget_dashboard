@@ -789,6 +789,40 @@ def read_cycling(values: Workbook) -> tuple[list[dict], list[dict], dict[str, De
     return outgoings, days, rates
 
 
+def summary_matrix(values: Workbook, ref: RefData) -> tuple[int, dict[int, str], range]:
+    """Locate the Summary sheet's month-by-classification block.
+
+    Returns (month column, {column: classification}, rows).
+
+    Not a fixed reference, because the block floats. It sits to the right of the credit
+    card table, and 25-26 has two cards fewer than 26-27 -- so the same block is Q19:Y31 in
+    one workbook and O19:W31 in the other. Reading 26-27's coordinates against 25-26 does
+    not fail cleanly either: it lands two columns left, in the card table, and asks
+    period_for() about a month named '-4123.37'.
+
+    Found by content instead. Row 19 holds two 'Month' headers, one per table; the one this
+    wants is followed by classification names, which the other is not.
+    """
+    ws = values["Summary"]
+    known = {c.name for c in ref.classifications}
+
+    for col in range(1, 40):
+        if str(ws.cell(19, col).value or "").strip() != "Month":
+            continue
+        headers = {}
+        for right in range(col + 1, col + 10):
+            label = _clean(ws.cell(19, right).value)
+            if not label:
+                break
+            headers[right] = str(label)
+        if len(known & set(headers.values())) < 2:
+            continue  # the credit card table: Barclaycard, Halifax, Tesco, Payment
+        rows = [r for r in range(20, 40) if _clean(ws.cell(r, col).value) in ref.months]
+        return col, headers, range(rows[0], rows[-1] + 1)
+
+    raise ValueError("Summary: no month-by-classification block found in row 19")
+
+
 def read_daily_class_totals(
     values: Workbook, month: str, classification: str
 ) -> dict[dt.date, Decimal]:
