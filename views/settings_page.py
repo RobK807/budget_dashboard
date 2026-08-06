@@ -991,12 +991,27 @@ with tab_savings:
             except Exception as exc:  # noqa: BLE001
                 return f"unreadable ({type(exc).__name__})"
 
+        import hashlib
+        import platform
+
+        def identity() -> str:
+            """The file's own fingerprint, so this can be compared against diagnose.bat --
+            two processes disagreeing about one path is settled by the bytes, not by
+            argument."""
+            try:
+                raw = config.DB_PATH.read_bytes()
+                return hashlib.sha256(raw).hexdigest()[:32]
+            except OSError as exc:
+                return f"unreadable ({type(exc).__name__})"
+
         st.code(
             "\n".join(
                 [
+                    f"machine           {platform.node()}",
                     f"database          {config.DB_PATH}",
                     f"exists            {config.DB_PATH.exists()}",
                     f"BUDGET_DB_PATH    {os.environ.get('BUDGET_DB_PATH', '(not set)')}",
+                    f"sha256            {identity()}",
                     f"savings_plan      {count('savings_plan')} row(s) in the file",
                     f"loaded into page  {len(plan):,} row(s)",
                     f"transactions      {count('txn')} row(s) in the file",

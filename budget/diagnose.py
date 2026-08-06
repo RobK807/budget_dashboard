@@ -83,6 +83,18 @@ def main(argv: list[str] | None = None) -> int:
     line("path", config.DB_PATH)
     line("status", describe(config.DB_PATH))
 
+    # The file's own identity, so two processes claiming different things about one path can
+    # be compared directly rather than argued about. Same digest and same inode means the
+    # same bytes; different means they are not looking at what they both call budget.db.
+    try:
+        raw = config.DB_PATH.read_bytes()
+        stat = config.DB_PATH.stat()
+        line("sha256", hashlib.sha256(raw).hexdigest()[:32])
+        line("mtime_ns", stat.st_mtime_ns)
+        line("inode / index", f"{stat.st_ino} on device {stat.st_dev}")
+    except OSError as exc:
+        line("identity", f"unreadable -- {type(exc).__name__}: {exc}")
+
     readable = False
     try:
         with sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True) as conn:
