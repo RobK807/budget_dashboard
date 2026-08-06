@@ -89,7 +89,7 @@ with tab_accounts:
                       "is_savings", "is_investment", "is_isa", "interest_net"]],
             by="name",
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "name": "Account",
@@ -123,7 +123,7 @@ with tab_accounts:
     )
     edited_interest = st.data_editor(
         interest_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "name"] if not READ_ONLY else True,
         column_order=["name", "interest_net"],
@@ -271,7 +271,7 @@ with tab_categories:
             categories[["grouping", "name", "spend_type", "status", "used by"]],
             by=["grouping", "name"],
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "name": "Category",
@@ -368,7 +368,7 @@ with tab_classes:
         repo.sort_human(
             classes[["name", "direction", "rollover", "status", "used by"]], by="name"
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "name": "Classification",
@@ -474,7 +474,7 @@ with tab_cycling:
                 ["amount"],
                 labels={"kind": "Kind", "effective_from": "From", "amount": "Saving per day"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -544,7 +544,7 @@ with tab_cards:
                 },
                 formats={"min_pct": "{:,.2f}"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.caption(
@@ -716,7 +716,7 @@ with tab_monthly:
 
     edited_allowances = st.data_editor(
         allowance_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "classification"] if not READ_ONLY else True,
         column_order=["classification", "daily"],
@@ -762,7 +762,7 @@ with tab_monthly:
 
     edited_budgets = st.data_editor(
         budget_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "grouping", "category"] if not READ_ONLY else True,
         column_order=["grouping", "category", "target"],
@@ -888,7 +888,7 @@ with tab_salary:
                     summary, ["annual", "monthly"],
                     labels={"line": "", "annual": "Annual", "monthly": "Monthly"},
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
             st.caption(
@@ -1044,7 +1044,7 @@ with tab_savings:
 
     edited_plan = st.data_editor(
         pd.DataFrame(plan_rows),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "account", "kind"] if not READ_ONLY else True,
         column_order=["account", "kind", "amount"],
@@ -1115,7 +1115,7 @@ with tab_savings:
                 labels={"month": "Month", "account": "Account", "amount": "Amount",
                         "note": "Note"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1202,7 +1202,7 @@ with tab_savings:
                 labels={"month": "Month", "savings": "Savings target",
                         "investments": "Investments target"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1221,7 +1221,7 @@ with tab_savings:
     )
     edited_excluded = st.data_editor(
         repo.sort_human(excluded_frame[["id", "name", "excluded"]], by="name"),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "name"] if not READ_ONLY else True,
         column_order=["name", "excluded"],
@@ -1314,7 +1314,7 @@ with tab_general:
 
         edited_billing = st.data_editor(
             billing,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["id", "name"] if not READ_ONLY else True,
             column_order=["name", "statement_day", "payment_day"],
@@ -1381,7 +1381,7 @@ with tab_general:
 
     edited_account_targets = st.data_editor(
         target_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["id", "account"] if not READ_ONLY else True,
         column_order=["account", "target"],

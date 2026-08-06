@@ -39,7 +39,7 @@ with tab_paste:
     edited = st.data_editor(
         importer.template(),
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         key="import_grid",
         column_config={
             "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
@@ -116,7 +116,7 @@ if candidates:
         transfers="Type",
     )
     st.dataframe(
-        ui.money_table(preview, ["Amount"]), use_container_width=True, hide_index=True
+        ui.money_table(preview, ["Amount"]), width="stretch", hide_index=True
     )
 
     if bad:
@@ -177,7 +177,7 @@ if candidates:
 
     checked = st.data_editor(
         editable[["account", "current", "in", "out", "projected", "Target"]],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key=f"balance_check_{signature}",
         disabled=["account", "current", "in", "out", "projected"],
@@ -238,7 +238,7 @@ if candidates:
                     ["projected", "Target", "difference"],
                     labels={"account": "Account", "projected": "Projected"},
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -292,7 +292,7 @@ if not rows:
 else:
     st.dataframe(
         pd.DataFrame(rows),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "id": "Batch",

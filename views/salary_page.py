@@ -276,7 +276,7 @@ with tab_compare:
             display, money_columns,
             labels={"month": "Month", "payday": "Payday"},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.caption(
@@ -328,7 +328,7 @@ with tab_compare:
                 "difference": "Difference",
             },
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.caption(
@@ -347,7 +347,7 @@ with tab_compare:
             labels={"amount": "Net pay (£)", "month": "", "series": ""},
         )
         fig.update_layout(margin=dict(t=10))
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
 
     st.divider()
     st.subheader("Record a payslip")
@@ -597,7 +597,7 @@ with tab_cumulative:
                     "source": "From",
                 },
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.caption(
@@ -621,7 +621,7 @@ with tab_cumulative:
             labels={"amount": "Cumulative PAYE (£)", "month": "", "series": ""},
         )
         fig.update_layout(margin=dict(t=10))
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
         st.caption(
             "The gap between the lines is the overpayment building up. It opens in the bonus "
             "month and closes only at the year end, when HMRC reconciles."
@@ -658,7 +658,7 @@ with tab_inputs:
                     labels={"effective_from": "From", "base_salary": "Base",
                             "car": "Car allowance", "total": "Total", "note": "Note"},
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -728,7 +728,7 @@ with tab_inputs:
                             "ni": "NI", "paye": "PAYE", "net": "Net",
                             "payday": "Payday", "note": "Note"},
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -845,7 +845,7 @@ with tab_inputs:
                     "car": "Car allowance (annual)", "salary in force": "Total (annual)",
                     "expected gross": "Expected gross (monthly)"},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.caption(
@@ -956,7 +956,7 @@ with tab_bands:
 
     edited = st.data_editor(
         thresholds,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["key", "band"] if not READ_ONLY else True,
         column_order=["band", "monthly", "annual"],
@@ -1007,7 +1007,7 @@ with tab_bands:
 
     edited_rates = st.data_editor(
         rates_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         disabled=["key", "band"] if not READ_ONLY else True,
         column_order=["band", "rate"],
@@ -1052,7 +1052,7 @@ with tab_bands:
 
     edited_adjustments = st.data_editor(
         adjustment_frame,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         num_rows="fixed" if READ_ONLY else "dynamic",
         column_config={
@@ -1129,7 +1129,7 @@ with tab_bands:
                 historic_amounts[["band", "value", "annual"]], ["value", "annual"],
                 labels={"band": "Band", "value": "Monthly", "annual": "Annual"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     with hist_right:
@@ -1137,7 +1137,7 @@ with tab_bands:
         historic_rates = ui.to_float(value_set(as_at, RATE_LABELS), ["value"])
         st.dataframe(
             historic_rates[["band", "value"]].style.format({"value": "{:,.2f}"}),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={"band": "Rate", "value": "Value"},
         )
@@ -1159,7 +1159,7 @@ with tab_bands:
                     everything[["band", "kind", "effective_from", "value"]],
                     by=["band", "effective_from"],
                 ).style.format({"value": "{:,.2f}"}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "band": "Band", "kind": "Kind",
@@ -1243,7 +1243,7 @@ with tab_spend:
     st.dataframe(
         ui.money_table(breakdown, ["amount"],
                        labels={"line": "", "sign": " ", "amount": "Amount"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

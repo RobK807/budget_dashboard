@@ -128,7 +128,7 @@ if state.conflict:
     else:
         st.caption(f"{len(frame)} transaction(s) exist only on this machine:")
         st.dataframe(
-            ui.money_table(frame, ["Amount"]), use_container_width=True, hide_index=True
+            ui.money_table(frame, ["Amount"]), width="stretch", hide_index=True
         )
         st.download_button(
             "Download local-only transactions (CSV)",

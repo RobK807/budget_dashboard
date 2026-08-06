@@ -132,7 +132,7 @@ with right:
                 recent[["date", "item", "amount", "flag"]], ["amount"],
                 labels={"date": "Date", "item": "Item", "amount": "Amount", "flag": "Kind"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -153,7 +153,7 @@ else:
             recent[["date", "kind", "saving"]], ["saving"],
             labels={"date": "Date", "kind": "Kind", "saving": "Saved"},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=360,
     )

@@ -68,3 +68,20 @@ def test_page_renders(page):
         f"{page} raised: "
         + "; ".join(f"{e.type}: {e.message}" for e in app.exception)
     )
+
+
+def test_no_page_uses_the_retired_width_flag():
+    """`use_container_width` was removed from Streamlit after 2025-12-31.
+
+    Every call site now passes `width="stretch"` instead. Pinned because the replacement is
+    not equivalent everywhere -- st.button defaults to "content", so dropping the argument
+    rather than translating it would silently shrink a full-width button -- and because the
+    only symptom of a new page reintroducing it is a warning in a console window nobody is
+    looking at.
+    """
+    offenders = [
+        path.relative_to(ROOT)
+        for path in list((ROOT / "views").rglob("*.py")) + [ROOT / "budget" / "ui.py"]
+        if "use_container_width" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []

@@ -92,7 +92,7 @@ st.dataframe(
             "difference": "Difference",
         },
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -105,7 +105,7 @@ fig = px.bar(
     labels={"amount": "£", "classification": "", "series": ""},
 )
 fig.update_layout(margin=dict(t=10))
-st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), width="stretch")
 
 st.divider()
 
@@ -148,7 +148,7 @@ if chosen:
                 "difference": "Difference", "comment": "Note",
             },
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=420,
     )
@@ -211,7 +211,7 @@ if earlier_months:
     copy_right.write("")
     if copy_right.button(
         "Copy across", disabled=READ_ONLY, key=f"do_copy_{period}",
-        use_container_width=True,
+        width="stretch",
     ):
         source_rows = projections[projections["period"] == source]
         source_rows = source_rows[source_rows["classification"].isin(plan_for)]
@@ -282,7 +282,7 @@ grid["comment"] = grid["comment"].astype("string")
 
 edited = st.data_editor(
     grid,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     num_rows="fixed",
     disabled=["date", "classification"] if not READ_ONLY else True,

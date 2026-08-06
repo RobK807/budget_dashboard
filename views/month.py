@@ -93,7 +93,7 @@ st.dataframe(
             "closing": "Closing",
         },
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -132,7 +132,7 @@ else:
                 "position": "Where in the cycle",
             },
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     if as_of is not None:
@@ -192,7 +192,7 @@ else:
         read_only = ui.read_only()
         edited_bills = st.data_editor(
             bill_frame,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             disabled=["id", "card"] if not read_only else True,
             column_order=["card", "bill"],
@@ -252,7 +252,7 @@ st.dataframe(
             "left": "Left",
         },
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -290,7 +290,7 @@ else:
             labels={"total": "£", "date": "", "classification": ""},
         )
         fig.update_layout(hovermode="x unified", margin=dict(t=10), barmode="relative")
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
 
     with tab_cumulative:
         wide = (
@@ -303,7 +303,7 @@ else:
         )
         fig = px.line(wide, labels={"value": "£", "date": "", "variable": ""})
         fig.update_layout(hovermode="x unified", margin=dict(t=10))
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
         st.caption(
             "Cumulative within this month only. For balances carried across months under "
             "each classification's rollover rule, see **Trends**."
@@ -318,6 +318,6 @@ else:
         ui.money_table(
             totals, ["total"], labels={"classification": "Classification", "total": "Total"}
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )

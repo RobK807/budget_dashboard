@@ -96,7 +96,7 @@ st.dataframe(
         },
         formats={"min_pct": "{:,.2f}"},
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -147,14 +147,14 @@ if not projection.empty:
         labels={"balance": "Balance (£)", "date": "", "card": ""},
     )
     fig.update_layout(hovermode="x unified", margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
 
     fig = px.bar(
         projection, x="date", y="payment", color="card",
         labels={"payment": "Total payment (£)", "date": "", "card": ""},
     )
     fig.update_layout(margin=dict(t=10), barmode="stack", hovermode="x unified")
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
     st.caption(
         "Segmented by card, so a spike can be read back to the card causing it — the end of "
         "a promotional term, where the remaining balance is settled in one payment."
@@ -182,7 +182,7 @@ st.dataframe(
         labels={"month": "#", "date": "Date", "opening": "Opening",
                 "payment": "Payment", "closing": "Closing"},
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     height=420,
 )

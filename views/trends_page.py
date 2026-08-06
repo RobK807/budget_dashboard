@@ -67,7 +67,7 @@ fig = px.line(
 fig.add_vline(x=today.timestamp() * 1000, line_dash="dash", line_color="grey")
 fig.add_annotation(x=today, y=0, text="today", showarrow=False, yshift=10)
 fig.update_layout(hovermode="x unified", margin=dict(t=10))
-st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), width="stretch")
 
 st.caption(
     "Solid throughout, but everything to the right of the dashed line is built from "
@@ -87,7 +87,7 @@ matrix = matrix.reindex([p for p in periods if p in matrix.index])
 matrix = matrix[sorted(matrix.columns, key=lambda c: str(c).casefold())]
 display = matrix.copy()
 display.index = [repo.period_label(p) for p in display.index]
-st.dataframe(ui.heatmap(display.astype(float)), use_container_width=True)
+st.dataframe(ui.heatmap(display.astype(float)), width="stretch")
 
 st.caption(
     f"{repo.period_label(periods[0])} to {repo.period_label(periods[-1])} — the range starts "
@@ -118,7 +118,7 @@ with st.expander("How the carry-forward works"):
         ]
     )
     st.dataframe(
-        rules, use_container_width=True, hide_index=True,
+        rules, width="stretch", hide_index=True,
         column_config={
             "classification": "Classification",
             "rollover": "Rollover",

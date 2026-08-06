@@ -98,7 +98,7 @@ st.dataframe(
         ACCOUNT_COLUMNS,
         labels={"account": "Account", "kind": "Type", **ACCOUNT_LABELS},
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -118,7 +118,7 @@ if not matrix.empty:
     display = matrix.copy()
     display.index = [repo.period_label(p) for p in display.index]
     display = display.astype(float)
-    st.dataframe(ui.heatmap(display), use_container_width=True)
+    st.dataframe(ui.heatmap(display), width="stretch")
 
 st.divider()
 
@@ -146,7 +146,7 @@ else:
             ACCOUNT_COLUMNS,
             labels={"month": "Month", **ACCOUNT_LABELS},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -177,7 +177,7 @@ with left:
         labels={"value": "Balance (£)", "variable": ""},
     )
     fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
 
 with right:
     st.subheader("Net cashflow by month")
@@ -191,7 +191,7 @@ with right:
         ]
     )
     fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
     st.caption(
         "Sum of all signed account movements. Transfers net to zero, so this is money "
         "genuinely entering or leaving."
@@ -224,7 +224,7 @@ else:
             labels={"account": "Account", "target": "Target", "current": "Current",
                     "required": "Required"},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     short = targets[targets["required"] > 0]

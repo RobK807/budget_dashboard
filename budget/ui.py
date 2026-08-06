@@ -571,7 +571,7 @@ def page_header(title: str, subtitle: str = "") -> dict:
         st.divider()
         sync_badge()
         st.divider()
-        if st.button("Refresh data", use_container_width=True):
+        if st.button("Refresh data", width="stretch"):
             load_all.clear()
             st.rerun()
 

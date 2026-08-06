@@ -120,7 +120,7 @@ savings = series[
 
 st.dataframe(
     ui.money_table(savings, COLUMNS, labels=LABELS),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -132,7 +132,7 @@ investments = series[
 
 st.dataframe(
     ui.money_table(investments, COLUMNS, labels=LABELS),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -188,7 +188,7 @@ else:
     matrix.index.name = "Month"
     st.dataframe(
         ui.money_table(matrix.reset_index(), [c for c in matrix.columns]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -231,7 +231,7 @@ fig = px.line(
     labels={"value": "Balance (£)", "month": "", "variable": ""},
 )
 fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.plotly_chart(ui.money_axis(fig), width="stretch")
 st.caption(
     "**Combined (total)** is all savings plus investments; **combined (available)** leaves "
     "out the earmarked pots, so the gap between the two lines is what is already spoken for."
@@ -282,7 +282,7 @@ for bucket, added, label, colour in (
 
 fig.update_layout(barmode="group", hovermode="x unified", margin=dict(t=10))
 fig.update_yaxes(title_text="£ in the month", tickformat=",.2f", hoverformat=",.2f")
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 st.caption(
     "The hollow column is the month's **target**, drawn over the solid column of what was "
     "actually **added**, so a bar short of its outline is a month that fell behind. Savings "
@@ -321,7 +321,7 @@ st.dataframe(
             "paid_out": "Paid out", "closing": "Closing",
         },
     ),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
@@ -372,7 +372,7 @@ with tab_return:
                 },
                 formats={"monthly_return": "{:,.2f}"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=420,
         )
@@ -427,7 +427,7 @@ with tab_return:
             title_text="Balance (£) — right", tickformat=",.2f", hoverformat=",.2f",
             secondary_y=True, showgrid=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         if right:
             st.caption(
                 "Dotted lines are read against the **right-hand** axis: "
@@ -454,7 +454,7 @@ with tab_return:
             )
             fig.update_layout(margin=dict(t=10))
             fig.update_yaxes(tickformat=",.2f", hoverformat=",.2f")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.caption(
                 "The dashed line is the expected return from **Settings → Savings "
                 "targets**, converted to its monthly equivalent by compounding rather than "
@@ -485,7 +485,7 @@ with tab_return:
                     formats={"total_return": "{:,.2f}", "annualised": "{:,.2f}",
                              "months": "{:,.0f}"},
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
             months = int(summary["months"].max())
@@ -529,7 +529,7 @@ with tab_interest:
                         "total": "Total", "accounts": "Accounts"},
                 formats={"accounts": "{:,.0f}"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -547,7 +547,7 @@ with tab_interest:
                 ["amount"],
                 labels={"account": "Account", "basis": "Basis", "amount": "Interest"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -556,7 +556,7 @@ with tab_interest:
             labels={"amount": "£", "account": "", "basis": ""},
         )
         fig.update_layout(margin=dict(t=10))
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
 
         st.caption(
             "A payment dated 1–5 April belongs to the *previous* tax year, which is why the "
@@ -595,7 +595,7 @@ with tab_donations:
                 labels={"year": "Tax year", "amount": "Given", "count": "Payments"},
                 formats={"count": "{:,.0f}"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -610,7 +610,7 @@ with tab_donations:
                         "account": "Account", "amount": "Amount", "comment": "Comment"},
                 formats={"id": "{:,.0f}"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.caption(

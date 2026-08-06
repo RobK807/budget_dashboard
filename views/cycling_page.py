@@ -83,7 +83,7 @@ if not savings.empty:
         labels={"cumulative": "Net saving (£)", "date": ""},
     )
     fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
 
     st.subheader("Days by kind")
     by_kind = (
@@ -97,7 +97,7 @@ if not savings.empty:
             by_kind, ["saved"],
             labels={"kind": "Kind", "days": "Days", "saved": "Saved"},
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -106,7 +106,7 @@ if not savings.empty:
         labels={"saved": "£", "kind": ""},
     )
     fig.update_layout(margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+    st.plotly_chart(ui.money_axis(fig), width="stretch")
 
 st.divider()
 
@@ -127,7 +127,7 @@ with left:
                 labels={"date": "Date", "item": "Item", "amount": "Amount",
                         "flag": "Kind"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -172,7 +172,7 @@ with right:
                 ["saving"],
                 labels={"date": "Date", "kind": "Kind", "saving": "Saved"},
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=380,
         )
