@@ -8,6 +8,7 @@ account is an INSERT with a start date and earlier months are untouched by const
 from __future__ import annotations
 
 import datetime as dt
+import os
 from decimal import Decimal
 
 import pandas as pd
@@ -966,6 +967,50 @@ with tab_savings:
         + ". Earlier ones stay as they are — a past month keeps the plan it was measured "
         "against."
     )
+
+    # An empty plan is either a genuinely empty table or a dashboard reading somewhere other
+    # than you think, and those look identical on screen. Rather than guess, say which file
+    # was opened and what is in it -- counted here and now, not from the cached read, so a
+    # disagreement between the two is itself the answer.
+    if not stored_dates:
+        st.warning(
+            "**No savings plan was loaded.** If you are expecting targets here, the figures "
+            "below say which database was read and what it contains."
+        )
+        import sqlite3
+
+        from budget import config
+
+        def count(table: str) -> str:
+            try:
+                conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
+                try:
+                    return f"{conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]:,}"
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001
+                return f"unreadable ({type(exc).__name__})"
+
+        st.code(
+            "\n".join(
+                [
+                    f"database          {config.DB_PATH}",
+                    f"exists            {config.DB_PATH.exists()}",
+                    f"BUDGET_DB_PATH    {os.environ.get('BUDGET_DB_PATH', '(not set)')}",
+                    f"savings_plan      {count('savings_plan')} row(s) in the file",
+                    f"loaded into page  {len(plan):,} row(s)",
+                    f"transactions      {count('txn')} row(s) in the file",
+                    f"fingerprint       {ui.db_fingerprint()}",
+                ]
+            ),
+            language="text",
+        )
+        st.caption(
+            "If **savings_plan** has rows in the file but none loaded into the page, the "
+            "read is stale — use **Refresh data** in the sidebar. If the file itself has "
+            "none, the plan needs entering. If the path is not the one you expect, something "
+            "is overriding it."
+        )
 
     in_force = repo.plan_in_force(plan, plan_from).set_index("account")
     plan_rows = [

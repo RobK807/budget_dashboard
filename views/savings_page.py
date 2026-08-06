@@ -163,7 +163,21 @@ plan_detail = data["plan_detail"]
 plan_detail = plan_detail[plan_detail["period"].isin(series["period"])]
 
 if plan_detail.empty:
-    st.info("No plan set yet — add one under **Settings → Savings targets**.")
+    # Distinguish 'nothing has been entered' from 'entered, but this dashboard did not read
+    # it'. The two look identical here, and only one of them is fixed by typing it in again.
+    stored = len(data["savings_plan"])
+    if stored:
+        st.warning(
+            f"**{stored} target(s) are stored but none apply to the months shown.** The "
+            "plan starts later than this data does, or it was entered against accounts that "
+            "are no longer flagged as savings or investments. Check "
+            "**Settings → Savings targets**."
+        )
+    else:
+        st.info(
+            "No plan set yet — add one under **Settings → Savings targets**, which will "
+            "also say which database it read if you were expecting one to be there."
+        )
 else:
     matrix = plan_detail.pivot_table(
         index="period", columns="account", values="amount", aggfunc="sum"
