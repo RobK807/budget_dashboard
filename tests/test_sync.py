@@ -7,6 +7,7 @@ overwrites unpushed work.
 
 import datetime as dt
 import json
+import sqlite3
 from decimal import Decimal
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from budget import config, service, sync
 from budget.db import make_engine, make_session_factory
 from budget.models import DbMeta, Txn
+from budget.schema import SCHEMA_VERSION
 from budget.validation import Candidate
 
 
@@ -535,6 +537,184 @@ class TestPull:
 
     def test_pull_without_a_master_is_refused(self, session, local, nas):
         assert not sync.pull(db_path=local).ok
+
+
+class TestSchemaVersionCrossesTheWire:
+    """Two machines at the same revision on different schemas.
+
+    Migrations deliberately do not bump the revision -- doing so would make two machines that
+    each took the same code update look like a mutual conflict neither could reconcile. The
+    version travels as its own axis instead, and the failure being pinned here is the silent
+    one: a machine reading a master written by code newer than its own, which does not raise,
+    it just quietly disagrees about what the columns mean.
+    """
+
+    def newer_master(self, nas, local, session, bump=1):
+        """Push, then age this code relative to the master by editing what it claims."""
+        add_one(session)
+        session.commit()
+        assert sync.push(session, db_path=local).ok
+        session.commit()
+
+        master = nas / sync.MASTER
+        connection = sqlite3.connect(master)
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION + bump),),
+        )
+        connection.commit()
+        connection.close()
+
+        # The sidecar has to keep describing the file, or the pull fails its checksum test
+        # first and this would pass for the wrong reason.
+        meta = json.loads((nas / sync.META).read_text())
+        meta["schema_version"] = SCHEMA_VERSION + bump
+        meta["sha256"] = sync._sha256(master)
+        (nas / sync.META).write_text(json.dumps(meta, indent=2))
+        return master
+
+    def test_the_sidecar_records_the_version_of_the_file_it_promoted(
+        self, session, local, nas
+    ):
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        meta = json.loads((nas / sync.META).read_text())
+        assert meta["schema_version"] == SCHEMA_VERSION
+
+    def test_a_newer_master_is_not_reported_as_in_sync(self, session, local, nas):
+        self.newer_master(nas, local, session)
+        state = sync.status(session)
+
+        assert state.stale_code
+        assert state.tone == "error"
+        assert "Update needed" in state.label
+        assert "In sync" not in state.label
+
+    def test_push_refuses_to_put_an_older_structure_over_a_newer_master(
+        self, session, local, nas
+    ):
+        self.newer_master(nas, local, session)
+        before = (nas / sync.MASTER).read_bytes()
+
+        add_one(session)
+        session.commit()
+        result = sync.push(session, db_path=local)
+        session.commit()
+
+        assert not result.ok
+        assert "newer code" in " ".join(result.detail)
+        assert (nas / sync.MASTER).read_bytes() == before  # untouched
+        assert sync.status(session).local.dirty  # and still queued to retry
+
+    def test_forcing_the_push_is_still_possible(self, session, local, nas):
+        self.newer_master(nas, local, session)
+        add_one(session)
+        session.commit()
+
+        assert sync.push(session, db_path=local, force=True).ok
+
+    def test_pull_refuses_a_master_this_code_cannot_read(self, session, local, nas):
+        self.newer_master(nas, local, session)
+        before = local.read_bytes()
+
+        result = sync.pull(db_path=local)
+
+        assert not result.ok
+        assert "schema version" in result.message
+        assert local.read_bytes() == before  # nothing replaced
+
+    def test_pull_reads_the_file_rather_than_trusting_the_sidecar(
+        self, session, local, nas
+    ):
+        """A sidecar can be stale or hand-edited; the file is what gets installed."""
+        self.newer_master(nas, local, session)
+        meta = json.loads((nas / sync.META).read_text())
+        meta["schema_version"] = SCHEMA_VERSION  # lies about the master
+        (nas / sync.META).write_text(json.dumps(meta, indent=2))
+
+        assert not sync.pull(db_path=local).ok
+
+    def test_an_older_master_is_the_ordinary_case_and_is_not_blocked(
+        self, tmp_path, monkeypatch
+    ):
+        """After a code update this machine is ahead of the master. Pulling migrates it
+        forward, which is the whole point of migrations -- it must not be mistaken for the
+        dangerous direction.
+
+        Pulled onto a machine with no database, like TestFirstPull: the session fixture holds
+        its own file open, so a pull over it cannot complete on Windows and the happy path
+        would never actually be reached.
+        """
+        nas_dir = tmp_path / "nas"
+        nas_dir.mkdir()
+        source = tmp_path / "source.db"
+        engine = make_engine(source)
+        from budget.db import create_all
+
+        create_all(engine)
+        with make_session_factory(engine)() as s, s.begin():
+            s.add(DbMeta(id=1, revision=4, base_revision=4, pushed_revision=4))
+        engine.dispose()
+
+        connection = sqlite3.connect(source)
+        connection.execute(
+            "UPDATE setting SET value = ? WHERE key = 'schema_version'",
+            (str(SCHEMA_VERSION - 1),),
+        )
+        connection.commit()
+        connection.close()
+
+        master = nas_dir / sync.MASTER
+        master.write_bytes(source.read_bytes())
+        (nas_dir / sync.META).write_text(
+            json.dumps(
+                {
+                    "revision": 4,
+                    "machine": "OTHER",
+                    "sha256": sync._sha256(master),
+                    "schema_version": SCHEMA_VERSION - 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(config, "NAS_DIR", nas_dir)
+        monkeypatch.setattr(config, "DB_PATH", tmp_path / "local" / "budget.db")
+        monkeypatch.setattr(config, "BASE_DB_PATH", tmp_path / "local" / "budget.base.db")
+
+        assert sync.pull().ok
+
+    def test_checkout_is_refused_rather_than_stranding_offline_edits(
+        self, session, local, nas
+    ):
+        """A lease is a promise to check in, and check-in pushes. Granting one this machine
+        could not honour buries a knowable refusal under a week of offline work."""
+        self.newer_master(nas, local, session)
+        session.get(DbMeta, 1).pushed_revision = session.get(DbMeta, 1).revision
+        session.commit()
+
+        result = sync.checkout(session)
+        assert not result.ok
+        assert "schema version" in result.message
+        assert sync.read_lock() is None
+
+    def test_a_sidecar_without_a_version_makes_no_claim(self, session, local, nas):
+        """Written before the version travelled. Zero must not read as 'older than 1'."""
+        add_one(session)
+        session.commit()
+        sync.push(session, db_path=local)
+        session.commit()
+
+        meta = json.loads((nas / sync.META).read_text())
+        del meta["schema_version"]
+        (nas / sync.META).write_text(json.dumps(meta, indent=2))
+
+        state = sync.status(session)
+        assert state.nas.schema_version == 0
+        assert not state.stale_code
 
 
 class TestReconciliation:

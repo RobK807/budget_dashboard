@@ -7,13 +7,48 @@ revision and would mean force-pushing over a master that is already correct.
 SQLite cannot ALTER a CHECK constraint, so changing one means the twelve-step table rebuild:
 create the replacement, copy across, drop the original, rename. Foreign keys are disabled for
 the duration, which is why this runs outside the app's normal engine.
+
+**Migrations do not bump the sync revision, deliberately.** A migration is not a change one
+machine made and another needs told about: it is a pure function of the file and the code
+version, it travels *inside* the pushed database, and each machine applies it for itself on
+the next start. Bumping would make it look like unpushed work, and then two machines that
+both took a code update would each go dirty at revision n+1 for the identical migration --
+which the revision check reads as a conflict, and no amount of reconciling can resolve
+because neither machine has any edits to replay.
+
+What *does* need to cross the wire is the version itself, so that a machine cannot silently
+be handed data written by code newer than its own. That travels in the NAS sidecar, and both
+ends of a sync check it -- see budget/sync.py and DESIGN.md 6.3.
+
+Version 0 always means "makes no claim": a database from before stamping existed, or a
+sidecar written before the version travelled. It is never treated as "older than version 1".
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy.engine import Engine
 
 SCHEMA_VERSION = 7
+
+
+class SchemaTooNew(RuntimeError):
+    """This copy of the code is older than the database it has been pointed at.
+
+    Migrations only ever move forward, so there is no route back to a structure this code
+    understands. Reading on regardless is the failure to avoid: extra columns are harmless,
+    but a rebuilt table is not -- the rollover rename below turned 'positive' into 'credit',
+    and older code reading that would not error, it would simply be wrong.
+    """
+
+    def __init__(self, found: int, understood: int) -> None:
+        self.found = found
+        self.understood = understood
+        super().__init__(
+            f"This database is at schema version {found}, and this copy of the code "
+            f"understands version {understood}."
+        )
 
 # Columns added to tables that already existed. create_all only creates whole tables, so a
 # new column on an existing one needs an explicit ALTER -- cheap in SQLite, unlike a CHECK.
@@ -134,6 +169,69 @@ def _stored_schema_version(cursor) -> int:
         return 0
 
 
+def stored_version(db_path: Path) -> int:
+    """The version recorded in a database file, without opening an engine.
+
+    Plain sqlite3 and read-only, for the same reason as sync._read_counters: make_engine runs
+    `PRAGMA journal_mode=WAL` on connect, which *writes to the header*, and a file being
+    examined in order to decide whether to accept it should not be modified by the examining.
+    The callers here are about to move or replace that file.
+
+    Anything unreadable answers 0 -- no claim -- rather than raising. The caller's question is
+    "is this newer than I understand", and a file that cannot be read is not.
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        row = conn.execute(
+            "SELECT value FROM setting WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return 0  # no setting table, or not a database at all
+    finally:
+        conn.close()
+    try:
+        return int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def looks_brand_new(engine: Engine) -> bool:
+    """True when there is nothing to migrate because there is nothing there yet.
+
+    The same test apply_migrations uses to return early, exposed so that create_all can ask
+    it *before* building the tables -- afterwards every table exists and the answer is lost.
+    """
+    with engine.connect() as conn:
+        return not conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='classification'"
+        ).fetchone()
+
+
+def stamp_current_version(engine: Engine) -> None:
+    """Record the current version on a database that has just been created.
+
+    Not cosmetic. An unstamped database reads as version 0, which is indistinguishable from a
+    legacy file that predates stamping -- so the *second* start would run every historic
+    migration over data that never needed them. `_rescale_rates_to_percentages` is guarded by
+    `was_at < 3`, so a brand-new database seeded with a 20.00% basic rate came back from its
+    second launch holding 2000.00%.
+
+    Only for the brand-new case, and the caller establishes that. Stamping an unstamped file
+    that *does* hold data would skip the migrations it genuinely needs.
+    """
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO setting (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
+
+
 def _rescale_rates_to_percentages(cursor) -> int:
     """Multiply the rate rows by 100, once.
 
@@ -183,6 +281,11 @@ def apply_migrations(engine: Engine) -> list[str]:
                 return applied  # brand new database; create_all builds it correctly
 
             was_at = _stored_schema_version(cursor)
+            if was_at > SCHEMA_VERSION:
+                # Stop before touching anything. There is no downgrade path, and carrying on
+                # would also stamp the version *backwards* at the end of this function --
+                # destroying the only evidence of what the file actually is.
+                raise SchemaTooNew(was_at, SCHEMA_VERSION)
 
             if _needs_rollover_rename(cursor):
                 cursor.execute("PRAGMA foreign_keys=OFF")
@@ -224,11 +327,12 @@ def apply_migrations(engine: Engine) -> list[str]:
                 if split:
                     applied.append(f"base salary split out of {split} salary record(s)")
 
-            cursor.execute(
-                "INSERT INTO setting (key, value) VALUES ('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (str(SCHEMA_VERSION),),
-            )
+            if was_at != SCHEMA_VERSION:
+                cursor.execute(
+                    "INSERT INTO setting (key, value) VALUES ('schema_version', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (str(SCHEMA_VERSION),),
+                )
         finally:
             cursor.close()
             connection.isolation_level = previous_isolation

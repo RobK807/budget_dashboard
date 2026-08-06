@@ -42,6 +42,17 @@ if not state.nas.reachable:
         "pending and the next push will pick them up."
     )
 
+if state.stale_code:
+    st.caption(
+        f"The master was pushed from a machine running newer code — it needs schema version "
+        f"{state.nas.schema_version}, and this copy understands {sync.SCHEMA_VERSION}. "
+        "Both directions are refused: pulling would hand this code data it cannot read, and "
+        "pushing would put an older structure over a newer master, which no later "
+        "reconciliation could undo.\n\n"
+        "**Nothing here is at risk and nothing needs reconciling.** Update this machine's "
+        "code and start it again; the sync then proceeds normally."
+    )
+
 if state.blocked_by:
     lock = state.blocked_by
     st.warning(
@@ -144,6 +155,7 @@ with push_col:
         state.nas.reachable
         and not state.moved
         and not state.blocked_by
+        and not state.stale_code
     )
     if st.button(
         "Push now", type="primary", disabled=not can_push,
@@ -168,10 +180,15 @@ with pull_col:
         "Replaces the local database with the master and records it as the new ancestor. "
         "Refuses while there are unpushed changes."
     )
-    can_pull = state.nas.reachable and state.nas.has_master and not state.local.dirty
+    can_pull = (
+        state.nas.reachable
+        and state.nas.has_master
+        and not state.local.dirty
+        and not state.stale_code
+    )
     if st.button(
         "Pull now", disabled=not can_pull, key="pull_now",
-        help=None if can_pull else "Blocked — push or reconcile first",
+        help=None if can_pull else "Blocked — see the status above",
     ):
         ui.close_connections()
         result = sync.pull()

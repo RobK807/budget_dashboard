@@ -580,9 +580,39 @@ a file copy so the snapshot is transactionally consistent even if the app is mid
 Every failure path below leaves `pushed_revision` untouched, so the next trigger retries.
 
 **Metadata lives in a sidecar, not in the database.** `budget.meta.json` on the NAS holds
-`{revision, machine, updated_at, sha256}`. Reading a small JSON file over SMB is safe; opening the
-SQLite database over SMB just to read its revision is exactly the thing this whole section exists
-to avoid.
+`{revision, machine, updated_at, sha256, schema_version}`. Reading a small JSON file over SMB is
+safe; opening the SQLite database over SMB just to read its revision is exactly the thing this
+whole section exists to avoid.
+
+**Schema version is a second, independent axis — and migrations do not bump the revision.** The
+revision counter answers *who has edits the other has not seen*; the schema version answers *can
+this code read that file at all*. They are not the same question, and conflating them breaks both:
+
+* A migration is a pure function of the file and the code version. It travels **inside** the
+  pushed database and each machine applies it for itself on the next start, so it is not
+  news one machine has to tell another.
+* Bumping the revision for one would therefore be a lie with teeth. Two machines that each take
+  the same code update would both go dirty at revision *n+1* for the identical migration, and the
+  revision check reads that as a mutual conflict — which is unresolvable, because neither machine
+  has any edits to replay.
+
+So the version rides in the sidecar instead, and both directions check it:
+
+| Situation | Treatment |
+|---|---|
+| Master's schema **newer** than this code | **Blocking, both ways.** Pull refuses (migrations only run forwards, so there is no way to read it here); push refuses (promoting an older structure over a newer master is a downgrade that cannot be reconciled afterwards). Badge reads *"Update needed"*. Remedy is a code update, not a data operation. |
+| Master's schema **older** than this code | Ordinary, and silent. This is what every machine sees after a code update. Pulling migrates the file forward. |
+| Sidecar has **no** version | Makes no claim — a sidecar written before the version travelled. Never read as "older than version 1". |
+
+`pull` reads the version from the downloaded file rather than the sidecar: the sidecar is what the
+badge goes on, but replacing a machine's database is worth checking against the thing itself.
+
+**A database created by this code is stamped at the current version on creation.** Left unstamped
+it reads as version 0 — indistinguishable from a legacy file — so the *second* start would run
+every historic migration over data that never needed them. That was a live bug: the rate rescale is
+guarded by `was_at < 3`, so a fresh database seeded with a 20.00% basic rate came back from its
+second launch holding 2000.00%. An unstamped database that *does* hold data is still treated as
+legacy and migrated, which is the other half of the same decision.
 
 **Failure handling** — the distinction that matters for a laptop:
 

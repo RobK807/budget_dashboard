@@ -123,6 +123,23 @@ def database_check() -> dict:
     return report
 
 
+def schema_check() -> str | None:
+    """None if this code can read the database, else why it cannot.
+
+    Building the engine is what runs the migrations, so this is also what performs them --
+    doing it here rather than at the first read means a database written by newer code stops
+    the app at the front door with an explanation, instead of surfacing as a KeyError on
+    whichever page happened to touch the unfamiliar column first.
+    """
+    from budget.schema import SchemaTooNew
+
+    try:
+        _engine()
+    except SchemaTooNew as exc:
+        return str(exc)
+    return None
+
+
 def database_exists() -> bool:
     return database_check()["ok"]
 

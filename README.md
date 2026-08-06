@@ -149,6 +149,13 @@ if the savings targets are missing afterwards. **A page reporting nothing** wher
 rows is a stale read — press *Refresh data*, and if that fails the process is older than the
 code, so use `stop.bat` and start again. **The folder missing** is what `restore.bat` is for.
 
+**"This dashboard is older than the database it is pointed at"**, or a sync badge reading
+**"Update needed"**, is not a data problem and no script will fix it. The other machine is
+running newer code, and this one is being kept away from data it would misread rather than
+being allowed to guess. Update this machine (`git pull`, then re-run the install step) and
+start it again. Nothing is changed in the meantime — both pushing and pulling refuse, because
+schema migrations only ever run forwards.
+
 Rebuilding from the workbook (`migrate_xlsm`) is the last resort, not the first: it resets the
 sync revision and loses anything entered since the workbook stopped being the source of truth.
 

@@ -4,10 +4,16 @@ The database always lives on a local disk and the NAS only ever holds pushed cop
 SQLite's locking is not reliable over SMB, so nothing ever opens the master in place --
 it is copied down, worked on locally, and copied back.
 
-Two guards make that safe. A **lock** records who is working; a **revision counter** records
-what they started from. The revision check is the one that matters: without it, a lock
-slipped or force-taken loses a machine's work silently, whereas with it the same slip
-becomes a refusal you can reconcile.
+Three guards make that safe. A **lock** records who is working; a **revision counter** records
+what they started from; a **schema version** records what shape the file is. The revision
+check is the one that matters most: without it, a lock slipped or force-taken loses a
+machine's work silently, whereas with it the same slip becomes a refusal you can reconcile.
+
+The schema version is a separate axis on purpose, and migrations deliberately do *not* touch
+the revision -- see the header of budget/schema.py for why bumping it would manufacture
+unresolvable conflicts. The counter answers "who has edits the other has not seen"; the
+version answers "can this code read that file at all". Two machines at the same revision on
+different schemas is a real state, and it used to report as a plain "In sync".
 
 Pushes are staged -- snapshot, verify, upload beside the master, verify again, then promote
 -- so a dropped connection can never leave a truncated master. The invariant throughout is
@@ -32,6 +38,7 @@ from sqlalchemy.orm import Session
 from budget import config
 from budget.db import make_engine, make_session_factory
 from budget.models import DbMeta, Txn
+from budget.schema import SCHEMA_VERSION, stored_version
 
 MASTER = "budget.db"
 BACKUP = "budget.db.bak"
@@ -40,6 +47,18 @@ META = "budget.meta.json"
 LOCK = "budget.lock"
 
 ONLINE, OFFLINE, CONFLICT = "online", "offline", "conflict"
+
+
+def _discard(path: Path) -> None:
+    """Remove a staging file and the WAL sidecars any read of it will have created.
+
+    Opening a WAL database maps a shared-memory index, so even a read-only probe leaves an
+    empty `-wal` and `-shm` beside it. Unlinking only the staging file leaves those orphaned
+    in the same folder as the live database -- and a WAL that outlives what it belongs to is
+    how this project twice met 'database disk image is malformed'.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
 
 
 def machine_name() -> str:
@@ -65,6 +84,9 @@ class NasState:
     machine: str | None = None
     updated_at: str | None = None
     sha256: str | None = None
+    # 0 means the master makes no claim -- a sidecar written before the version travelled, or
+    # a database that predates stamping. Never read as "older than version 1".
+    schema_version: int = 0
 
 
 @dataclass
@@ -140,10 +162,30 @@ class Status:
         return self.lock if self.lock and not self.lock.mine else None
 
     @property
+    def stale_code(self) -> bool:
+        """The master was pushed by code newer than this machine's.
+
+        Neither direction of sync is safe: pulling hands this code data it cannot read, and
+        pushing puts an older structure over a newer master. Both are refused, and the remedy
+        is the same one -- update this machine.
+
+        Only ever true of a *newer* master. A master older than this code is the ordinary
+        case after a code update, and needs no comment: pulling it migrates it forward.
+        """
+        return self.nas.schema_version > SCHEMA_VERSION
+
+    @property
     def label(self) -> str:
         if not self.nas.reachable:
             return f"{self.local.pending} pending · NAS unreachable" if self.local.dirty \
                 else "NAS unreachable"
+        if self.stale_code:
+            # Ahead of the conflict check deliberately: this blocks the remedy for a
+            # conflict as well as the conflict itself, so it is the thing to say first.
+            return (
+                f"Update needed — master needs schema {self.nas.schema_version}, "
+                f"this code has {SCHEMA_VERSION}"
+            )
         if self.conflict:
             return f"Conflict — {self.local.pending} change(s) here, master at rev " \
                    f"{self.nas.revision}"
@@ -157,7 +199,7 @@ class Status:
 
     @property
     def tone(self) -> str:
-        if self.conflict:
+        if self.conflict or self.stale_code:
             return "error"
         if (
             not self.nas.reachable
@@ -199,6 +241,7 @@ def read_nas() -> NasState:
             state.machine = meta.get("machine")
             state.updated_at = meta.get("updated_at")
             state.sha256 = meta.get("sha256")
+            state.schema_version = int(meta.get("schema_version", 0) or 0)
         except (OSError, ValueError, json.JSONDecodeError):
             pass  # a damaged sidecar must not stop the app from starting
     return state
@@ -288,7 +331,7 @@ def _integrity_ok(path: Path) -> bool:
         engine.dispose()
 
 
-def _write_meta(revision: int, digest: str) -> None:
+def _write_meta(revision: int, digest: str, schema_version: int) -> None:
     (nas_dir() / META).write_text(
         json.dumps(
             {
@@ -296,6 +339,10 @@ def _write_meta(revision: int, digest: str) -> None:
                 "machine": machine_name(),
                 "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
                 "sha256": digest,
+                # The version of the file being promoted, read from it rather than taken from
+                # this process's SCHEMA_VERSION: the sidecar describes the master, and saying
+                # what the code happened to know would be a claim about the wrong thing.
+                "schema_version": schema_version,
             },
             indent=2,
         ),
@@ -323,6 +370,21 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
         return Result(True, "Already up to date — nothing to push.")
     if not nas.reachable:
         return Result(False, "NAS not reachable. Changes stay pending and will retry.")
+
+    # Before the lock and before any snapshot work: promoting an older structure over a newer
+    # master is a downgrade, and unlike a revision conflict it cannot be reconciled afterwards
+    # -- there is no migration that runs backwards. Forced only, and forcing it is a decision
+    # to lose whatever the newer schema was carrying.
+    if nas.schema_version > SCHEMA_VERSION and not force:
+        return Result(
+            False,
+            f"The master needs schema version {nas.schema_version} and this code has "
+            f"{SCHEMA_VERSION}.",
+            [
+                "Another machine is running newer code. Update this one and try again — "
+                "pushing would put an older structure over a newer master."
+            ],
+        )
 
     lock = read_lock()
     if lock and not lock.mine and not force:
@@ -385,7 +447,7 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
         incoming.replace(master)
         detail.append("promoted; previous master kept as budget.db.bak")
 
-        _write_meta(local.revision, digest)
+        _write_meta(local.revision, digest, stored_version(staging))
 
         meta = session.get(DbMeta, 1)
         meta.pushed_revision = local.revision
@@ -402,7 +464,7 @@ def push(session: Session, db_path: Path | None = None, force: bool = False) -> 
     except OSError as exc:
         return Result(False, f"Push failed: {exc}", detail)
     finally:
-        staging.unlink(missing_ok=True)
+        _discard(staging)
 
 
 # ------------------------------------------------------------------------------ pull
@@ -505,6 +567,23 @@ def pull(db_path: Path | None = None) -> Result:
         if not _integrity_ok(staging):
             return Result(False, "Downloaded copy failed its integrity check.")
 
+        # Read from the downloaded file rather than trusting the sidecar: the sidecar is what
+        # the status badge goes on, but replacing this machine's database is worth checking
+        # against the thing itself. Refusing here costs a code update; accepting would run
+        # newer data through older readers, which does not error, it just quietly disagrees.
+        master_version = stored_version(staging)
+        if master_version > SCHEMA_VERSION:
+            return Result(
+                False,
+                f"The master needs schema version {master_version} and this code has "
+                f"{SCHEMA_VERSION}. Nothing was changed.",
+                [
+                    "Another machine has pushed from newer code. Update this one and pull "
+                    "again — migrations only ever move forward, so there is no way to read "
+                    "it here."
+                ],
+            )
+
         # Anything still holding the database has to have let go by now. On Windows this
         # unlink raises rather than succeeding, which is the safe failure: the local file is
         # untouched and the caller is told to close things. On POSIX it would succeed and
@@ -550,7 +629,7 @@ def pull(db_path: Path | None = None) -> Result:
     except OSError as exc:
         return Result(False, f"Pull failed: {exc}")
     finally:
-        staging.unlink(missing_ok=True)
+        _discard(staging)
 
 
 # ------------------------------------------------------------ deliberate offline mode
@@ -564,6 +643,15 @@ def checkout(session: Session, expected_return: dt.date | None = None) -> Result
 
     if not nas.reachable:
         return Result(False, "NAS not reachable, so a lease cannot be recorded.")
+    if nas.schema_version > SCHEMA_VERSION:
+        # A lease is a promise to check in later, and check-in pushes. Granting one this
+        # machine could not honour would mean a week of offline edits stranded behind a
+        # refusal that was already knowable now.
+        return Result(
+            False,
+            f"The master needs schema version {nas.schema_version} and this code has "
+            f"{SCHEMA_VERSION}. Update this machine before checking out.",
+        )
     if local.dirty:
         return Result(False, f"{local.pending} unpushed change(s). Push before checking out.")
     if nas.has_master and nas.revision != local.base_revision:

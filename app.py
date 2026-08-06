@@ -68,6 +68,20 @@ if not check["ok"]:
         )
     st.stop()
 
+# Before any page runs, because this is also what applies the migrations. A database written
+# by newer code has no way back to a structure this copy understands, so it is refused whole
+# rather than read partially.
+too_new = ui.schema_check()
+if too_new:
+    st.error(
+        "**This dashboard is older than the database it is pointed at.**\n\n"
+        f"{too_new}\n\n"
+        "Update this machine's code and start it again. Nothing has been changed, and "
+        "nothing is wrong with your data — migrations only ever move forward, so newer data "
+        "cannot be read by older code."
+    )
+    st.stop()
+
 # Emoji rather than :material/...: icons -- the Material Symbols font is fetched remotely
 # and falls back to rendering the literal name ("dashboard") if it does not load.
 navigation = st.navigation(

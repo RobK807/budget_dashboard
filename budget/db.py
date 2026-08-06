@@ -39,11 +39,23 @@ def create_all(engine: Engine) -> list[str]:
     """Create anything missing, then bring an existing database up to date.
 
     Returns the migrations applied, so a caller can report them.
+
+    Raises SchemaTooNew if the database was written by a newer version of this code, in which
+    case nothing is touched -- see budget/schema.py.
     """
-    from budget.schema import apply_migrations
+    from budget.schema import apply_migrations, looks_brand_new, stamp_current_version
+
+    # Asked before the tables exist, because afterwards they always do and the answer is lost.
+    fresh = looks_brand_new(engine)
 
     applied = apply_migrations(engine)  # before create_all: it cannot alter a CHECK
     Base.metadata.create_all(engine)
+
+    if fresh:
+        # A database this code just built is already at the current version, and has to say
+        # so. Left unstamped it reads as version 0 -- the same as a legacy file -- and the
+        # next start runs every historic migration over it.
+        stamp_current_version(engine)
     return applied
 
 
