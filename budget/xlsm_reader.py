@@ -344,6 +344,9 @@ CORRECTIONS_26_27 = Corrections(
 #   row 589   9 July, a TfL debit left at zero; it was 10.50
 #   row 1221  9 November, TfL recorded as 6.00; it was 7.40
 #   row 1547  a TfL debit left at zero and dated a day early: 7.70 on 9 January
+#   rows 1545, 1546  the two entries either side of it, a day early for the same reason:
+#             21.00 'Theatre' and 1.50 'Blackwall tunnel' belong on 9 January. The January
+#             tab totals 30.20 of Excess on the 9th, which is exactly these three added up.
 # Row 1796 (27 February, 85.05 'Lottery') is *not* corrected: the ledger is right and the
 # workbook put it on the March tab. It is an accepted difference in reconcile.py instead.
 #
@@ -354,6 +357,8 @@ CORRECTIONS_25_26 = Corrections(
     dates={
         2: (dt.date(2019, 4, 1), dt.date(2025, 4, 1)),
         1169: (dt.date(2022, 11, 1), dt.date(2025, 11, 1)),
+        1545: (dt.date(2026, 1, 8), dt.date(2026, 1, 9)),
+        1546: (dt.date(2026, 1, 8), dt.date(2026, 1, 9)),
         1547: (dt.date(2026, 1, 8), dt.date(2026, 1, 9)),
     },
     amounts={

@@ -39,7 +39,12 @@ TOLERANCE = Decimal("0.01")
 # is investigated and written up in PHASE0_FINDINGS.md before it is allowed in here -- the
 # point of the gate is to stay green so that a genuine regression is visible, which it
 # cannot be if the run is permanently red.
-ACCEPTED: dict[tuple[str, str], str] = {
+#
+# Held per workbook, for the same reason Corrections is: (month, key) is not unique across
+# years. 26-27 accepts ('May', 'Food') for a GBP 17.09 date fix, and while these shared one
+# dict that entry silently swallowed an unrelated GBP 4.75 difference in 25-26's May -- an
+# acceptance list that hides a difference it was never shown is worse than no list at all.
+ACCEPTED_26_27: dict[tuple[str, str], str] = {
     ("May", "Food 2026-05-29"): (
         "Debug row 360 was dated 2029-05-29, so the workbook's MATCH found no day to post "
         "it against and dropped GBP 17.09 of Food spending. The corrected date restores it."
@@ -54,10 +59,13 @@ ACCEPTED: dict[tuple[str, str], str] = {
     # corrected day shifts the month's closing figure and everything that reads it.
     ("May", "Food"): "Summary view of the GBP 17.09 correction above.",
     ("May", "Running Food"): "Month-tab running view of the GBP 17.09 correction above.",
-    # 25-26. The ledger is right and the workbook is not: Debug row 1796 is a GBP 85.05
-    # 'Lottery' debit on Mastercard dated 27 February, and the workbook posted it to the
-    # March tab instead. Everything else about it -- date, amount, comment -- is correct, so
-    # the difference shows in February and closes again by March. Confirmed by the user.
+}
+
+# Budget 25-26.xlsm. Two shapes recur, and both come of the month tabs being maintained by
+# a macro rather than by formula: a row the tab put in the wrong month or at the wrong
+# amount, and a row whose purchase type or category the tab records differently from the
+# ledger. In every case below the ledger is right, confirmed by the user.
+ACCEPTED_25_26: dict[tuple[str, str], str] = {
     ("March", "Amex"): (
         "Debug row 1929, 29 Mar, the NY hotel charge. The workbook says GBP 500.61; the real "
         "figure is 499.85, which the user identified. The 76p is exactly what stopped "
@@ -68,10 +76,58 @@ ACCEPTED: dict[tuple[str, str], str] = {
         "Debug row 1796, 27 Feb, Mastercard, GBP 85.05 'Lottery'. The workbook posted it to "
         "the March tab; the ledger dates it correctly. Confirmed by the user."
     ),
-    # 25-26, the category accumulator drifting one row. 'Expenses' sits directly above
-    # 'Other' in the month tab's category block, and for a run of entries the macro added
-    # an 'Other' amount to the Expenses row instead. The ledger is right in both months --
-    # confirmed by the user for March, and the same reading applies to October.
+    # Seven rows where the month tab's purchase type differs from the ledger's. The ledger
+    # is right in each -- it agrees with how the same thing is recorded everywhere else in
+    # the year, and the tab is the outlier.
+    #
+    # Each shows up twice, once under the type the tab used and once under the type it did
+    # not, so both halves are listed. Balances are unaffected: the money is on the tab, only
+    # its purchase type is not.
+    ("May", "Excess 2025-05-01"): (
+        "Debug row 194, 1 May, Amex, GBP 3.20 'Coffee'. The ledger says Excess; the tab "
+        "says Food. Every other Coffee entry in the year is Excess."
+    ),
+    ("May", "Food 2025-05-01"): "Counterpart of Excess 2025-05-01: the same GBP 3.20.",
+    ("May", "Excess 2025-05-02"): (
+        "Debug row 190, 2 May, Amex, GBP 7.95 'Waitrose'. The ledger says Food; the tab "
+        "says Excess. Every other Waitrose entry in the year is Food. Rows 190 and 194 sit "
+        "out of date order, which is what a pair entered later, and crossed, looks like."
+    ),
+    ("May", "Food 2025-05-02"): "Counterpart of Excess 2025-05-02: the same GBP 7.95.",
+    # These three carry no purchase type on the tab at all, so it counts nothing for them
+    # and there is no second half to list.
+    ("May", "Excess 2025-05-10"): (
+        "Debug row 250, 10 May, Savings - Spending, GBP 5.00 interest. Excess in the "
+        "ledger; the tab gives it no purchase type. The balance itself reconciles."
+    ),
+    ("May", "Excess 2025-05-30"): (
+        "Debug row 331, 30 May, Savings - Marcus, GBP 18.85 interest. As 10 May."
+    ),
+    ("June", "Bills 2025-06-06"): (
+        "Debug row 373, 6 June, Halifax, GBP 12.25 'Lottery'. The ledger says Bills; the "
+        "tab says Excess. The other Halifax Lottery entries -- 9 May, 9 January -- are "
+        "Bills and reconcile, so this one is the outlier."
+    ),
+    ("June", "Excess 2025-06-06"): "Counterpart of Bills 2025-06-06: the same GBP 12.25.",
+    ("July", "Bills 2025-07-07"): (
+        "Debug row 564, 7 July, Halifax, GBP 19.50 'Phone'. The ledger says Bills; the tab "
+        "says Excess."
+    ),
+    ("July", "Excess 2025-07-07"): "Counterpart of Bills 2025-07-07: the same GBP 19.50.",
+    ("July", "Excess 2025-07-10"): (
+        "Debug row 598, 10 July, Savings - Spending, GBP 5.36 interest. As 10 May."
+    ),
+    # The daily view of two differences already accepted above.
+    ("February", "Excess 2026-02-27"): (
+        "Daily view of the February Mastercard difference: Debug row 1796's GBP 85.05, "
+        "which the workbook posted to the March tab."
+    ),
+    ("March", "Savings 2026-03-29"): (
+        "Daily view of the March Amex difference: Debug row 1929 at 499.85, not 500.61."
+    ),
+    # The category accumulator drifting one row. 'Expenses' sits directly above 'Other' in
+    # the month tab's category block, and for a run of entries the macro added an 'Other'
+    # amount to the Expenses row instead.
     #
     # These are accumulators, not formulas (New_entry does `ActiveCell = dblAmt +
     # dblCatAmt`), so nothing recomputes them and the drift is permanent in the workbook.
@@ -97,7 +153,21 @@ ACCEPTED: dict[tuple[str, str], str] = {
         "by one in the cell comment on E34. Expenses' own GBP 51.26 is the remainder."
     ),
     ("March", "Other [Spent]"): "Counterpart of Expenses [Spent]: the same GBP 249.95.",
+    # The per-category view of corrections confirmed elsewhere. Nothing new -- the same
+    # money, seen through the month tab's category totals rather than its balances.
+    ("November", "Travel [Spent]"): (
+        "Debug row 1221, 9 Nov, TfL recorded as 6.00 where it was 7.40. The corrected 1.40."
+    ),
+    ("February", "Lottery [Spent]"): (
+        "Debug row 1796's GBP 85.05, which the workbook posted to the March tab."
+    ),
+    ("March", "Lottery [Spent]"): "The other end of row 1796: the same GBP 85.05, back out.",
+    ("March", "Travel [Spent]"): (
+        "Debug row 1929's 76p: the NY hotel charge at 499.85, not 500.61."
+    ),
 }
+
+ACCEPTED_BY_YEAR = {2025: ACCEPTED_25_26, 2026: ACCEPTED_26_27}
 
 # Differences that are understood but not yet decided. Listed so the run stays usable as a
 # regression gate -- a *new* difference still fails -- while staying visible every time.
@@ -536,10 +606,12 @@ def main(argv: list[str] | None = None) -> int:
         balance_diffs + class_diffs + category_diffs + summary_diffs
         + position_diffs + running_diffs
     )
-    accepted = [d for d in all_diffs if (d.month, d.key) in ACCEPTED]
+    # This workbook's own list, never another year's. See ACCEPTED_26_27.
+    known = ACCEPTED_BY_YEAR.get(ref.tax_year, {})
+    accepted = [d for d in all_diffs if (d.month, d.key) in known]
     pending = [d for d in all_diffs if (d.month, d.key) in PENDING]
     unexplained = [
-        d for d in all_diffs if (d.month, d.key) not in ACCEPTED and (d.month, d.key) not in PENDING
+        d for d in all_diffs if (d.month, d.key) not in known and (d.month, d.key) not in PENDING
     ]
 
     print("\n" + "=" * 78)
@@ -547,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(accepted)} accepted difference(s) -- database deliberately differs:")
         for d in accepted:
             print(f"  {d.month} {d.key}  delta{_fmt(d.delta)}")
-            print(f"    {ACCEPTED[(d.month, d.key)]}")
+            print(f"    {known[(d.month, d.key)]}")
         print()
     if pending:
         print(f"{len(pending)} PENDING difference(s) -- understood, awaiting a decision:")

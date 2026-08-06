@@ -66,7 +66,7 @@ spending by £17.09.
 
 > May / Food 2026-05-29: workbook 0.00 vs computed 17.09
 
-**Resolved — registered as an accepted difference** (`ACCEPTED` in `reconcile.py`), so the
+**Resolved — registered as an accepted difference** (`ACCEPTED_26_27` in `reconcile.py`), so the
 gate stays green and a genuine regression would still stand out. Your May food figure is
 now £17.09 higher than the spreadsheet ever showed, and correctly so.
 
