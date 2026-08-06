@@ -86,17 +86,33 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
     print("\nA. Account balances  (opening + postings  vs  month-tab 'End')")
     print("   " + "-" * 74)
 
+    # Carried month to month rather than read per month. The stored opening_balance rows
+    # were copied from the workbook's row 60, which is a formula -- the previous month's End
+    # -- so as values they describe the day the migration ran and nothing since. Rolling
+    # forward here is the workbook's own rule, computed independently of repo so this stays
+    # a cross-check rather than a restatement of the query layer.
+    running: dict[str, Decimal] = {}
+    seeded: set[str] = set()
+
     for month in xr.FISCAL_MONTHS:
         period = ref.period_for(month)
         layout = xr.month_layout(values, formulas, month, period)
         closing = xr.read_closing_balances(values, layout)
 
-        opening = {
+        stored = {
             accounts[ob.account_id].name: ob.amount
             for ob in session.scalars(
                 select(OpeningBalance).where(OpeningBalance.period == period)
             )
         }
+        # An account is seeded from its stated opening the first month it has one. For one
+        # opened part-way through the year that is its real starting balance, with nothing
+        # before it to roll forward from.
+        for name, amount in stored.items():
+            if name not in seeded:
+                running[name] = amount
+                seeded.add(name)
+        opening = running
 
         movement: dict[str, Decimal] = defaultdict(Decimal)
         txns = session.scalars(
@@ -118,6 +134,9 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
             expected = closing.get(name, Decimal("0"))
             if abs(computed - expected) > TOLERANCE:
                 month_diffs.append(Diff(month, name, expected, computed))
+            # This month's close is next month's open. Carried whether or not it matched, so
+            # one bad month shows as one difference rather than repeating to March.
+            running[name] = computed
 
         status = "OK" if not month_diffs else f"{len(month_diffs)} MISMATCH"
         print(

@@ -364,3 +364,121 @@ class TestSplitAtZero:
 
     def test_an_empty_series_is_not_an_error(self):
         assert self.split([]) == ([], [], [])
+
+
+class TestRolledForwardOpenings:
+    """A month's opening is its stated opening plus everything posted since.
+
+    The stored opening_balance rows came from the workbook's row 60, which there is a
+    *formula* -- the previous month's End. Copied across as values they stopped following
+    the data, so every stored opening after the first described the day the migration ran.
+    Adding GBP 2.50 to July left August 2.50 behind, September frozen at August's stale
+    figure, and so on to March: 107 reconciliation differences from one cause, all silent.
+    """
+
+    def openings(self, rows):
+        return pd.DataFrame(rows, columns=["account", "period", "opening"])
+
+    def postings(self, rows):
+        return pd.DataFrame(rows, columns=["account", "period", "signed"])
+
+    def test_the_first_month_is_the_stated_opening(self):
+        got = repo.rolled_forward_openings(
+            self.postings([]),
+            self.openings([("HSBC", "2026-04", Decimal("100"))]),
+            "2026-04",
+        )
+        assert got["HSBC"] == Decimal("100")
+
+    def test_a_later_month_carries_what_happened_in_between(self):
+        got = repo.rolled_forward_openings(
+            self.postings([("HSBC", "2026-04", Decimal("25"))]),
+            self.openings([
+                ("HSBC", "2026-04", Decimal("100")),
+                ("HSBC", "2026-05", Decimal("100")),  # stale: never updated
+            ]),
+            "2026-05",
+        )
+        assert got["HSBC"] == Decimal("125")
+
+    def test_the_stored_value_no_longer_wins(self):
+        """The regression itself. A stale stored row must not override the roll-forward."""
+        got = repo.rolled_forward_openings(
+            self.postings([("HSBC", "2026-04", Decimal("2.50"))]),
+            self.openings([
+                ("HSBC", "2026-04", Decimal("1000")),
+                ("HSBC", "2026-05", Decimal("1000")),
+            ]),
+            "2026-05",
+        )
+        assert got["HSBC"] == Decimal("1002.50")
+
+    def test_it_accumulates_across_several_months(self):
+        got = repo.rolled_forward_openings(
+            self.postings([
+                ("HSBC", "2026-04", Decimal("10")),
+                ("HSBC", "2026-05", Decimal("20")),
+                ("HSBC", "2026-06", Decimal("40")),
+            ]),
+            self.openings([("HSBC", "2026-04", Decimal("100"))]),
+            "2026-07",
+        )
+        assert got["HSBC"] == Decimal("170")
+
+    def test_a_month_with_nothing_in_it_still_carries_forward(self):
+        """Where the old behaviour repeated itself to March: no postings, so the stale
+        stored opening was returned unchanged twelve times over."""
+        got = repo.rolled_forward_openings(
+            self.postings([("HSBC", "2026-04", Decimal("30"))]),
+            self.openings([("HSBC", "2026-04", Decimal("100"))]),
+            "2026-12",
+        )
+        assert got["HSBC"] == Decimal("130")
+
+    def test_an_account_opened_mid_year_starts_at_its_own_first_month(self):
+        """Its stated opening is a real balance, not a carry-forward, and nothing before
+        that month belongs to it. Anchoring on the year's first month would either lose it
+        or double-count anything dated earlier."""
+        got = repo.rolled_forward_openings(
+            self.postings([("Tembo", "2026-06", Decimal("50"))]),
+            self.openings([
+                ("Tembo", "2026-06", Decimal("1000")),
+                ("Tembo", "2026-07", Decimal("1000")),
+            ]),
+            "2026-07",
+        )
+        assert got["Tembo"] == Decimal("1050")
+
+    def test_postings_before_an_account_opened_are_not_counted_twice(self):
+        got = repo.rolled_forward_openings(
+            self.postings([
+                ("Tembo", "2026-04", Decimal("999")),  # before its stated opening
+                ("Tembo", "2026-06", Decimal("50")),
+            ]),
+            self.openings([("Tembo", "2026-06", Decimal("1000"))]),
+            "2026-07",
+        )
+        assert got["Tembo"] == Decimal("1050")
+
+    def test_accounts_are_kept_apart(self):
+        got = repo.rolled_forward_openings(
+            self.postings([
+                ("HSBC", "2026-04", Decimal("10")),
+                ("Savings", "2026-04", Decimal("500")),
+            ]),
+            self.openings([
+                ("HSBC", "2026-04", Decimal("100")),
+                ("Savings", "2026-04", Decimal("0")),
+            ]),
+            "2026-05",
+        )
+        assert got["HSBC"] == Decimal("110")
+        assert got["Savings"] == Decimal("500")
+
+    def test_no_openings_at_all_is_not_an_error(self):
+        got = repo.rolled_forward_openings(
+            self.postings([("HSBC", "2026-04", Decimal("10"))]),
+            self.openings([]),
+            "2026-05",
+        )
+        assert got.empty or got.get("HSBC") == Decimal("10")

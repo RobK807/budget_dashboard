@@ -363,6 +363,64 @@ def span(
 # --------------------------------------------------------------------------- aggregations
 
 
+def rolled_forward_openings(
+    postings: pd.DataFrame, openings: pd.DataFrame, period: str
+) -> pd.Series:
+    """Each account's opening balance for a month: its stated opening plus everything
+    posted since.
+
+    The `opening_balance` table holds one row per account per month, copied from the
+    workbook's row 60 at migration. In the workbook that row is a *formula* -- the previous
+    month's End -- so it follows the data. Copied across as values it stopped following
+    anything, and every stored opening after the first was a fact about the day the
+    migration ran.
+
+    That went unnoticed for as long as the database only ever reproduced the workbook. The
+    moment a transaction was entered, every later month was wrong: adding GBP 2.50 to July
+    left August's stored opening 2.50 behind, September's opening frozen at August's stale
+    figure, and so on to March -- 107 differences from one cause, all of them silent.
+
+    So the stored value is used for the month it anchors and derived from there on. The
+    anchor is the *earliest* month stored for that account rather than the earliest month
+    overall, because an account opened part-way through the year has its real opening
+    balance there and nothing before it.
+    """
+    if openings.empty:
+        anchors = pd.DataFrame(columns=["account", "period", "opening"])
+    else:
+        anchors = (
+            openings.sort_values("period").groupby("account", as_index=False).first()
+        )
+
+    stated = anchors.set_index("account")["opening"] if not anchors.empty else pd.Series(
+        dtype="object"
+    )
+    anchor_period = anchors.set_index("account")["period"] if not anchors.empty else (
+        pd.Series(dtype="object")
+    )
+
+    movement: dict[str, Decimal] = {}
+    if not postings.empty:
+        earlier = postings[postings["period"] < period]
+        if not earlier.empty:
+            # Only what falls on or after the account's own anchor. Anything before it is
+            # already inside the stated opening, and counting it again would double it.
+            # An account with no stated opening anchors at the empty string, which sorts
+            # before any period, so it accumulates from the start rather than being dropped.
+            starts = earlier["account"].map(anchor_period).astype("object").fillna("")
+            since = earlier[earlier["period"].astype("object") >= starts]
+            if not since.empty:
+                movement = since.groupby("account")["signed"].sum().to_dict()
+
+    return pd.Series(
+        {
+            account: stated.get(account, Decimal("0")) + movement.get(account, Decimal("0"))
+            for account in set(stated.index) | set(movement)
+        },
+        dtype="object",
+    )
+
+
 def account_balances(
     postings: pd.DataFrame, openings: pd.DataFrame, period: str, accounts: pd.DataFrame
 ) -> pd.DataFrame:
@@ -377,7 +435,8 @@ def account_balances(
     the workbook's combined definition.
     """
     period_postings = postings[postings["period"] == period]
-    opening = openings[openings["period"] == period].set_index("account")["opening"]
+    # Derived, not read straight from the table: see rolled_forward_openings.
+    opening = rolled_forward_openings(postings, openings, period)
 
     rows = []
     for _, acct in accounts.iterrows():
