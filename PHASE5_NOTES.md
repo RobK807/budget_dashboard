@@ -551,3 +551,51 @@ is a floor rather than a dated target, and nothing reads it yet.
 Version 6. New table `savings_plan`; new columns `account.interest_net` and
 `txn.is_donation`. New setting `investment_return_annual`, held as a percentage like every
 other rate since v3.
+
+## The guard that could not see a reader
+
+Reported as "the donation has not been split" and "the targets are missing". Both had been
+written and both had been verified. They were gone because the database had been corrupted,
+and the corruption traces back to `in_use()` — the check the one-off scripts make before
+writing.
+
+It tested with `BEGIN EXCLUSIVE`. In WAL mode, which is what this application runs, a writer
+and any number of readers coexist *by design*, so an exclusive write transaction is granted
+with the dashboard open. An idle Streamlit holds a read connection and nothing else, so the
+guard reported the database free and the seed script wrote underneath a live handle. Twice.
+
+The result was one malformed index, `sqlite_autoindex_setting_1` — the primary key on
+`setting`. Localised, but enough: `session.get(Setting, key)` goes through it, so every
+subsequent run of the seed died mid-transaction and rolled back, taking the 25 plan rows
+with it. Nothing announced this; the script's output was truncated at the snapshot line and
+the failure looked like the writes had simply not happened.
+
+Proved rather than assumed, with the dashboard running:
+
+    locking_mode=EXCLUSIVE   True    <- correct
+    BEGIN EXCLUSIVE          False   <- reported free with the app open
+
+`db.in_use` now takes the file lock outright, which in WAL mode cannot be granted while any
+other connection has the shared-memory index mapped — reader or writer. It restores
+`locking_mode=NORMAL` on the way out so the check does not itself lock the file. Both
+one-off scripts share it rather than carrying a copy each, and `tests/test_sync.py` pins the
+old spelling as *not* detecting a reader, so nobody reinstates it.
+
+Recovery was lossless apart from the plan, which the seed rebuilds: `REINDEX` returned
+`integrity_check` to `ok`, all 738 transactions were intact, the split and the interest flags
+survived, and the repaired file reconciled against the workbook before it was promoted. The
+corrupt original is kept as `budget.corrupt-<stamp>.db` rather than discarded.
+
+## Added against target, again
+
+The chart had been made cumulative on both sides so the comparison would be like for like.
+But the table's **Added** is a single month, so the bars matched nothing on screen and the
+chart quietly disagreed with the numbers printed beside it.
+
+Both scales now coexist on one chart instead: bars are the month's Added against the left
+axis, lines are the Cumulative target against the right. Every figure in the chart appears in
+the table above it, which is the property that was missing. The investment balance chart
+takes a second axis on the same reasoning — one account is four times the size of the others,
+so the smaller two were flat lines along the bottom. Which accounts go on the right is a
+multiselect, defaulted to those materially below the largest, rather than a hard-coded pair
+of names.

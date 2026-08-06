@@ -41,7 +41,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from budget import config, reference, repo
-from budget.db import create_all, make_engine, make_session_factory
+from budget.db import create_all, in_use, make_engine, make_session_factory
 from budget.models import Category, Classification, Txn
 from budget.service import add_transaction
 from budget.validation import Candidate
@@ -80,26 +80,6 @@ DONATION_AMOUNT = Decimal("30.00")
 FEE_AMOUNT = Decimal("5.70")
 DONATION_COMMENT = "Charity"
 FEE_COMMENT = "transaction fee"
-
-
-def in_use() -> bool:
-    """True if another connection holds the database.
-
-    Tested by taking an exclusive lock rather than by looking for -wal/-shm: those linger
-    after a perfectly clean close, so their presence says nothing.
-    """
-    try:
-        conn = sqlite3.connect(config.DB_PATH, timeout=1)
-    except sqlite3.Error:
-        return True
-    try:
-        conn.execute("BEGIN EXCLUSIVE")
-        conn.execute("ROLLBACK")
-        return False
-    except sqlite3.OperationalError:
-        return True
-    finally:
-        conn.close()
 
 
 def snapshot() -> str:

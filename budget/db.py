@@ -45,3 +45,44 @@ def create_all(engine: Engine) -> list[str]:
     applied = apply_migrations(engine)  # before create_all: it cannot alter a CHECK
     Base.metadata.create_all(engine)
     return applied
+
+
+def in_use(path=None) -> bool:
+    """True if any other process has the database open.
+
+    The one-off scripts guard on this before writing, so it has to detect a *reader* -- an
+    idle dashboard is exactly that, and it is the case that matters.
+
+    `BEGIN EXCLUSIVE` does not detect one. In WAL mode, which is what this application runs,
+    the whole point is that a writer and any number of readers coexist, so an exclusive write
+    transaction succeeds with the dashboard open and the guard reports the database free. A
+    script then writes underneath a live connection, which is how `sqlite_autoindex_setting_1`
+    came to be malformed.
+
+    `locking_mode=EXCLUSIVE` is the test that works: it takes the file lock outright and, in
+    WAL mode, cannot be granted while another connection has the shared-memory index mapped.
+    The lock is only acquired on the next transaction, hence the BEGIN.
+    """
+    import sqlite3
+
+    from budget import config
+
+    target = path or config.DB_PATH
+    try:
+        conn = sqlite3.connect(target, timeout=1)
+    except sqlite3.Error:
+        return True  # cannot even open it; assume something else has it
+    try:
+        conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ROLLBACK")
+        return False
+    except sqlite3.OperationalError:
+        return True
+    finally:
+        # Back to normal, so this check does not itself leave the file exclusively locked.
+        try:
+            conn.execute("PRAGMA locking_mode=NORMAL")
+        except sqlite3.Error:
+            pass
+        conn.close()

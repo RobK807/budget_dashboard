@@ -12,7 +12,9 @@ changing. Flagging the accounts instead means the column follows when a pot is a
 from __future__ import annotations
 
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from budget import repo, ui
 
@@ -223,35 +225,56 @@ st.caption(
 
 st.subheader("Added against target")
 
-# Against the *cumulative* target, which means what is added has to accumulate too: a month's
-# 200 set beside a target that has reached 2,400 by December is not a comparison, it is two
-# quantities on scales an order of magnitude apart. Both sides run from the first month shown.
-ADDED_SERIES = {
-    "available_added": "Savings added (available)",
-    "reserved_added": "Savings added (reserved)",
-    "savings_target_eom": "Savings target",
-    "investments_added": "Investments added",
-    "investments_target_eom": "Investments target",
-}
-cumulative = ui.to_float(series, list(ADDED_SERIES)).copy()
-for column in ("available_added", "reserved_added", "investments_added"):
-    cumulative[column] = cumulative[column].cumsum()
+# Every figure here is one that can be found in the table above -- which the previous version
+# could not claim. It made both sides cumulative so the comparison would be like for like,
+# but the table's 'Added' is a single month, so the bars matched nothing on screen and the
+# chart quietly disagreed with the numbers beside it.
+#
+# The two scales are reconciled with a second axis instead: bars are the month's Added, the
+# lines are Cumulative target. A month's 900 beside a target that has reached 4,500 would
+# otherwise flatten the bars to nothing by the end of the year.
+plot = ui.to_float(
+    series,
+    ["available_added", "reserved_added", "investments_added",
+     "savings_target_eom", "investments_target_eom"],
+)
 
-chart = cumulative.melt(
-    id_vars="month", value_vars=list(ADDED_SERIES),
-    var_name="series", value_name="amount",
+fig = make_subplots(specs=[[{"secondary_y": True}]])
+for column, label, colour in (
+    ("available_added", "Savings added (available)", ui.ACCENT),
+    ("reserved_added", "Savings added (reserved)", "#8C9EC4"),
+    ("investments_added", "Investments added", ui.POSITIVE),
+):
+    fig.add_trace(
+        go.Bar(name=label, x=plot["month"], y=plot[column], marker_color=colour),
+        secondary_y=False,
+    )
+for column, label, dash in (
+    ("savings_target_eom", "Savings target (cumulative)", "dash"),
+    ("investments_target_eom", "Investments target (cumulative)", "dot"),
+):
+    fig.add_trace(
+        go.Scatter(
+            name=label, x=plot["month"], y=plot[column],
+            mode="lines+markers", line=dict(dash=dash),
+        ),
+        secondary_y=True,
+    )
+
+fig.update_layout(barmode="group", hovermode="x unified", margin=dict(t=10))
+fig.update_yaxes(
+    title_text="Added in the month (£)", tickformat=",.2f", hoverformat=",.2f",
+    secondary_y=False,
 )
-chart["series"] = chart["series"].map(ADDED_SERIES)
-fig = px.bar(
-    chart.dropna(subset=["amount"]), x="month", y="amount", color="series",
-    barmode="group", labels={"amount": "£", "month": "", "series": ""},
+fig.update_yaxes(
+    title_text="Cumulative target (£)", tickformat=",.2f", hoverformat=",.2f",
+    secondary_y=True, showgrid=False,
 )
-fig.update_layout(margin=dict(t=10))
-st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
 st.caption(
-    "Everything here is cumulative from the first month shown, so a bar that stays below its "
-    "target bar is a shortfall that has not been made up. The two savings bars stack "
-    "conceptually: together they are the change in the total balance."
+    "Bars are the month's **Added**, read against the left axis; the lines are **Cumulative "
+    "target**, against the right. Both columns are in the table above, so every figure here "
+    "can be found there. The two savings bars sum to the change in the total balance."
 )
 
 st.divider()
@@ -346,13 +369,58 @@ with tab_return:
             "start date."
         )
 
-        chart = ui.to_float(returns, ["closing"])
-        fig = px.line(
-            chart, x="date", y="closing", color="account", markers=True,
-            labels={"closing": "Balance (£)", "date": "", "account": ""},
+        # One account is four times the size of the others, so on a single axis the smaller
+        # two are flat lines along the bottom and their movement is invisible. Which accounts
+        # go on the right is a choice rather than a rule -- defaulted to the ones materially
+        # below the largest, which is the situation that makes a second axis worth having.
+        latest_each = (
+            returns[returns["period"] == returns["period"].max()]
+            .set_index("account")["closing"]
         )
+        biggest = max(latest_each) if len(latest_each) else 0
+        smaller = [
+            name for name, value in latest_each.items()
+            if biggest and value < biggest / 2
+        ]
+        right = st.multiselect(
+            "Plot on the right-hand axis",
+            options=ui.alphabetical(returns["account"]),
+            default=ui.alphabetical(smaller),
+            key="return_secondary",
+            help="For accounts too small to read against the largest one.",
+        )
+
+        chart = ui.to_float(returns, ["closing"])
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        for account in ui.alphabetical(chart["account"]):
+            mine = chart[chart["account"] == account]
+            on_right = account in right
+            fig.add_trace(
+                go.Scatter(
+                    name=account + (" (right)" if on_right else ""),
+                    x=mine["date"], y=mine["closing"],
+                    mode="lines+markers",
+                    line=dict(dash="dot" if on_right else "solid"),
+                ),
+                secondary_y=on_right,
+            )
         fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-        st.plotly_chart(ui.money_axis(fig), use_container_width=True)
+        fig.update_yaxes(
+            title_text="Balance (£)", tickformat=",.2f", hoverformat=",.2f",
+            secondary_y=False,
+        )
+        fig.update_yaxes(
+            title_text="Balance (£) — right", tickformat=",.2f", hoverformat=",.2f",
+            secondary_y=True, showgrid=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        if right:
+            st.caption(
+                "Dotted lines are read against the **right-hand** axis: "
+                + ", ".join(right)
+                + ". The two axes have different scales, so a line crossing another says "
+                "nothing about their balances."
+            )
 
         pct = returns.dropna(subset=["monthly_return"]).copy()
         if not pct.empty:

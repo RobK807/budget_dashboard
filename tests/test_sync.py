@@ -287,6 +287,82 @@ class TestBehindVersusConflict:
         assert not sync.status(session).local.dirty
 
 
+class TestInUse:
+    """The guard the one-off scripts check before writing.
+
+    It has to detect a *reader*, because an idle dashboard is one and that is the case that
+    matters. The original test was `BEGIN EXCLUSIVE`, which cannot: in WAL mode a writer and
+    any number of readers coexist by design, so it succeeded with the app open, reported the
+    database free, and a script wrote underneath a live connection. The result was a
+    malformed sqlite_autoindex_setting_1.
+    """
+
+    def database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "guard.db"
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_a_database_nobody_holds_is_free(self, tmp_path):
+        from budget.db import in_use
+
+        assert in_use(self.database(tmp_path)) is False
+
+    def test_a_reader_makes_it_busy(self, tmp_path):
+        """The case the old guard missed."""
+        import sqlite3
+
+        from budget.db import in_use
+
+        path = self.database(tmp_path)
+        holder = sqlite3.connect(path)
+        holder.execute("SELECT * FROM t").fetchall()  # maps the -shm, as the app does
+        try:
+            assert in_use(path) is True
+        finally:
+            holder.close()
+
+    def test_begin_exclusive_would_not_have_noticed(self, tmp_path):
+        """Pinned deliberately: this documents why the guard changed, and fails if someone
+        decides the simpler spelling was good enough after all."""
+        import sqlite3
+
+        path = self.database(tmp_path)
+        holder = sqlite3.connect(path)
+        holder.execute("SELECT * FROM t").fetchall()
+        probe = sqlite3.connect(path, timeout=1)
+        try:
+            probe.execute("BEGIN EXCLUSIVE")
+            probe.execute("ROLLBACK")
+            old_guard_says_busy = False
+        except sqlite3.OperationalError:
+            old_guard_says_busy = True
+        finally:
+            probe.close()
+            holder.close()
+        assert old_guard_says_busy is False
+
+    def test_it_leaves_the_file_unlocked(self, tmp_path):
+        """Checking must not itself lock the database out for the next caller."""
+        import sqlite3
+
+        from budget.db import in_use
+
+        path = self.database(tmp_path)
+        assert in_use(path) is False
+        after = sqlite3.connect(path)
+        try:
+            after.execute("INSERT INTO t (id) VALUES (1)")
+            after.commit()
+        finally:
+            after.close()
+
+
 class TestUnreadableLocalDatabase:
     """A pull is usually reached *because* something has already gone wrong, so the file it
     replaces is evidence. It is moved aside, never overwritten."""

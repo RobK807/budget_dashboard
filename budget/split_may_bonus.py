@@ -36,7 +36,7 @@ import sqlite3
 from decimal import Decimal
 
 from budget import config, reference, repo
-from budget.db import create_all, make_engine, make_session_factory
+from budget.db import create_all, in_use, make_engine, make_session_factory
 
 PERIOD = "2026-05"
 
@@ -57,28 +57,6 @@ PAYSLIP = {
     "paye": Decimal("3158.55"),
     "net": Decimal("6025.56"),
 }
-
-
-def in_use() -> bool:
-    """True if another connection holds the database.
-
-    Tested by taking an exclusive lock, not by looking for -wal/-shm. Those linger after a
-    perfectly clean close -- a quiescent database routinely has a 32KB -shm beside it and a
-    zero-length -wal -- so their presence says nothing at all. Acquiring the lock asks the
-    question SQLite itself would ask.
-    """
-    try:
-        conn = sqlite3.connect(config.DB_PATH, timeout=1)
-    except sqlite3.Error:
-        return True
-    try:
-        conn.execute("BEGIN EXCLUSIVE")
-        conn.execute("ROLLBACK")
-        return False
-    except sqlite3.OperationalError:
-        return True
-    finally:
-        conn.close()
 
 
 def snapshot() -> str:
