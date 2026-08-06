@@ -46,10 +46,18 @@ from budget import config, service, xlsm_reader as xr
 from budget.db import make_engine, make_session_factory
 from budget.models import (
     Account,
+    Bonus,
+    Card,
     Category,
     Classification,
+    CyclingDay,
+    CyclingOutgoing,
+    CyclingRate,
     ImportBatch,
     OpeningBalance,
+    Payslip,
+    SalaryAssumption,
+    SalaryProfile,
     Txn,
 )
 from budget.postings import postings_for
@@ -72,6 +80,34 @@ CORRECTIONS = {2025: xr.CORRECTIONS_25_26, 2026: xr.CORRECTIONS_26_27}
 # One workbook column can be several database accounts. A month tab's 'Amex' block is the
 # two cards added together, so that is what a reconciliation has to compare against.
 BLOCK_TO_DB = {"Amex": ("BA Amex", "Platinum Amex")}
+
+
+# Bands a workbook does not model, and the database should hold anyway. 25-26 stops at the
+# higher rate: it has no 'Additional rate' row at all, which understated its own expected
+# PAYE for a salary above the GBP 125,140 threshold. 45% is the real 2025/26 rate, and
+# storing it means the database's 2025 figures deliberately differ from the workbook's
+# expected column. Confirmed with the user.
+MISSING_BANDS: dict[int, dict[str, Decimal]] = {
+    2025: {"additional_rate": Decimal("45")},
+}
+
+# What to do with a prior year's balance transfer cards, confirmed with the user. A card is
+# one row describing one borrowing, not a row per year, so a card in both workbooks is
+# either the same debt seen earlier or a different debt that happens to share a lender's
+# name -- and only the user knows which.
+#
+#   extend       the same borrowing: move its start back to where it really began, and
+#                lengthen the term to match, so the payoff still ends where it does now
+#   <a name>     a different borrowing: its own row, under that name
+#   absent       leave the workbook's card alone
+#
+# Barclaycard and Barclaycard (2) are absent deliberately: several tranches the user is
+# sorting out separately.
+CARD_PLAN: dict[str, str] = {
+    "MBNA": "extend",  # 5,201 over 34 months from 31 Oct 2025 reaches 26-27's stated 4,468.02
+    "Tesco": "extend",  # cleared before April 2026, so 26-27 carries only a zero
+    "Halifax": "Halifax 2025",  # a separate, earlier borrowing
+}
 
 
 def db_accounts_for_block(block_name: str) -> tuple[str, ...]:
@@ -370,6 +406,194 @@ def backfill(session: Session, workbook: Path, verbose: bool = False) -> list[st
         f" ({soft_deleted} soft-deleted)"
     )
 
+    done += _backfill_salary(session, values, formulas, ref)
+    done += _backfill_cycling(session, values, ref)
+    done += _backfill_cards(session, values)
+
+    return done
+
+
+# ------------------------------------------------------------------------------- salary
+
+
+def _backfill_salary(session, values, formulas, ref: xr.RefData) -> list[str]:
+    """Payslips, PAYE bands, the salary profile and any bonus.
+
+    All of it is year-scoped except the salary profile, which is a single effective-dated
+    history that the backfill extends backwards rather than replaces.
+    """
+    year = ref.tax_year
+    periods = [ref.period_for(m) for m in xr.FISCAL_MONTHS]
+
+    if session.scalar(select(func.count()).select_from(Payslip).where(Payslip.period.in_(periods))):
+        raise ValueError(f"Payslips already exist for {year}/{str(year + 1)[-2:]}.")
+    if session.scalar(
+        select(func.count()).select_from(SalaryAssumption).where(SalaryAssumption.tax_year == year)
+    ):
+        raise ValueError(f"Salary assumptions already exist for tax year {year}.")
+
+    done: list[str] = []
+
+    bands = xr.read_salary_assumptions(values, year)
+    stated = {key for key, _, _ in bands}
+    for key, value in MISSING_BANDS.get(year, {}).items():
+        if key not in stated:
+            bands.append((key, dt.date(year, 4, 1), value))
+            done.append(f"    {key} set to {value} -- the workbook models none")
+    for key, effective_from, value in bands:
+        session.add(
+            SalaryAssumption(
+                tax_year=year, key=key, effective_from=effective_from, value=value
+            )
+        )
+    done.insert(0, f"salary bands: {len(bands)} for tax year {year}")
+
+    # Salary and bonus come from the formulas, not the values -- see read_salary_extras.
+    extras = xr.read_salary_extras(formulas, values, ref)
+    payslips = xr.read_payslips(values, ref)
+    bonuses = 0
+    for row in payslips:
+        salary, bonus = extras.get(row["period"], (row["salary"], Decimal("0")))
+        row["salary"] = salary
+        session.add(Payslip(**row))
+        if bonus:
+            session.add(Bonus(period=row["period"], amount=bonus, note="Bonus"))
+            bonuses += 1
+    done.append(f"payslips: {len(payslips)} ({bonuses} with a bonus)")
+
+    # The profile is one history across every year, so a row is added only where the salary
+    # actually changes -- and never on top of one that is already there.
+    existing = {
+        p.effective_from: p.annual_salary
+        for p in session.scalars(select(SalaryProfile))
+    }
+    in_force = None
+    profiles = 0
+    for row in sorted(payslips, key=lambda r: r["period"]):
+        salary = row["salary"]
+        if salary is None:
+            continue
+        y, m = (int(p) for p in row["period"].split("-"))
+        start = dt.date(y, m, 1)
+        if salary != in_force and start not in existing:
+            session.add(
+                SalaryProfile(
+                    effective_from=start,
+                    annual_salary=salary,
+                    note=f"Backfilled from the {year}/{str(year + 1)[-2:]} Salary tracker",
+                )
+            )
+            profiles += 1
+        in_force = salary
+    done.append(f"salary profile: {profiles} change(s) added")
+
+    session.flush()
+    return done
+
+
+# ------------------------------------------------------------------------------ cycling
+
+
+def _backfill_cycling(session, values, ref: xr.RefData) -> list[str]:
+    """Outgoings, days ridden and the fares that valued them.
+
+    The rates matter as much as the days: 25-26's commute fare was 8.90 against 26-27's
+    10.50, so without a rate dated to this year every 2025 ride would be valued at a fare
+    that had not happened yet -- or, since the rates only start in April 2026, at nothing.
+    """
+    outgoings, ridden, rates = xr.read_cycling(values)
+    year_start = dt.date(ref.tax_year, 4, 1)
+    done: list[str] = []
+
+    if ridden and session.scalar(
+        select(func.count())
+        .select_from(CyclingDay)
+        .where(CyclingDay.date.between(ridden[0]["date"], ridden[-1]["date"]))
+    ):
+        raise ValueError("Cycling days already exist in this workbook's range.")
+
+    # Not keyed, so a re-run would duplicate rather than collide. Matched on what makes an
+    # outgoing the same outgoing. One 25-26 row predates the fiscal year -- a saddle clamp
+    # bought on 20 March 2025 -- and is kept: it is bike spending the workbook records, and
+    # nothing else holds it.
+    seen = {
+        (o.date, o.item, o.amount) for o in session.scalars(select(CyclingOutgoing))
+    }
+    added = 0
+    for row in outgoings:
+        if (row["date"], row["item"], row["amount"]) in seen:
+            continue
+        session.add(CyclingOutgoing(**row))
+        added += 1
+    done.append(f"cycling outgoings: {added} of {len(outgoings)} added")
+
+    for row in ridden:
+        session.add(CyclingDay(**row))
+    done.append(
+        f"cycling days: {len(ridden)}"
+        + (f" ({ridden[0]['date']} to {ridden[-1]['date']})" if ridden else "")
+    )
+
+    for kind, amount in rates.items():
+        if amount and session.get(CyclingRate, (kind, year_start)) is None:
+            session.add(
+                CyclingRate(kind=kind, effective_from=year_start, amount=amount)
+            )
+    done.append(
+        "cycling rates from "
+        f"{year_start}: " + ", ".join(f"{k} {v}" for k, v in rates.items())
+    )
+
+    session.flush()
+    return done
+
+
+# -------------------------------------------------------------------------------- cards
+
+
+def _backfill_cards(session, values) -> list[str]:
+    """Balance transfer cards, per CARD_PLAN -- a card at a time, never wholesale."""
+    done: list[str] = []
+    order = max(
+        (c.display_order or 0 for c in session.scalars(select(Card))), default=-1
+    )
+
+    for card in xr.read_cards(values):
+        plan = CARD_PLAN.get(card["name"])
+        if plan is None:
+            continue
+
+        if plan == "extend":
+            existing = session.scalar(select(Card).where(Card.name == card["name"]))
+            if existing is None:
+                raise ValueError(
+                    f"{card['name']} is marked to extend backwards but does not exist."
+                )
+            was = (existing.opening_balance, existing.opening_date, existing.term_months)
+            existing.opening_balance = card["opening_balance"]
+            existing.opening_date = card["opening_date"]
+            existing.term_months = card["term_months"]
+            # payment_day, min_payment_pct and credit_limit are left alone: those are the
+            # card's current settings, which the user maintains in the dashboard.
+            done.append(
+                f"    {card['name']}: {was[0]} from {was[1]} over {was[2]}m"
+                f"  ->  {card['opening_balance']} from {card['opening_date']}"
+                f" over {card['term_months']}m"
+            )
+            continue
+
+        if session.scalar(select(Card).where(Card.name == plan)) is not None:
+            done.append(f"    {plan}: already present, left alone")
+            continue
+        order += 1
+        session.add(Card(**{**card, "name": plan, "display_order": order}))
+        done.append(
+            f"    {plan}: created, {card['opening_balance']} from "
+            f"{card['opening_date']} over {card['term_months']}m"
+        )
+
+    done.insert(0, f"cards: {len(done)} change(s)")
+    session.flush()
     return done
 
 

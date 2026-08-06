@@ -626,20 +626,30 @@ def read_running_opening(formulas: Workbook, values: Workbook, month: str) -> di
     return out
 
 
-# Salary tracker C18:F36 -> assumption keys. Column D holds the monthly figure.
-SALARY_BANDS: dict[str, int] = {
-    "ni_lower_earnings_limit": 18,
-    "ni_upper_earnings_limit": 19,
-    "ni_lower_rate": 20,
-    "ni_higher_rate": 21,
-    "personal_allowance": 22,
-    "basic_rate_threshold": 28,
-    "higher_threshold": 30,
-    "basic_rate": 32,
-    "higher_rate": 33,
-    "additional_rate": 34,
-    "basic_band": 36,  # 'Adjusted bands' -> Basic rate, which is D28 - D22
+# Salary tracker bands -> assumption keys. Column B names the section, C the band, D holds
+# the monthly figure.
+#
+# Keyed by (section, band) rather than by row, because the rows move: 25-26 models no
+# additional rate at all, so its 'Adjusted bands' block sits one row higher than 26-27's
+# and a row-based read takes the adjusted personal allowance of 475.83 for a 45% rate --
+# storing it as 47,583%. The section is needed as well as the band because 'Personal
+# allowance', 'Basic rate' and 'Higher rate' each appear twice, once raw and once adjusted.
+SALARY_BANDS: dict[tuple[str, str], str] = {
+    ("NI", "LEL"): "ni_lower_earnings_limit",
+    ("NI", "UEL"): "ni_upper_earnings_limit",
+    ("NI", "Lower rate"): "ni_lower_rate",
+    ("NI", "Higher rate"): "ni_higher_rate",
+    ("PAYE", "Personal allowance"): "personal_allowance",
+    ("PAYE", "Basic rate threshold"): "basic_rate_threshold",
+    ("PAYE", "Higher rate threshold"): "higher_threshold",
+    ("PAYE", "Basic rate"): "basic_rate",
+    ("PAYE", "Higher rate"): "higher_rate",
+    ("PAYE", "Additional rate"): "additional_rate",
+    ("Adjusted bands", "Basic rate"): "basic_band",  # D28 - D22
 }
+
+# The personal allowance is tapered in steps, each with its own start date in column F.
+_PA_STEP = re.compile(r"^PA\s*-\s*\d+$")
 
 # Held as percentages rather than fractions -- see models.SalaryAssumption. The workbook
 # stores them as fractions, so they are scaled on the way in.
@@ -654,22 +664,40 @@ def read_salary_assumptions(
     """(key, effective_from, monthly value) for the PAYE/NI bands.
 
     Everything except the personal-allowance steps applies from the start of the year; the
-    steps carry their own dates in F24:F27.
+    steps carry their own start dates alongside them.
+
+    A band the workbook does not model is simply absent from the result rather than read as
+    zero -- 25-26 has no additional rate, and a 0% additional rate is a different claim from
+    'not stated'.
     """
     ws = values["Salary tracker"]
     year_start = dt.date(tax_year, 4, 1)
 
     out = []
-    for key, row in SALARY_BANDS.items():
-        value = _dec(ws.cell(row, 4).value)
-        out.append((key, year_start, value * 100 if key in RATE_KEYS else value))
-
-    for row in range(24, 28):
-        raw = ws.cell(row, 6).value  # F: effective from
-        if raw is None:
+    section = None
+    for row in range(17, ws.max_row + 1):
+        heading = _clean(ws.cell(row, 2).value)  # B: NI | PAYE | Adjusted bands
+        if heading:
+            section = str(heading)
+        band = _clean(ws.cell(row, 3).value)  # C
+        if not band or section is None:
             continue
-        start = raw.date() if isinstance(raw, dt.datetime) else raw
-        out.append(("personal_allowance_adjustment", start, _dec(ws.cell(row, 4).value)))
+        band = str(band)
+
+        if _PA_STEP.match(band):
+            raw = ws.cell(row, 6).value  # F: effective from
+            if raw is not None:
+                start = raw.date() if isinstance(raw, dt.datetime) else raw
+                out.append(
+                    ("personal_allowance_adjustment", start, _dec(ws.cell(row, 4).value))
+                )
+            continue
+
+        key = SALARY_BANDS.get((section, band))
+        if key is None:
+            continue
+        value = _dec(ws.cell(row, 4).value)  # D: the monthly figure
+        out.append((key, year_start, value * 100 if key in RATE_KEYS else value))
 
     return out
 
@@ -701,15 +729,65 @@ def read_payslips(values: Workbook, ref: RefData) -> list[dict]:
     return rows
 
 
+# A bonus month's annual salary written as its two parts: '=126022.4+7854'.
+_SALARY_PLUS_BONUS = re.compile(r"^=\s*(-?\d+(?:\.\d+)?)\s*\+\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def read_salary_extras(
+    formulas: Workbook, values: Workbook, ref: RefData
+) -> dict[str, tuple[Decimal | None, Decimal]]:
+    """period -> (annual salary, bonus), read from the formulas rather than the values.
+
+    A bonus is never a field of its own in the workbook; it is welded into whichever cell
+    was convenient, and the two workbooks chose differently:
+
+        26-27 May   P5 = ROUND(O5/12,2)+29028.48        O holds the salary
+        25-26 May   O5 = 126022.4+7854                  O holds salary *plus* bonus
+                    P5 = ROUND((O5-7854)/12,2)+7854
+
+    Column P's trailing constant is the bonus in both. What differs is column O: read as a
+    value, 25-26's May says the annual salary was 133,876.40, which turns one month's bonus
+    into a pay rise that reverses the month after -- and leaves a bonus of 7,199.50, a
+    figure that appears nowhere and that nobody was ever paid.
+
+    Deriving the bonus as expected_gross - salary/12 gets 26-27 right and 25-26 wrong, so
+    both come from the formulas here.
+    """
+    fws, vws = formulas["Salary tracker"], values["Salary tracker"]
+
+    out: dict[str, tuple[Decimal | None, Decimal]] = {}
+    for row in range(4, 16):
+        month = _clean(vws.cell(row, 2).value)
+        if not month:
+            continue
+        match = _TRAILING_CONSTANT.search(str(fws.cell(row, 16).value or ""))  # P
+        bonus = Decimal(match.group(1).replace(" ", "")) if match else Decimal("0")
+
+        salary = _dec(vws.cell(row, 15).value) or None  # O
+        split = _SALARY_PLUS_BONUS.match(str(fws.cell(row, 15).value or ""))
+        if split and bonus and Decimal(split.group(2)) == bonus:
+            salary = Decimal(split.group(1))
+
+        out[ref.period_for(str(month))] = (salary, bonus)
+    return out
+
+
 def read_cards(values: Workbook) -> list[dict]:
-    """Balance Transfer Cards: parameters from P3:S7, opening balance from the schedule."""
+    """Balance Transfer Cards: the parameter block, and each card's opening from the
+    schedule beside it.
+
+    Neither is at a fixed column. The schedule carries two columns per card, so the
+    parameter block starts wherever the last card leaves off -- P3 in 26-27 with five
+    cards, N3 in 25-26 with four. Reading 26-27's column against 25-26 lands on 'Term
+    (months)' and names a card '10'.
+    """
     ws = values["Balance Transfer Cards"]
 
     # Balance columns start at C and repeat every two columns (balance, payment). A card
     # taken out mid-year is zero until it starts, so the opening is the first non-zero row
     # rather than April's -- Halifax and MBNA 2 both begin in June.
     balances: dict[str, tuple[Decimal, dt.date]] = {}
-    for col in range(3, 14, 2):
+    for col in range(3, ws.max_column + 1, 2):
         name = _clean(ws.cell(2, col).value)
         if not name or str(name) == "Total":
             continue
@@ -721,11 +799,21 @@ def read_cards(values: Workbook) -> list[dict]:
                 balances[str(name)] = (amount, start)
                 break
 
+    # 'Payment dates' heads the first parameter column; the card names are the column
+    # before it, and term and minimum payment the two after.
+    name_col = None
+    for col in range(3, ws.max_column + 1):
+        if str(ws.cell(2, col).value or "").strip() == "Payment dates":
+            name_col = col - 1
+            break
+    if name_col is None:
+        raise ValueError("Balance Transfer Cards: no 'Payment dates' heading in row 2")
+
     cards = []
-    for order, row in enumerate(range(3, 8)):
-        name = _clean(ws.cell(row, 16).value)  # P
+    for order, row in enumerate(range(3, ws.max_row + 1)):
+        name = _clean(ws.cell(row, name_col).value)
         if not name:
-            continue
+            break  # the block is contiguous; the first gap ends it
         # A card that never carries a balance still gets a sensible start date rather than
         # a sentinel: Tesco is zero throughout.
         first_row = ws.cell(4, 2).value
@@ -738,9 +826,13 @@ def read_cards(values: Workbook) -> list[dict]:
                 "name": str(name),
                 "opening_balance": opening,
                 "opening_date": start,
-                "payment_day": int(ws.cell(row, 17).value) if ws.cell(row, 17).value else None,
-                "term_months": int(_dec(ws.cell(row, 18).value)),
-                "min_payment_pct": _dec(ws.cell(row, 19).value),
+                "payment_day": (
+                    int(ws.cell(row, name_col + 1).value)
+                    if ws.cell(row, name_col + 1).value
+                    else None
+                ),
+                "term_months": int(_dec(ws.cell(row, name_col + 2).value)),
+                "min_payment_pct": _dec(ws.cell(row, name_col + 3).value),
                 "display_order": order,
             }
         )
