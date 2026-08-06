@@ -294,7 +294,62 @@ PHANTOM_ROWS: dict[int, str] = {
 }
 
 
-def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
+@dataclass(frozen=True)
+class Corrections:
+    """The known bad rows of one workbook, and the year its ledger belongs to.
+
+    Every fix is keyed by source row and states the value it expects to find, so a workbook
+    that has changed since the fix was confirmed raises rather than silently correcting the
+    wrong row. That contract is per *workbook*: 25-26 and 26-27 are different files with
+    different bad rows, and applying one file's fixes to the other would be exactly the
+    silent corruption the row check exists to prevent.
+
+    Backfilling is why this is a parameter rather than four module constants. The year check
+    used to be `date.year != 2026`, which rejected every genuine 2025 date -- and would have
+    rejected January 2027 too, once the current year runs that far.
+    """
+
+    tax_year: int
+    dates: dict[int, tuple[dt.date, dt.date]] = field(default_factory=dict)
+    amounts: dict[int, tuple[Decimal, Decimal]] = field(default_factory=dict)
+    categories: dict[int, tuple[str, str]] = field(default_factory=dict)
+    phantoms: dict[int, str] = field(default_factory=dict)
+
+    def covers(self, date: dt.date) -> bool:
+        """April of the tax year through March of the next -- the fiscal year, not the
+        calendar one."""
+        return dt.date(self.tax_year, 4, 1) <= date <= dt.date(self.tax_year + 1, 3, 31)
+
+
+CORRECTIONS_26_27 = Corrections(
+    tax_year=2026,
+    dates=DATE_FIXES,
+    amounts=AMOUNT_FIXES,
+    categories=CATEGORY_FIXES,
+    phantoms=PHANTOM_ROWS,
+)
+
+# Budget 25-26.xlsm. Confirmed with the user on 6 August 2026:
+#   row 2     the same template seed row as 26-27 -- imported for the audit trail and
+#             soft-deleted, so it carries no weight
+#   row 1169  GBP 15 Omaze on Amex, identifier 1101_AME_0 and month 'November', so only the
+#             year was wrong
+#   row 1929  GBP 500.61 NY hotel on 29 March; the real figure is 499.85, and the 76p is
+#             exactly what stopped Platinum Amex's opening reconciling across the year end
+CORRECTIONS_25_26 = Corrections(
+    tax_year=2025,
+    dates={
+        2: (dt.date(2019, 4, 1), dt.date(2025, 4, 1)),
+        1169: (dt.date(2022, 11, 1), dt.date(2025, 11, 1)),
+    },
+    amounts={1929: (Decimal("500.61"), Decimal("499.85"))},
+    phantoms={2: "Template seed row: no matching entry in the April tab"},
+)
+
+
+def read_ledger(
+    values: Workbook, corrections: Corrections = CORRECTIONS_26_27
+) -> tuple[list[LedgerRow], list[str]]:
     """Read the Debug sheet positionally.
 
     Columns B and C are read by position, not header: New_entry writes the identifier to B
@@ -312,20 +367,21 @@ def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
 
         date = raw_date.date() if isinstance(raw_date, dt.datetime) else raw_date
 
-        if r in DATE_FIXES:
-            expected, corrected = DATE_FIXES[r]
+        if r in corrections.dates:
+            expected, corrected = corrections.dates[r]
             if date != expected:
                 raise ValueError(
                     f"Debug row {r}: expected known-bad date {expected}, found {date}. "
-                    "The workbook has changed -- re-verify DATE_FIXES before importing."
+                    "The workbook has changed -- re-verify the workbook's date fixes before importing."
                 )
             notes.append(f"row {r}: corrected date {expected} -> {corrected}")
             date = corrected
             applied_fixes += 1
-        elif date.year != 2026:
+        elif not corrections.covers(date):
             raise ValueError(
-                f"Debug row {r}: unexpected out-of-year date {date}. Add it to DATE_FIXES "
-                "after confirming the correct value."
+                f"Debug row {r}: date {date} is outside the "
+                f"{corrections.tax_year}/{str(corrections.tax_year + 1)[-2:]} fiscal year. "
+                "Add it to the workbook's date fixes after confirming the correct value."
             )
 
         account_from = _clean(ws.cell(r, 4).value)
@@ -336,12 +392,12 @@ def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
             )
 
         amount = _dec(ws.cell(r, 10).value)
-        if r in AMOUNT_FIXES:
-            expected, corrected = AMOUNT_FIXES[r]
+        if r in corrections.amounts:
+            expected, corrected = corrections.amounts[r]
             if amount != expected:
                 raise ValueError(
                     f"Debug row {r}: expected known-bad amount {expected}, found {amount}. "
-                    "The workbook has changed -- re-verify AMOUNT_FIXES before importing."
+                    "The workbook has changed -- re-verify the workbook's amount fixes before importing."
                 )
             notes.append(
                 f"row {r}: amount {expected} -> {corrected} (month tab is authoritative)"
@@ -350,12 +406,12 @@ def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
             applied_amount_fixes += 1
 
         category = _clean(ws.cell(r, 9).value)
-        if r in CATEGORY_FIXES:
-            expected, corrected = CATEGORY_FIXES[r]
+        if r in corrections.categories:
+            expected, corrected = corrections.categories[r]
             if category != expected:
                 raise ValueError(
                     f"Debug row {r}: expected category {expected!r}, found {category!r}. "
-                    "The workbook has changed -- re-verify CATEGORY_FIXES before importing."
+                    "The workbook has changed -- re-verify the workbook's category fixes before importing."
                 )
             notes.append(f"row {r}: category {expected!r} -> {corrected!r}")
             category = corrected
@@ -363,8 +419,8 @@ def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
 
         removed = bool(ws.cell(r, 15).value)
         removed_reason = None
-        if r in PHANTOM_ROWS:
-            removed, removed_reason = True, PHANTOM_ROWS[r]
+        if r in corrections.phantoms:
+            removed, removed_reason = True, corrections.phantoms[r]
             notes.append(f"row {r}: soft-deleted -- {removed_reason}")
             applied_phantoms += 1
 
@@ -390,10 +446,10 @@ def read_ledger(values: Workbook) -> tuple[list[LedgerRow], list[str]]:
         )
 
     for label, applied, expected_total in (
-        ("date", applied_fixes, len(DATE_FIXES)),
-        ("amount", applied_amount_fixes, len(AMOUNT_FIXES)),
-        ("category", applied_category_fixes, len(CATEGORY_FIXES)),
-        ("phantom", applied_phantoms, len(PHANTOM_ROWS)),
+        ("date", applied_fixes, len(corrections.dates)),
+        ("amount", applied_amount_fixes, len(corrections.amounts)),
+        ("category", applied_category_fixes, len(corrections.categories)),
+        ("phantom", applied_phantoms, len(corrections.phantoms)),
     ):
         if applied != expected_total:
             raise ValueError(
