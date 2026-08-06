@@ -127,6 +127,16 @@ for period in data["all_periods"]:
             return None
         return as_decimal(salary_part) + as_decimal(bonus_part)
 
+    # A month is only 'actual' once something has actually been paid. The workbook carried
+    # its standing assumptions -- benefits and additional pay -- on all twelve months, so a
+    # payslip row exists for months still to come and its figures would otherwise appear
+    # under Pension (A) and Home working (A) beside a blank gross and a blank net. An
+    # assumption about next March is not an actual, whatever column it is stored in.
+    has_actual = paid("gross") is not None or paid("net") is not None
+
+    def recorded(column: str):
+        return actual[column] if actual is not None and has_actual else None
+
     parts = expected.components if expected else None
     rows.append(
         {
@@ -146,8 +156,8 @@ for period in data["all_periods"]:
             # and inclusive of the home working allowance, which base-plus-car is not.
             "expected_gross": parts.payslip_gross if parts else None,
             "bonus_gross": bonus["gross"] if bonus is not None else None,
-            "holiday_pay": actual["holiday_pay"] if actual is not None else None,
-            "benefits": actual["benefits"] if actual is not None else None,
+            "holiday_pay": recorded("holiday_pay"),
+            "benefits": recorded("benefits"),
             # The recorded 'benefits' is the workbook's lumped figure: pension *and* holiday
             # pay. Shown as-is beside its own holiday pay column it counts that twice, and
             # reads 1,177.88 against an expected pension of 990.88 -- a discrepancy of
@@ -155,10 +165,10 @@ for period in data["all_periods"]:
             # reproduces the expected pension to the penny in every recorded month.
             "actual_pension": (
                 actual["benefits"] - as_decimal(actual["holiday_pay"])
-                if actual is not None and pd.notna(actual["benefits"])
+                if has_actual and actual is not None and pd.notna(actual["benefits"])
                 else None
             ),
-            "additional": actual["additional"] if actual is not None else None,
+            "additional": recorded("additional"),
             "actual_ni": paid("ni"),
             "expected_ni": expected.ni if expected else None,
             "actual_paye": paid("paye"),
