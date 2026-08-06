@@ -426,6 +426,9 @@ class Card(Base):
     opening_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     payment_day: Mapped[int | None] = mapped_column(Integer)
     term_months: Mapped[int] = mapped_column(Integer, nullable=False)
+    # A percentage, not a fraction: 2.5, not 0.025. As a fraction in a Money column it
+    # could only ever be a whole percentage point, so every card at 2.5% was stored --
+    # and charged -- at 3%. Same reasoning as SalaryAssumption above.
     min_payment_pct: Mapped[Decimal] = mapped_column(Money, nullable=False)
     credit_limit: Mapped[Decimal | None] = mapped_column(Money)
     display_order: Mapped[int | None] = mapped_column(Integer)

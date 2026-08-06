@@ -832,7 +832,8 @@ def read_cards(values: Workbook) -> list[dict]:
                     else None
                 ),
                 "term_months": int(_dec(ws.cell(row, name_col + 2).value)),
-                "min_payment_pct": _dec(ws.cell(row, name_col + 3).value),
+                # The workbook holds a fraction; the database holds a percentage.
+                "min_payment_pct": _dec(ws.cell(row, name_col + 3).value) * 100,
                 "display_order": order,
             }
         )
@@ -884,6 +885,58 @@ def read_cycling(values: Workbook) -> tuple[list[dict], list[dict], dict[str, De
             rates[set_flags[0]] = amount
 
     return outgoings, days, rates
+
+
+@dataclass
+class CardBill:
+    index: int  # the n of xlCardBillEom<n><Month>
+    name: str | None  # from the header row, where the tab has one
+    bill_eom: Decimal
+    statement_day: int | None
+    payment_day: int | None
+
+
+def read_card_bills(values: Workbook, month: str) -> list[CardBill]:
+    """One month tab's credit card statement block, from its defined names.
+
+    `xlCardBillEom1<Month>` onwards, one per card, which is what makes this work where
+    reading by label did not: the block sits at a different row in each tab, and 25-26
+    carries no header row naming its columns at all -- so a reader that found the block by
+    its 'Credit card bill BoM' label and then took the names two rows above it came back
+    with nothing for that workbook, and reported the year as having no statements.
+
+    The statement and payment days sit two and four rows below the EoM figure. They are
+    returned so a caller can check its own idea of which column is which card against the
+    workbook's, rather than trusting a mapping nobody can see.
+    """
+    bills: list[CardBill] = []
+    for index in range(1, 10):
+        name = f"xlCardBillEom{index}{month}"
+        if name not in values.defined_names:
+            break
+        sheet, col, row, _, _ = resolve(values, name)
+        ws = values[sheet]
+
+        # A tab that names its columns does so a few rows above the figure; 25-26 does not.
+        header = None
+        for above in range(row - 1, row - 8, -1):
+            candidate = _clean(ws.cell(above, col).value)
+            if isinstance(candidate, str):
+                header = candidate
+                break
+
+        statement_day = ws.cell(row + 2, col).value
+        payment_day = ws.cell(row + 4, col).value
+        bills.append(
+            CardBill(
+                index=index,
+                name=header,
+                bill_eom=_dec(ws.cell(row, col).value),
+                statement_day=int(statement_day) if statement_day else None,
+                payment_day=int(payment_day) if payment_day else None,
+            )
+        )
+    return bills
 
 
 def summary_matrix(values: Workbook, ref: RefData) -> tuple[int, dict[int, str], range]:

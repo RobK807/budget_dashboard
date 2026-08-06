@@ -43,11 +43,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from budget import config, service, xlsm_reader as xr
-from budget.db import make_engine, make_session_factory
+from budget.db import create_all, make_engine, make_session_factory
 from budget.models import (
     Account,
     Bonus,
     Card,
+    CardStatement,
     Category,
     Classification,
     CyclingDay,
@@ -58,6 +59,8 @@ from budget.models import (
     Payslip,
     SalaryAssumption,
     SalaryProfile,
+    SavingsAdjustment,
+    SavingsPlan,
     Txn,
 )
 from budget.postings import postings_for
@@ -109,6 +112,48 @@ CARD_PLAN: dict[str, str] = {
     "Halifax": "Halifax 2025",  # a separate, earlier borrowing
 }
 
+# Which card each xlCardBillEom<n><Month> cell belongs to, for a workbook whose statement
+# block carries no header row. 25-26 has none -- 26-27 names its columns four rows above the
+# figure, 25-26 names them nowhere -- so the order has to be stated, and the user did:
+# index 1 is the BA Amex bill, index 2 Mastercard.
+#
+# Checked rather than trusted: the block also holds each card's statement and payment day,
+# and _backfill_card_bills refuses if those disagree with the account they are claimed for.
+CARD_BILL_COLUMNS: dict[int, tuple[str, ...]] = {
+    2025: ("BA Amex", "Mastercard"),
+}
+
+# The savings plan for the months before the interest tracker begins.
+#
+# 25-26's Summary column G is one figure a month with no breakdown behind it -- 750 from
+# April to September -- and column M is 0 until July, then 50. The user confirmed the whole
+# of the savings figure went into Savings - Marcus, and that the 50 is the Stocks & Shares
+# ISA. From 1 August 2025 the tracker takes over: it holds the real per-account split, it
+# disagrees with column G, and the user asked for it to win. It is already in the database,
+# seeded from the *26-27* workbook, which is where that history is kept.
+#
+# Dating is per account, not per revision (repo.plan_in_force), so Marcus's 750 needs no
+# closing zero -- the tracker's 1 August row supersedes it, and nothing else claimed a
+# target in the meantime.
+PRE_TRACKER_PLAN: dict[int, dict[dt.date, dict[str, Decimal]]] = {
+    2025: {
+        dt.date(2025, 4, 1): {"Savings - Marcus": Decimal("750")},
+        dt.date(2025, 7, 1): {"Stocks & Shares ISA": Decimal("50")},
+    },
+}
+
+# Planned one-off withdrawals, the figures the user gave from Summary column G. All three
+# land on Savings - Marcus, which is where the money actually left from: 6,757.54 on 14
+# October, 6,796.29 on 5 December, and February's 823.37 and 1,860.82. It is the working
+# pot the standing plan also feeds.
+SAVINGS_ADJUSTMENTS: dict[int, tuple[tuple[str, str, Decimal, str], ...]] = {
+    2025: (
+        ("2025-10", "Savings - Marcus", Decimal("-6700"), "Planned withdrawal"),
+        ("2025-12", "Savings - Marcus", Decimal("-4000"), "Planned withdrawal"),
+        ("2026-02", "Savings - Marcus", Decimal("-4000"), "Planned withdrawal"),
+    ),
+}
+
 
 def db_accounts_for_block(block_name: str) -> tuple[str, ...]:
     """The database accounts one month-tab column stands for. Identity for anything the
@@ -117,10 +162,10 @@ def db_accounts_for_block(block_name: str) -> tuple[str, ...]:
         return BLOCK_TO_DB[block_name]
     return (ACCOUNT_ALIASES.get(block_name, block_name),)
 
-# Stage one only: reference data. Clear this once transactions, opening balances,
-# salary, cycling, cards and the savings plan are all in, so a half-built import cannot
-# be committed to a real database by accident.
-INCOMPLETE = True
+# Every section is written now: reference data, opening balances, the ledger, salary,
+# cycling, cards, card statements and the savings plan. The guard stays as the switch a
+# half-finished section would be turned off with.
+INCOMPLETE = False
 
 
 def account_for(name: str, row: xr.LedgerRow) -> str:
@@ -409,8 +454,134 @@ def backfill(session: Session, workbook: Path, verbose: bool = False) -> list[st
     done += _backfill_salary(session, values, formulas, ref)
     done += _backfill_cycling(session, values, ref)
     done += _backfill_cards(session, values)
+    done += _backfill_card_bills(session, values, ref)
+    done += _backfill_savings_plan(session, ref)
 
     return done
+
+
+# ------------------------------------------------------------------------ savings plan
+
+
+def _backfill_savings_plan(session, ref: xr.RefData) -> list[str]:
+    """The months the interest tracker does not reach, and the year's planned one-offs.
+
+    Only the part the tracker cannot supply. From August 2025 the plan is already here --
+    seeded from the 26-27 workbook, which keeps the history -- so writing 25-26's Summary
+    column G over it would replace a per-account split with a single lump sum.
+    """
+    year = ref.tax_year
+    periods = set(ref.period_for(m) for m in xr.FISCAL_MONTHS)
+    accounts = {a.name: a for a in session.scalars(select(Account))}
+    done: list[str] = []
+
+    added = 0
+    for effective_from, amounts in sorted(PRE_TRACKER_PLAN.get(year, {}).items()):
+        for name, amount in amounts.items():
+            account = accounts.get(name)
+            if account is None:
+                raise ValueError(f"No account named {name!r} for the savings plan.")
+            if session.scalar(
+                select(SavingsPlan).where(
+                    SavingsPlan.account_id == account.id,
+                    SavingsPlan.effective_from == effective_from,
+                )
+            ):
+                continue
+            session.add(
+                SavingsPlan(
+                    account_id=account.id, effective_from=effective_from, amount=amount
+                )
+            )
+            added += 1
+            done.append(f"    {effective_from}: {name} {amount}")
+    done.insert(0, f"savings plan: {added} row(s) before the interest tracker")
+
+    existing = session.scalar(
+        select(func.count())
+        .select_from(SavingsAdjustment)
+        .where(SavingsAdjustment.period.in_(periods))
+    )
+    if existing:
+        raise ValueError(f"Savings adjustments already exist in {year}/{str(year + 1)[-2:]}.")
+
+    one_offs = SAVINGS_ADJUSTMENTS.get(year, ())
+    for period, name, amount, note in one_offs:
+        account = accounts.get(name)
+        if account is None:
+            raise ValueError(f"No account named {name!r} for a savings adjustment.")
+        session.add(
+            SavingsAdjustment(
+                period=period, account_id=account.id, amount=amount, note=note
+            )
+        )
+        done.append(f"    {period}: {name} {amount} ({note})")
+    done.append(f"savings adjustments: {len(one_offs)}")
+
+    session.flush()
+    return done
+
+
+# ------------------------------------------------------------------- card statements
+
+
+def _backfill_card_bills(session, values, ref: xr.RefData) -> list[str]:
+    """Each month tab's closing credit card statement.
+
+    Zeroes are stored as well as figures. For a year that has finished, a card billing
+    nothing is a fact about that month; leaving the row out would say the month is unknown.
+    """
+    year = ref.tax_year
+    periods = [ref.period_for(m) for m in xr.FISCAL_MONTHS]
+    if session.scalar(
+        select(func.count()).select_from(CardStatement).where(CardStatement.period.in_(periods))
+    ):
+        raise ValueError(f"Card statements already exist for {year}/{str(year + 1)[-2:]}.")
+
+    stated = CARD_BILL_COLUMNS.get(year, ())
+    accounts = {a.name: a for a in session.scalars(select(Account))}
+    written = 0
+    seen: set[str] = set()
+
+    for month, period in zip(xr.FISCAL_MONTHS, periods):
+        for bill in xr.read_card_bills(values, month):
+            name = bill.name or (
+                stated[bill.index - 1] if bill.index <= len(stated) else None
+            )
+            if name is None:
+                raise ValueError(
+                    f"{month}: xlCardBillEom{bill.index}{month} belongs to no known card. "
+                    "The tab names no columns, so add the order to CARD_BILL_COLUMNS."
+                )
+            name = ACCOUNT_ALIASES.get(name, name)
+            account = accounts.get(name)
+            if account is None:
+                raise ValueError(f"{month}: no account named {name!r} for the card bill.")
+
+            # The block's own statement and payment days must agree with the account they
+            # are being filed against. Without this the column order is an unverifiable
+            # claim, and getting it backwards would silently swap two cards' whole year.
+            for label, from_tab, stored in (
+                ("statement", bill.statement_day, account.statement_day),
+                ("payment", bill.payment_day, account.payment_day),
+            ):
+                if from_tab is not None and stored is not None and from_tab != stored:
+                    raise ValueError(
+                        f"{month}: xlCardBillEom{bill.index}{month} is claimed for {name}, "
+                        f"but the tab's {label} day is {from_tab} where {name} uses "
+                        f"{stored}. The column order is wrong."
+                    )
+
+            session.add(
+                CardStatement(
+                    period=period, account_id=account.id, bill_eom=bill.bill_eom
+                )
+            )
+            written += 1
+            seen.add(name)
+
+    session.flush()
+    return [f"card statements: {written} across {len(seen)} card(s) -- {', '.join(sorted(seen))}"]
 
 
 # ------------------------------------------------------------------------------- salary
@@ -621,6 +792,13 @@ def main(argv: list[str] | None = None) -> int:
 
     engine = make_engine(args.db)
     try:
+        # Migrate first, and never assume the dashboard has already done it. This writes
+        # values in the units the *current* code uses -- a card's minimum payment is a
+        # percentage since schema 8 -- so running against an unmigrated file would leave
+        # 2.50 sitting in a column where every other row still held 0.03.
+        for line in create_all(engine):
+            print(f"  migrated: {line}")
+
         with make_session_factory(engine)() as session:
             try:
                 report = backfill(session, args.workbook, args.verbose)

@@ -46,9 +46,14 @@ def schedule(
 
     The final instalment settles whatever is left, which is what the `IF(A5 = term, C5, …)`
     branch does -- the promotional period ends and the balance is due.
+
+    `min_payment_pct` is a percentage, not a fraction: 2.5, not 0.025. Everything that
+    names this value now speaks that unit, so no caller can convert it twice or forget to
+    convert it at all -- which is how 2.5% came to be stored, and charged, as 3%.
     """
     rows: list[Instalment] = []
     balance = Decimal(opening_balance)
+    rate = Decimal(min_payment_pct) / 100
 
     for month in range(term_months + 1):
         if balance <= 0:
@@ -56,9 +61,7 @@ def schedule(
         if month == term_months:
             payment = balance
         else:
-            payment = (balance * Decimal(min_payment_pct)).quantize(
-                PENCE, rounding=ROUND_HALF_UP
-            )
+            payment = (balance * rate).quantize(PENCE, rounding=ROUND_HALF_UP)
             payment = min(payment, balance)
 
         closing = balance - payment

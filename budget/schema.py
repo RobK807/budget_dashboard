@@ -30,7 +30,7 @@ from pathlib import Path
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class SchemaTooNew(RuntimeError):
@@ -232,6 +232,26 @@ def stamp_current_version(engine: Engine) -> None:
         )
 
 
+def _rescale_min_payments_to_percentages(cursor) -> int:
+    """Multiply card.min_payment_pct by 100, once. The same fix as the tax rates, and for
+    the same reason.
+
+    Held as a fraction in a Money column, a minimum payment could only ever be a whole
+    percentage point: 2.5% is 0.025, which rounds to 0.03 on the way in. Every card at 2.5%
+    was therefore stored, displayed and *charged* at 3%. The Settings page made it look
+    deliberate -- it multiplied by 100 to show '2.5' and divided by 100 to save, so the
+    figure survived on screen and was lost on disk.
+
+    Guarded by the stored schema version, not by the values: 0.025 and 2.5 are both
+    plausible, so a second run would turn 2.5% into 250%.
+
+    This recovers the scale, not the lost precision. A card already rounded to 0.03 becomes
+    3.00, and only its own paperwork can say whether that was ever meant to be 2.5.
+    """
+    cursor.execute("UPDATE card SET min_payment_pct = min_payment_pct * 100")
+    return cursor.rowcount
+
+
 def _rescale_rates_to_percentages(cursor) -> int:
     """Multiply the rate rows by 100, once.
 
@@ -326,6 +346,15 @@ def apply_migrations(engine: Engine) -> list[str]:
                 split = _split_out_base_salary(cursor)
                 if split:
                     applied.append(f"base salary split out of {split} salary record(s)")
+
+            if was_at < 8 and cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='card'"
+            ).fetchone():
+                changed = _rescale_min_payments_to_percentages(cursor)
+                if changed:
+                    applied.append(
+                        f"card minimum payments rescaled to percentages ({changed} row(s))"
+                    )
 
             if was_at != SCHEMA_VERSION:
                 cursor.execute(

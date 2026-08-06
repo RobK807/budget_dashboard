@@ -80,7 +80,7 @@ summary["clears"] = summary["name"].map(
 summary["balance_today"] = summary["name"].map(
     lambda n: cards_module.balance_on(schedules[n], today)
 )
-summary["min_pct"] = (summary["min_payment_pct"].astype(float) * 100).round(2)
+summary["min_pct"] = summary["min_payment_pct"].astype(float).round(2)
 
 st.dataframe(
     ui.money_table(

@@ -276,3 +276,60 @@ class TestStoredVersion:
 
     def test_a_missing_file_makes_no_claim(self, tmp_path):
         assert stored_version(tmp_path / "absent.db") == 0
+
+
+class TestMinimumPaymentsBecomePercentages:
+    """Schema 8. As a fraction in a Money column a minimum payment could only ever be a
+    whole percentage point, so every card at 2.5% was stored -- and charged -- at 3%."""
+
+    def card(self, path, min_payment_pct: int) -> int:
+        """Insert a card holding a raw pence value, migrate, return what it holds after."""
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "INSERT INTO card (name, opening_balance, opening_date, term_months, "
+            "min_payment_pct) VALUES ('Test', 100000, '2025-04-01', 24, ?)",
+            (min_payment_pct,),
+        )
+        connection.execute(
+            "UPDATE setting SET value = '7' WHERE key = 'schema_version'"
+        )
+        connection.commit()
+        connection.close()
+
+        engine = make_engine(path)
+        apply_migrations(engine)
+        engine.dispose()
+
+        connection = sqlite3.connect(path)
+        value = connection.execute("SELECT min_payment_pct FROM card").fetchone()[0]
+        connection.close()
+        return value
+
+    def fresh(self, tmp_path):
+        engine = make_engine(tmp_path / "cards.db")
+        create_all(engine)
+        engine.dispose()
+        return tmp_path / "cards.db"
+
+    def test_a_fraction_is_rescaled(self, tmp_path):
+        assert self.card(self.fresh(tmp_path), 1) == 100  # 0.01 -> 1.00%
+
+    def test_a_value_already_rounded_keeps_its_scale_not_its_precision(self, tmp_path):
+        """0.025 was stored as 3 pence before this ran. The migration recovers the scale --
+        3.00% -- but nothing can recover the 2.5 that was thrown away on the way in."""
+        assert self.card(self.fresh(tmp_path), 3) == 300
+
+    def test_running_twice_does_not_rescale_twice(self, tmp_path):
+        path = self.fresh(tmp_path)
+        self.card(path, 1)
+
+        engine = make_engine(path)
+        applied = apply_migrations(engine)
+        engine.dispose()
+
+        connection = sqlite3.connect(path)
+        value = connection.execute("SELECT min_payment_pct FROM card").fetchone()[0]
+        connection.close()
+
+        assert value == 100  # not 10000
+        assert not any("minimum payment" in line for line in applied)

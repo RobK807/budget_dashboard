@@ -530,7 +530,7 @@ with tab_cards:
         st.info("No cards yet.")
     else:
         shown = repo.sort_human(cards, by="name").copy()
-        shown["min_pct"] = (shown["min_payment_pct"].astype(float) * 100).round(2)
+        shown["min_pct"] = shown["min_payment_pct"].astype(float).round(2)
         st.dataframe(
             ui.money_table(
                 shown[["name", "credit_limit", "opening_balance", "opening_date",
@@ -591,7 +591,7 @@ with tab_cards:
                         term_months=int(card_term),
                         # Stored as a fraction, which is what the amortisation expects and
                         # how the workbook's S column held it; shown as a percentage.
-                        min_payment_pct=Decimal(str(card_min)) / 100,
+                        min_payment_pct=Decimal(str(card_min)),
                         payment_day=int(card_pay_day),
                         credit_limit=Decimal(str(card_limit)) or None,
                     )
@@ -631,7 +631,7 @@ with tab_cards:
                 )
                 new_min = row_two[3].number_input(
                     "Minimum %", min_value=0.0, max_value=100.0, step=0.25, format="%.2f",
-                    value=round(float(card["min_payment_pct"]) * 100, 2),
+                    value=round(float(card["min_payment_pct"]), 2),
                 )
 
                 if st.form_submit_button("Save card", disabled=READ_ONLY):
@@ -644,7 +644,7 @@ with tab_cards:
                             opening_date=new_date,
                             term_months=int(new_term),
                             payment_day=int(new_pay_day),
-                            min_payment_pct=Decimal(str(new_min)) / 100,
+                            min_payment_pct=Decimal(str(new_min)),
                         )
                     show_outcome(outcome)
 

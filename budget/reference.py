@@ -469,8 +469,9 @@ def add_card(
 ) -> tuple[Card | None, Outcome]:
     """A balance-transfer card, tracked for payoff.
 
-    `min_payment_pct` is stored as a fraction (0.025), which is how the workbook's S column
-    held it and what cards.schedule expects; the UI shows it as a percentage.
+    `min_payment_pct` is a percentage (2.5), the same unit the UI shows and
+    cards.schedule expects. The workbook's S column holds a fraction; read_cards scales
+    it on the way in.
     """
     name = (name or "").strip()
     if not name:
