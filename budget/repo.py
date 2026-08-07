@@ -1915,6 +1915,7 @@ def savings_series(
     targets: pd.DataFrame,
     periods: list[str],
     today: dt.date | None = None,
+    bucket_targets: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Summary B2:O15 -- savings and investments month by month.
 
@@ -1947,19 +1948,40 @@ def savings_series(
         values = accounts.loc[mask, "savings_seed"].dropna()
         return Decimal(values.sum()) if len(values) else Decimal("0")
 
-    savings_seed = seed_total(accounts["is_savings"].fillna(False).astype(bool))
+    is_savings = accounts["is_savings"].fillna(False).astype(bool)
+    earmarked_mask = accounts["name"].isin(excluded_names)
+    savings_seed = seed_total(is_savings)
+    # Split the same way the balances are, so a basis compares like with like.
+    available_seed = seed_total(is_savings & ~earmarked_mask)
+    reserved_seed = seed_total(is_savings & earmarked_mask)
     investments_seed = seed_total(accounts["is_investment"].fillna(False).astype(bool))
 
     lookup = targets.set_index("period") if not targets.empty else None
+    buckets = (
+        bucket_targets.set_index("period")
+        if bucket_targets is not None and not bucket_targets.empty
+        else None
+    )
+
+    def _at(frame, period: str, column: str) -> Decimal:
+        if frame is None or period not in frame.index:
+            return Decimal("0")
+        value = frame.loc[period, column]
+        return Decimal("0") if pd.isna(value) else Decimal(value)
 
     def target_for(period: str, column: str) -> Decimal:
-        if lookup is None or period not in lookup.index:
-            return Decimal("0")
-        value = lookup.loc[period, column]
-        return Decimal("0") if pd.isna(value) else Decimal(value)
+        return _at(lookup, period, column)
+
+    def bucket_for(period: str, column: str) -> Decimal:
+        """Falls back to the whole savings target where no split is supplied, which is what
+        every caller got before there was one."""
+        if buckets is None:
+            return target_for(period, "savings") if column == "available" else Decimal("0")
+        return _at(buckets, period, column)
 
     rows: list[dict] = []
     savings_to_date, investments_to_date = savings_seed, investments_seed
+    available_to_date, reserved_to_date = available_seed, reserved_seed
 
     for period in periods:
         balances = account_balances(postings, openings, period, accounts)
@@ -1987,8 +2009,15 @@ def savings_series(
 
         savings_target = target_for(period, "savings")
         investments_target = target_for(period, "investments")
+        # Per bucket as well as in total. A target set against an earmarked pot is not a
+        # target the available balance was ever asked to meet, so measuring one against the
+        # other reports a shortfall that belongs to neither.
+        available_target = bucket_for(period, "available")
+        reserved_target = bucket_for(period, "reserved")
         savings_to_date += savings_target
         investments_to_date += investments_target
+        available_to_date += available_target
+        reserved_to_date += reserved_target
 
         rows.append(
             {
@@ -2007,13 +2036,20 @@ def savings_series(
                 "reserved_eom": reserved_eom,
                 "savings_target": savings_target,
                 "savings_target_eom": savings_to_date,
-                "savings_required": savings_to_date - available_eom,
-                # The same cumulative target measured against each of the three balances,
-                # so the Savings table can switch basis without three sets of targets: what
-                # changes is which pot is being asked to meet it, not the figure to meet.
+                "savings_required": available_to_date - available_eom,
+                # Each basis carries its own target as well as its own balance. They were one
+                # figure covering all three, on the reasoning that what changed was which pot
+                # had to meet it -- but an earmarked pot's target is not the available
+                # balance's to meet, so 'required' was wrong on two of the three bases.
+                "total_target": savings_target,
+                "available_target": available_target,
+                "reserved_target": reserved_target,
+                "total_target_eom": savings_to_date,
+                "available_target_eom": available_to_date,
+                "reserved_target_eom": reserved_to_date,
                 "total_required": savings_to_date - savings_eom,
-                "available_required": savings_to_date - available_eom,
-                "reserved_required": savings_to_date - reserved_eom,
+                "available_required": available_to_date - available_eom,
+                "reserved_required": reserved_to_date - reserved_eom,
                 "investments_bom": investments_bom,
                 "investments_added": investments_eom - investments_bom,
                 "investments_eom": investments_eom,

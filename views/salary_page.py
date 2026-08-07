@@ -384,33 +384,27 @@ with tab_compare:
         return as_float(stored_payslip[column]) if stored_payslip is not None else 0.0
 
     with st.form("payslip_entry"):
+        # Earnings on the top line, deductions on the second -- the order a payslip works
+        # down. 'Home working' and 'Pension' are the columns the workbook called 'additional
+        # pay' and 'benefits'; the stored names are unchanged, only what they are called.
         row_one = st.columns(5)
         in_gross = row_one[0].number_input(
-            "Gross pay", value=field("gross"), step=100.0, format="%.2f"
+            "Gross pay", value=field("gross"), step=100.0, format="%.2f",
+            help="Base salary. The car allowance goes in the next box, not this one.",
         )
-        in_ni = row_one[1].number_input(
-            "NI", value=field("ni"), step=10.0, format="%.2f"
+        in_car = row_one[1].number_input(
+            "Car allowance", value=field("car_allowance"), step=10.0, format="%.2f",
+            help="Taxable but not pensionable, so it is recorded apart from gross rather "
+                 "than inside it.",
         )
-        in_paye = row_one[2].number_input(
-            "PAYE", value=field("paye"), step=100.0, format="%.2f"
+        in_additional = row_one[2].number_input(
+            "Home working", value=field("additional"), step=10.0,
+            format="%.2f", help="Paid on top and taxed nowhere — it passes straight to net.",
         )
-        in_holiday = row_one[3].number_input(
-            "Holiday pay", value=field("holiday_pay"), step=10.0, format="%.2f"
-        )
-        in_net = row_one[4].number_input(
+        in_net = row_one[3].number_input(
             "Net pay", value=field("net"), step=100.0, format="%.2f"
         )
-
-        row_two = st.columns(5)
-        in_benefits = row_two[0].number_input(
-            "Benefits", value=field("benefits"), step=10.0, format="%.2f",
-            help="Salary sacrifice — reduces taxable pay and net pay alike",
-        )
-        in_additional = row_two[1].number_input(
-            "Additional pay", value=field("additional"), step=10.0,
-            format="%.2f", help="Added after tax",
-        )
-        in_payday = row_two[2].number_input(
+        in_payday = row_one[4].number_input(
             "Payday",
             value=(
                 int(stored_payslip["payday"])
@@ -419,10 +413,20 @@ with tab_compare:
             ),
             min_value=1, max_value=31, step=1, format="%d",
         )
-        in_car = row_two[3].number_input(
-            "Car allowance", value=field("car_allowance"), step=10.0, format="%.2f",
-            help="Taxable but not pensionable, so it is recorded apart from gross rather "
-                 "than inside it.",
+
+        row_two = st.columns(5)
+        in_paye = row_two[0].number_input(
+            "PAYE", value=field("paye"), step=100.0, format="%.2f"
+        )
+        in_ni = row_two[1].number_input(
+            "NI", value=field("ni"), step=10.0, format="%.2f"
+        )
+        in_benefits = row_two[2].number_input(
+            "Pension", value=field("benefits"), step=10.0, format="%.2f",
+            help="Salary sacrifice — reduces taxable pay and net pay alike",
+        )
+        in_holiday = row_two[3].number_input(
+            "Holiday pay", value=field("holiday_pay"), step=10.0, format="%.2f"
         )
         row_two[4].write("")
 

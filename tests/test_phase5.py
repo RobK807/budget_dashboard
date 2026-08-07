@@ -512,14 +512,50 @@ class TestSavingsSeries:
         assert rows.iloc[0]["savings_required"] == Decimal("300") - Decimal("1200")
         assert rows.iloc[1]["savings_required"] == Decimal("600") - Decimal("1200")
 
-    def test_required_is_offered_on_each_of_the_three_bases(self):
-        """One cumulative target, three balances measured against it: what the basis
-        dropdown switches is which pot is being asked to meet it."""
-        april = self.series().iloc[0]
+    def test_each_basis_carries_its_own_target(self):
+        """Not one target measured against three balances, which is what this used to do.
+        A target set against an earmarked pot is not one the *available* balance was ever
+        asked to meet, so 'required' was wrong on two of the three bases."""
+        buckets = pd.DataFrame(
+            [
+                {"period": "2026-04", "available": Decimal("200"),
+                 "reserved": Decimal("100"), "investments": Decimal("100")},
+                {"period": "2026-05", "available": Decimal("200"),
+                 "reserved": Decimal("100"), "investments": Decimal("100")},
+            ]
+        )
+        april = repo.savings_series(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, self.TARGETS,
+            ["2026-04", "2026-05"], today=dt.date(2026, 6, 1), bucket_targets=buckets,
+        ).iloc[0]
+
+        assert april["available_target"] == Decimal("200")
+        assert april["reserved_target"] == Decimal("100")
+        assert april["available_required"] == Decimal("200") - Decimal("1200")
+        assert april["reserved_required"] == Decimal("100") - Decimal("500")
+        # The total is still the whole savings target against the whole balance.
         assert april["total_required"] == Decimal("300") - Decimal("1700")
+
+    def test_the_buckets_sum_back_to_the_total(self):
+        buckets = pd.DataFrame(
+            [{"period": "2026-04", "available": Decimal("200"),
+              "reserved": Decimal("100"), "investments": Decimal("100")}]
+        )
+        april = repo.savings_series(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, self.TARGETS,
+            ["2026-04"], today=dt.date(2026, 6, 1), bucket_targets=buckets,
+        ).iloc[0]
+
+        assert (
+            april["available_target_eom"] + april["reserved_target_eom"]
+            == april["total_target_eom"]
+        )
+
+    def test_without_a_split_the_whole_target_is_treated_as_available(self):
+        """Nothing says how it divides, and an account is unearmarked unless flagged."""
+        april = self.series().iloc[0]
         assert april["available_required"] == Decimal("300") - Decimal("1200")
-        assert april["reserved_required"] == Decimal("300") - Decimal("500")
-        # The original column is the available basis, which is what it always measured.
+        assert april["reserved_required"] == Decimal("0") - Decimal("500")
         assert april["savings_required"] == april["available_required"]
 
     def test_combined_available_leaves_out_the_earmarked_pots(self):

@@ -32,7 +32,8 @@ if not live_periods:
     st.stop()
 
 series = repo.savings_series(
-    postings, data["openings"], accounts, data["savings_targets"], periods
+    postings, data["openings"], accounts, data["savings_targets"], periods,
+    bucket_targets=data["bucket_targets"],
 )
 
 if series.empty:
@@ -95,12 +96,16 @@ LABELS = {
     "required": "Required",
 }
 
-# The cumulative target is one figure per month whichever pot is being measured against it:
-# what changes with the basis is which balance is being asked to meet it, not the target.
+# Each basis carries its own target as well as its own balance. A target set against an
+# earmarked pot is not one the available balance was ever asked to meet, so a single savings
+# figure across all three made 'Required' wrong on two of them.
 BASES = {
-    "Total": ("savings_bom", "savings_added", "savings_eom", "total_required"),
-    "Available": ("available_bom", "available_added", "available_eom", "available_required"),
-    "Reserved": ("reserved_bom", "reserved_added", "reserved_eom", "reserved_required"),
+    "Total": ("savings_bom", "savings_added", "savings_eom",
+              "total_target", "total_target_eom", "total_required"),
+    "Available": ("available_bom", "available_added", "available_eom",
+                  "available_target", "available_target_eom", "available_required"),
+    "Reserved": ("reserved_bom", "reserved_added", "reserved_eom",
+                 "reserved_target", "reserved_target_eom", "reserved_required"),
 }
 
 head, picker = st.columns([3, 1])
@@ -113,9 +118,9 @@ basis = picker.selectbox(
          "is those pots alone.",
 )
 
-bom, added, eom, required = BASES[basis]
+bom, added, eom, target, target_eom, required = BASES[basis]
 savings = series[
-    ["month", bom, added, eom, "savings_target", "savings_target_eom", required]
+    ["month", bom, added, eom, target, target_eom, required]
 ].set_axis(["month"] + COLUMNS, axis="columns")
 
 st.dataframe(
