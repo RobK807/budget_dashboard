@@ -922,6 +922,18 @@ def running_by_period(
 
     `openings` supplies stated opening balances -- the first month of a year has no prior
     month to roll forward from, and the workbook typed that figure into the formula.
+
+    A stated opening **replaces** what was carried forward rather than adding to it. While
+    there was only ever one year in the database the two could not both apply, so adding was
+    indistinguishable from replacing; backfilling 25-26 put a real March underneath April
+    2026 and the chain then counted the year-end twice, opening at -5,255.13 where it should
+    have been -2,603.34.
+
+    Replacing is also what keeps the current year still reconciling. The derived March close
+    is 19.34 from the stated April opening -- the 25-26 differences the reconciliation
+    accepts, which are real and deliberate -- so preferring the derived figure would move
+    every 2026-27 Excess total off the workbook it is checked against. An explicit opening
+    beats an inferred one.
     """
     rollovers = dict(zip(classifications["name"], classifications["rollover"]))
     stated = (
@@ -936,9 +948,7 @@ def running_by_period(
         if stated is not None:
             for name in classifications["name"]:
                 if (period, name) in stated.index:
-                    opening[name] = opening.get(name, Decimal("0")) + stated.loc[
-                        (period, name)
-                    ]
+                    opening[name] = stated.loc[(period, name)]
 
         frame = running_classification(
             postings, projections, allowances, classifications, period, opening, today

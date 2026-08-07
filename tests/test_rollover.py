@@ -158,3 +158,42 @@ class TestChaining:
         )
         excess = closes[closes["classification"] == "Excess"].iloc[0]["closing"]
         assert excess == Decimal("-2632.45")
+
+    def test_a_stated_opening_replaces_what_was_carried_forward(self):
+        """Backfilling put a real March underneath April 2026. The stated opening is the
+        year-end brought forward, so applying it *and* the carry counts the same year end
+        twice -- which opened April at -5,255.13 instead of -2,603.34.
+
+        The two are not identical here on purpose: the derived close and the stated opening
+        differ by the 25-26 differences the reconciliation accepts, and the explicit figure
+        is the one that wins."""
+        openings = pd.DataFrame(
+            [{"period": "2026-04", "classification": "Excess", "amount": Decimal("-2632.45")}]
+        )
+        _, closes = repo.running_by_period(
+            EMPTY_POSTINGS, NO_PROJECTIONS, NO_ALLOWANCE, CLASSES,
+            ["2026-03", "2026-04"], today=dt.date(2026, 4, 30),
+            openings=pd.concat([
+                pd.DataFrame([{"period": "2026-03", "classification": "Excess",
+                               "amount": Decimal("-2651.79")}]),
+                openings,
+            ], ignore_index=True),
+        )
+        april = closes[(closes["period"] == "2026-04")
+                       & (closes["classification"] == "Excess")].iloc[0]["closing"]
+
+        assert april == Decimal("-2632.45")  # not -5,284.24
+
+    def test_a_month_with_no_stated_opening_still_carries_forward(self):
+        """Replacing must not become 'reset to zero' for the months in between."""
+        openings = pd.DataFrame(
+            [{"period": "2026-04", "classification": "Excess", "amount": Decimal("-100")}]
+        )
+        _, closes = repo.running_by_period(
+            EMPTY_POSTINGS, NO_PROJECTIONS, NO_ALLOWANCE, CLASSES,
+            ["2026-04", "2026-05"], today=dt.date(2026, 5, 31), openings=openings,
+        )
+        may = closes[(closes["period"] == "2026-05")
+                     & (closes["classification"] == "Excess")].iloc[0]["closing"]
+
+        assert may == Decimal("-100")
