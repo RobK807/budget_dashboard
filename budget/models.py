@@ -333,6 +333,10 @@ class Payslip(Base):
     ni: Mapped[Decimal | None] = mapped_column(Money)
     holiday_pay: Mapped[Decimal | None] = mapped_column(Money)
     cycle_to_work: Mapped[Decimal | None] = mapped_column(Money)
+    # The car allowance as the payslip states it, separately from gross. It is taxable but
+    # not pensionable, so lumping it into gross charges the pension against it -- which is
+    # why the expected side has always kept the two apart. This lets the actual side match.
+    car_allowance: Mapped[Decimal | None] = mapped_column(Money)
     paye: Mapped[Decimal | None] = mapped_column(Money)
     net: Mapped[Decimal | None] = mapped_column(Money)
     # Expected side (columns O:W): the inputs the model needs, not its outputs.

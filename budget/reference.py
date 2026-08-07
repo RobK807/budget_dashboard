@@ -682,8 +682,8 @@ def set_payslip(session: Session, period: str, **fields) -> Outcome:
         payslip = Payslip(period=period)
         session.add(payslip)
 
-    for key in ("gross", "ni", "paye", "net", "holiday_pay", "cycle_to_work",
-                "benefits", "additional", "salary", "expected_gross"):
+    for key in ("gross", "car_allowance", "ni", "paye", "net", "holiday_pay",
+                "cycle_to_work", "benefits", "additional", "salary", "expected_gross"):
         if key in fields:
             value = fields[key]
             setattr(payslip, key, Decimal(str(value)) if value is not None else None)

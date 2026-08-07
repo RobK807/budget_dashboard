@@ -1267,8 +1267,10 @@ with tab_savings:
         column_config={
             "name": "Account",
             "kind": "Counts towards",
+            # step, not format, is what constrains what can be typed: at 100 the
+            # column would only take whole hundreds however it was displayed.
             "seed": st.column_config.NumberColumn(
-                "Seed", format="%.2f", min_value=0.0, step=100.0
+                "Seed", format="%.2f", min_value=0.0, step=0.01
             ),
         },
         key="seed_editor",

@@ -640,8 +640,9 @@ def load_class_openings(session: Session) -> pd.DataFrame:
 
 
 def load_payslips(session: Session) -> pd.DataFrame:
-    columns = ["period", "payday", "gross", "ni", "holiday_pay", "cycle_to_work", "paye",
-               "net", "salary", "expected_gross", "benefits", "additional"]
+    columns = ["period", "payday", "gross", "car_allowance", "ni", "holiday_pay",
+               "cycle_to_work", "paye", "net", "salary", "expected_gross", "benefits",
+               "additional"]
     rows = [
         {c: getattr(p, c) for c in columns} for p in session.scalars(select(Payslip))
     ]

@@ -152,6 +152,12 @@ for period in data["all_periods"]:
             "expected_holiday": parts.holiday_pay if parts else None,
             "taxable": parts.taxable if parts else None,
             "actual_gross": paid("gross"),
+            # Gross is base alone, with the car allowance beside it. They are taxed together
+            # but the pension is charged on base only, so a single 'gross' cannot describe
+            # both -- and the payslips are being re-entered to the same granularity.
+            "expected_base": parts.base if parts else None,
+            "expected_car": parts.car if parts else None,
+            "actual_car": actual["car_allowance"] if actual is not None else None,
             # Like for like: the payslip states gross net of the salary-sacrifice pension
             # and inclusive of the home working allowance, which base-plus-car is not.
             "expected_gross": parts.payslip_gross if parts else None,
@@ -220,7 +226,8 @@ with tab_compare:
     # (expected), of which bonus, ... -- meant reading a discrepancy required jumping between
     # neighbouring columns; grouped, one half is scanned against the other.
     PAYSLIP_LINES = [
-        ("Gross", "expected_gross", "actual_gross"),
+        ("Gross", "expected_base", "actual_gross"),
+        ("Car allowance", "expected_car", "actual_car"),
         ("Bonus", "expected_bonus", "bonus_gross"),
         ("Home working", "home_working", "additional"),
         ("Holiday pay", "expected_holiday", "holiday_pay"),
@@ -282,9 +289,10 @@ with tab_compare:
     )
     st.caption(
         ("**(E)** is expected, **(A)** actual. " if view == BOTH else "")
-        + "**Expected gross** is stated as a payslip states it — net of the salary-sacrifice "
-        "pension and inclusive of the home working allowance — so the two gross figures are "
-        "like for like. **Actual gross** is salary **plus** bonus, since the two are separate "
+        + "**Gross** is base salary alone, with the **car allowance** on its own line beside "
+        "it. The two are taxed together — NI and PAYE are charged on the pair — but the "
+        "pension is a percentage of base only, so a single gross figure cannot describe "
+        "both. **Actual gross** is salary **plus** bonus, since the two are separate "
         "payments in the same month, and the bonus line shows how much of it came from the "
         "bonus. Enter each under **Salary and bonus** and below, respectively, so neither "
         "overwrites the other. On the actual side, home working is what the old workbook "
@@ -317,7 +325,7 @@ with tab_compare:
     ]
     st.dataframe(
         ui.money_table(
-            build_up,
+            ui.newest_first(build_up),
             build_up_money,
             labels={
                 "month": "Month",
@@ -411,7 +419,11 @@ with tab_compare:
             ),
             min_value=1, max_value=31, step=1, format="%d",
         )
-        row_two[3].write("")
+        in_car = row_two[3].number_input(
+            "Car allowance", value=field("car_allowance"), step=10.0, format="%.2f",
+            help="Taxable but not pensionable, so it is recorded apart from gross rather "
+                 "than inside it.",
+        )
         row_two[4].write("")
 
         buttons = st.columns([1, 1, 3])
@@ -441,6 +453,7 @@ with tab_compare:
                     benefits=value_or_none(in_benefits),
                     additional=value_or_none(in_additional),
                     payday=in_payday,
+                    car_allowance=value_or_none(in_car),
                 )
             ui.show_outcome(outcome, "the payslip")
 

@@ -383,8 +383,10 @@ with tab_return:
         )
         st.dataframe(
             ui.money_table(
-                shown[["month", "account", "opening", "contributions", "gain", "closing",
-                       "monthly_return"]],
+                ui.newest_first(
+                    shown[["month", "account", "opening", "contributions", "gain",
+                           "closing", "monthly_return"]]
+                ),
                 ["opening", "contributions", "gain", "closing"],
                 labels={
                     "month": "Month", "account": "Account", "opening": "Opening",
