@@ -51,6 +51,8 @@ from budget.models import (
     CardStatement,
     Category,
     Classification,
+    ClassificationAllowance,
+    ClassificationOpening,
     CyclingDay,
     CyclingOutgoing,
     CyclingRate,
@@ -462,7 +464,70 @@ def backfill(session: Session, workbook: Path, verbose: bool = False) -> list[st
     done += _backfill_cards(session, values)
     done += _backfill_card_bills(session, values, ref)
     done += _backfill_savings_plan(session, ref)
+    done += _backfill_rollover_inputs(session, values, formulas, ref)
 
+    return done
+
+
+# --------------------------------------------------------------- the rollover engine
+
+
+def _backfill_rollover_inputs(session, values, formulas, ref: xr.RefData) -> list[str]:
+    """The two figures the running totals need besides the ledger: what each classification
+    carried in, and the daily allowance the month adds on top.
+
+    Both are per year and neither can be inferred. 25-26 opens at -4,239.91 of Excess and
+    +130 of Expenses, typed into April's formulas because the workbook had nowhere to put
+    them, and its allowance moves -- 30 in April, 40 in May, 35 from June. Without them
+    April's running Excess comes out 3,339.91 adrift, and every later month inherits it.
+
+    Projections are deliberately not imported. They only apply to dates after today, the
+    whole of a backfilled year is behind us, and the sheet holds one month at a time -- so
+    there is nothing they could correctly contribute.
+    """
+    classifications = {c.name: c.id for c in session.scalars(select(Classification))}
+    periods = [ref.period_for(m) for m in xr.FISCAL_MONTHS]
+
+    for model, label in (
+        (ClassificationOpening, "openings"),
+        (ClassificationAllowance, "allowances"),
+    ):
+        if session.scalar(
+            select(func.count()).select_from(model).where(model.period.in_(periods))
+        ):
+            raise ValueError(
+                f"Classification {label} already exist for "
+                f"{ref.tax_year}/{str(ref.tax_year + 1)[-2:]}."
+            )
+
+    done: list[str] = []
+    allowances = openings = 0
+    for month, period in zip(xr.FISCAL_MONTHS, periods):
+        amount = xr.read_daily_allowance(values, month)
+        if amount and "Excess" in classifications:
+            session.add(
+                ClassificationAllowance(
+                    period=period,
+                    classification_id=classifications["Excess"],
+                    daily_amount=amount,
+                )
+            )
+            allowances += 1
+
+        for name, value in xr.read_running_opening(formulas, values, month).items():
+            if name in classifications and value:
+                session.add(
+                    ClassificationOpening(
+                        period=period,
+                        classification_id=classifications[name],
+                        amount=value,
+                    )
+                )
+                openings += 1
+                done.append(f"    {month} {name} opens at {value}")
+
+    done.insert(0, f"rollover inputs: {openings} opening(s), {allowances} allowance(s)")
+    session.flush()
     return done
 
 

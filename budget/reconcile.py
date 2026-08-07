@@ -165,7 +165,47 @@ ACCEPTED_25_26: dict[tuple[str, str], str] = {
     ("March", "Travel [Spent]"): (
         "Debug row 1929's 76p: the NY hotel charge at 499.85, not 500.61."
     ),
+    # The Summary sheet deducts these by hand: D6 is `...-10000` and D7 `...-4130`, typed
+    # into the formula. The money is really in the accounts -- 10,000 moved into Savings -
+    # Halifax on 20 June and on to Savings - Wedding on 1 July, of which 4,130 was still
+    # there at month end -- and section A reconciles both accounts in both months, so the
+    # database is right and the workbook is netting off a pot it had no way to earmark.
+    # By August the deduction stops and the two agree again.
+    ("June", "Savings"): "Summary!D6 subtracts 10,000 in the formula itself.",
+    ("July", "Savings"): "Summary!D7 subtracts 4,130 in the formula itself.",
 }
+
+# Running totals are cumulative, so every difference accepted in section B shows up again in
+# the month's closing figure and in every month after it until something cancels it. These
+# are those totals, and they are the sum of what is already above -- May's 28.60 is the four
+# May daily differences added up, June adds row 373's 12.25, July rows 564 and 598, and
+# February takes row 1796's 85.05 back out.
+#
+# Listed month by month rather than derived from the daily ones, so that a *new* difference
+# in any month still fails the gate. Each appears twice in a run: once through Summary
+# (check D) and once through the month tabs (check F), which is what the second loop builds.
+_CUMULATIVE_25_26: dict[tuple[str, str], str] = {
+    ("May", "Excess"): "28.60: -3.20 +7.95 +5.00 +18.85, the four accepted May days.",
+    ("May", "Food"): "4.75: rows 190 and 194 swapped, -3.20 on the 1st and +7.95 on the 2nd.",
+    ("June", "Bills"): "12.25: row 373, which the tab files as Excess.",
+    ("June", "Excess"): "40.85: May's 28.60 plus row 373's 12.25 coming out of Excess.",
+    ("July", "Bills"): "19.50: row 564, which the tab files as Excess.",
+    ("July", "Excess"): "65.71: 40.85 plus row 564's 19.50 and row 598's 5.36.",
+    ("August", "Excess"): "65.71, carried forward unchanged.",
+    ("September", "Excess"): "65.71, carried forward unchanged.",
+    ("October", "Excess"): "65.71, carried forward unchanged.",
+    ("November", "Excess"): "65.71, carried forward unchanged.",
+    ("December", "Excess"): "65.71, carried forward unchanged.",
+    ("January", "Excess"): "65.71, carried forward unchanged.",
+    ("February", "Excess"): "-19.34: 65.71 less row 1796's 85.05, dated February here.",
+    ("March", "Excess"): "-19.34, carried forward unchanged.",
+    ("March", "Savings"): "-0.76: row 1929's NY hotel charge at 499.85, not 500.61.",
+}
+
+ACCEPTED_25_26.update(_CUMULATIVE_25_26)
+ACCEPTED_25_26.update(
+    {(month, f"Running {key}"): note for (month, key), note in _CUMULATIVE_25_26.items()}
+)
 
 ACCEPTED_BY_YEAR = {2025: ACCEPTED_25_26, 2026: ACCEPTED_26_27}
 

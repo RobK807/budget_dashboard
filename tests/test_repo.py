@@ -548,3 +548,62 @@ class TestCompletedThrough:
         through = repo.completed_through(series, today)
         counted = int(repo.investment_return_summary(series, today)["months"].max())
         assert periods.index(through) + 1 == counted
+
+
+class TestAccountsOutsideTheirValidityWindow:
+    """Backfilling 25-26 made this visible. Every account used to run the whole of the only
+    year there was, so an account that had closed, or had not opened, never came up. With a
+    second year underneath, five accounts closed in 2025 would otherwise have sat at 0.00 in
+    every month of 2026-27, and the ones opened later did the same in reverse."""
+
+    def accounts(self, **kw):
+        base = {
+            "name": "Old", "type": "bank", "is_savings": False,
+            "is_investment": False, "is_isa": False,
+            "valid_from": dt.date(2025, 4, 1), "valid_to": dt.date(2025, 8, 31),
+        }
+        return frame({**base, **kw})
+
+    def names(self, accounts, period, postings=None, openings=None):
+        # Empty *with the right columns*, which is what the loaders return for a year with
+        # nothing in it. A bare DataFrame has no columns at all and fails on the first
+        # lookup rather than on anything this is testing.
+        if postings is None:
+            postings = frame(posting()).iloc[0:0]
+        if openings is None:
+            openings = frame(
+                {"account": "Old", "period": "2025-04", "opening": Decimal("0")}
+            ).iloc[0:0]
+        out = repo.account_balances(postings, openings, period, accounts)
+        return [] if out.empty else list(out["account"])
+
+    def test_a_closed_and_empty_account_is_omitted(self):
+        assert self.names(self.accounts(), "2026-04") == []
+
+    def test_an_account_that_has_not_opened_is_omitted(self):
+        future = self.accounts(valid_from=dt.date(2026, 6, 1), valid_to=None)
+        assert self.names(future, "2026-04") == []
+
+    def test_the_month_it_closes_is_still_its_month(self):
+        """Both ends inclusive: an account closed on the 31st was live all August."""
+        assert self.names(self.accounts(), "2025-08") == ["Old"]
+
+    def test_the_month_it_opens_is_too(self):
+        late = self.accounts(valid_from=dt.date(2025, 4, 20), valid_to=None)
+        assert self.names(late, "2025-04") == ["Old"]
+
+    def test_an_account_still_holding_money_keeps_its_row(self):
+        """Emptiness is required as well as the dates, so a balance cannot vanish because a
+        valid_to was typed a month early. It stays visible, looking like the mistake it is."""
+        openings = frame({"account": "Old", "period": "2025-04", "opening": Decimal("500")})
+        assert self.names(self.accounts(), "2026-04", openings=openings) == ["Old"]
+
+    def test_an_account_with_postings_keeps_its_row(self):
+        postings = frame(
+            posting(account="Old", period="2026-04", date=pd.Timestamp("2026-04-05"))
+        )
+        assert self.names(self.accounts(), "2026-04", postings=postings) == ["Old"]
+
+    def test_an_open_account_is_always_kept_even_at_zero(self):
+        open_now = self.accounts(valid_to=None)
+        assert self.names(open_now, "2026-04") == ["Old"]

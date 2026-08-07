@@ -421,6 +421,22 @@ def rolled_forward_openings(
     )
 
 
+def _live_in(acct, period: str) -> bool:
+    """Whether an account was open at any point in a month.
+
+    Both ends are inclusive of the month: an account opened on the 20th, or closed on the
+    3rd, was live in that month and its figures belong in it.
+    """
+    start, end = period_start(period), month_end(period)
+    opened = acct.get("valid_from")
+    closed = acct.get("valid_to")
+    if opened is not None and not pd.isna(opened) and opened > end:
+        return False
+    if closed is not None and not pd.isna(closed) and closed < start:
+        return False
+    return True
+
+
 def account_balances(
     postings: pd.DataFrame, openings: pd.DataFrame, period: str, accounts: pd.DataFrame
 ) -> pd.DataFrame:
@@ -441,6 +457,17 @@ def account_balances(
     rows = []
     for _, acct in accounts.iterrows():
         mine = period_postings[period_postings["account"] == acct["name"]]
+        if not _live_in(acct, period) and mine.empty and not opening.get(acct["name"]):
+            # An account that had not opened yet, or had already closed, and has nothing to
+            # show for the month either way. Before the 25-26 backfill every account ran the
+            # whole of the only year there was, so this never arose; now five accounts closed
+            # in 2025 would otherwise sit at 0.00 in every month of 2026-27, and half a dozen
+            # that opened later would do the same in reverse.
+            #
+            # Emptiness is required as well as the dates, so a balance can never vanish
+            # because a valid_to was typed a month early -- an account still holding money
+            # keeps its row, and looks like the mistake it is.
+            continue
         is_transfer = mine["type"] == "Transfer"
         credit = mine["column"] == "credit"
         debit = mine["column"] == "debit"
