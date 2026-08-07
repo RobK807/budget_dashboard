@@ -275,6 +275,7 @@ with tab_compare:
         ui.money_table(
             display, money_columns,
             labels={"month": "Month", "payday": "Payday"},
+            integers=["payday"],
         ),
         width="stretch",
         hide_index=True,
@@ -727,6 +728,7 @@ with tab_inputs:
                     labels={"month": "Month", "amount": "Expected", "gross": "Gross",
                             "ni": "NI", "paye": "PAYE", "net": "Net",
                             "payday": "Payday", "note": "Note"},
+                    integers=["payday"],
                 ),
                 width="stretch",
                 hide_index=True,

@@ -464,6 +464,7 @@ def money_table(
     money_columns: list[str],
     labels: dict[str, str] | None = None,
     formats: dict[str, str] | None = None,
+    integers: list[str] | None = None,
 ):
     """Table with thousands separators on the money columns.
 
@@ -481,14 +482,29 @@ def money_table(
     does not add to the first, it replaces it, and the money columns lose their pound sign
     and separator. That is what had happened to the Cards page and to Settings > Cards.
     Passing both through one call means there is only ever one dict to overwrite.
+
+    `integers` is for a column of whole numbers that has blanks in it -- a day of the month,
+    say. One missing value makes the whole column float, and a payday then reads '1.0'.
+    Int64 is pandas' nullable integer: the blanks survive as <NA> and the rest stay whole.
     """
     out = df.copy()
     spec = dict.fromkeys(money_columns, "£{:,.2f}")
+    whole: list[str] = []
+    for column in integers or []:
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce").astype("Int64")
+            # Given a format as well as the type, so the blanks pick up na_rep below rather
+            # than rendering as pandas' own '<NA>'.
+            spec[column] = "{:,.0f}"
+            whole.append(column)
     spec.update(formats or {})
     if labels:
         out = out.rename(columns=labels)
         spec = {labels.get(c, c): f for c, f in spec.items()}
-    out = to_float(out, list(spec))
+        whole = [labels.get(c, c) for c in whole]
+    # Everything but the whole-number columns: to_float would undo the Int64 that is the
+    # whole point of them, and hand back the '1.0' this exists to avoid.
+    out = to_float(out, [c for c in spec if c not in whole])
     # A blank is not zero: a month with no payslip yet has no NI, and '£nan' says that
     # badly. The dash matches ui.name_blanks, so an empty cell reads the same everywhere.
     return out.style.format(spec, na_rep="—")
