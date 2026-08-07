@@ -68,8 +68,18 @@ from budget.models import (
 )
 from budget.postings import postings_for
 
-# Workbook name -> database name. Confirmed with the user: the card was renamed, not replaced.
-ACCOUNT_ALIASES = {"Amex": "BA Amex"}
+# Workbook name -> database name, for accounts renamed since a workbook was written. A
+# workbook is a historical record and cannot be expected to know what an account is called
+# now; the reconciliation matches a month tab's columns to accounts by name, so without this
+# a rename reads as the account holding nothing.
+#
+#   Amex -> BA Amex          the card was renamed, not replaced
+#   Tembo -> Savings - Tembo renamed in the dashboard, August 2026
+#
+# The alias is a hint, not a requirement: where it names no account and the workbook's own
+# name does, the workbook's is used. That keeps a database written before the rename working
+# as well as one written after.
+ACCOUNT_ALIASES = {"Amex": "BA Amex", "Tembo": "Savings - Tembo"}
 
 # From this date the single 'Amex' column in 25-26 covers two real cards. Everything on or
 # after it belongs to Platinum Amex except two transactions that stayed on the BA card --

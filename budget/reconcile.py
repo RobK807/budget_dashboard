@@ -233,7 +233,16 @@ def _fmt(value: Decimal) -> str:
 # ------------------------------------------------------------------ A: account balances
 
 
-def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) -> list[Diff]:
+def check_balances(
+    session, values, formulas, ref: xr.RefData, verbose: bool
+) -> tuple[list[Diff], dict[str, tuple[str, ...]]]:
+    """Returns (differences, columns that matched no account).
+
+    The second is separate because it is not a difference, it is a *gap*: nothing was
+    compared at all. Left as a difference it would report an account's whole balance as
+    wrong in every month, which is both alarming and uninformative; left out entirely the
+    run would go green with an account never checked, which is worse.
+    """
     accounts = {a.id: a for a in session.scalars(select(Account))}
     types = {a.name: a.type for a in accounts.values()}
 
@@ -248,6 +257,11 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
     # a cross-check rather than a restatement of the query layer.
     running: dict[str, Decimal] = {}
     seeded: set[str] = set()
+    # Month-tab columns that name no account at all. Reported on their own rather than as
+    # balance differences: an account renamed in the dashboard would otherwise read as one
+    # holding nothing, which is a difference of its whole balance in every month and says
+    # nothing about the cause. Tembo, renamed to 'Savings - Tembo', cost an afternoon.
+    unmatched: dict[str, tuple[str, ...]] = {}
 
     for month in xr.FISCAL_MONTHS:
         period = ref.period_for(month)
@@ -288,6 +302,15 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
             # One column can stand for several accounts: a workbook that predates a split
             # shows the cards added together, which is what its 'End' figure is.
             parts = db_accounts_for_block(name)
+            if not any(p in types for p in parts):
+                # The alias named nothing. If the workbook's own name still matches an
+                # account, use it -- an alias records what a column used to be called, and a
+                # database written before the rename is not wrong.
+                if name in types:
+                    parts = (name,)
+                else:
+                    unmatched.setdefault(name, parts)
+                    continue
             computed = sum(
                 (opening.get(p, Decimal("0")) + movement.get(p, Decimal("0")) for p in parts),
                 Decimal("0"),
@@ -314,7 +337,7 @@ def check_balances(session, values, formulas, ref: xr.RefData, verbose: bool) ->
             )
         diffs += month_diffs
 
-    return diffs
+    return diffs, unmatched
 
 
 # ------------------------------------------------------- B: daily classification totals
@@ -635,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
     factory = make_session_factory(engine)
 
     with factory() as session:
-        balance_diffs = check_balances(session, values, formulas, ref, args.verbose)
+        balance_diffs, unmatched = check_balances(session, values, formulas, ref, args.verbose)
         class_diffs = check_classification_totals(session, values, ref, args.verbose)
         category_diffs = check_category_spend(session, values, ref, args.verbose)
         summary_diffs = check_summary_matrix(session, values, ref, args.verbose)
@@ -655,6 +678,21 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     print("\n" + "=" * 78)
+    if unmatched:
+        # Its own failure, and ahead of everything else: a column nothing was compared for
+        # is a hole in the gate, not a figure that disagrees. Reporting it as a difference
+        # would say an account's whole balance was wrong in every month; reporting nothing
+        # would let the run go green with an account never checked at all.
+        print(f"{len(unmatched)} month-tab column(s) matched no account, so NOTHING WAS")
+        print("COMPARED for them. Almost always a rename -- an account renamed in the")
+        print("dashboard still has its old name in the workbook. Add it to ACCOUNT_ALIASES")
+        print("in budget/backfill_year.py, or rename the account back.\n")
+        for name, tried in sorted(unmatched.items()):
+            looked = ", ".join(repr(p) for p in tried)
+            print(f"  column {name!r}: no account called {looked}")
+        print()
+        return 1
+
     if accepted:
         print(f"{len(accepted)} accepted difference(s) -- database deliberately differs:")
         for d in accepted:
