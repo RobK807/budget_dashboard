@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import sqlite3
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -43,7 +44,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from budget import config, repo, service, xlsm_reader as xr
-from budget.db import create_all, make_engine, make_session_factory
+from budget.db import create_all, in_use, make_engine, make_session_factory
 from budget.models import (
     Account,
     Bonus,
@@ -857,6 +858,23 @@ def _backfill_cards(session, values) -> list[str]:
     return done
 
 
+def snapshot(path: Path) -> Path:
+    """A copy of the database beside it, before anything is written.
+
+    VACUUM INTO rather than a file copy: transactionally consistent even mid-write, where
+    copying a live SQLite file can capture a torn state (DESIGN.md 7). Takes the path rather
+    than reading config, because this script accepts --db and a snapshot of the wrong file
+    is worse than none.
+    """
+    target = path.with_name(f"{path.stem}.pre-backfill-{dt.datetime.now():%Y%m%d-%H%M%S}.db")
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(f"VACUUM INTO '{str(target).replace(chr(39), chr(39) * 2)}'")
+    finally:
+        conn.close()
+    return target
+
+
 def _card_names(values, formulas, ref: xr.RefData) -> set[str]:
     """Accounts the month tabs treat as credit cards."""
     layout = xr.month_layout(values, formulas, "April", ref.period_for("April"))
@@ -878,6 +896,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Workbook  {args.workbook}")
     print(f"Database  {args.db}")
     print()
+
+    # The same two guards seed_interest_tracker has, and this writes a great deal more than
+    # that does. A dry run needs neither: it rolls back, and the migration it does leave
+    # behind is one the dashboard would have applied on its next start anyway.
+    if not args.dry_run:
+        if in_use(args.db):
+            print("The dashboard still has the database open. Close every window and re-run.")
+            return 1
+        print(f"Snapshot taken: {snapshot(args.db)}\n")
 
     engine = make_engine(args.db)
     try:
