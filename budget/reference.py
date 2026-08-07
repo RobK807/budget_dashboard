@@ -221,7 +221,7 @@ def update_account(session: Session, account_id: int, **fields) -> Outcome:
 
     for key in ("type", "is_savings", "is_investment", "is_isa", "savings_limit",
                 "investment_limit", "valid_from", "exclude_from_savings", "interest_net",
-                "statement_day", "payment_day"):
+                "statement_day", "payment_day", "savings_seed"):
         if key in fields:
             setattr(account, key, fields[key])
 

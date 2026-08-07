@@ -814,3 +814,60 @@ class TestDatabaseExists:
         path.touch()
         with mock.patch.object(config, "DB_PATH", path):
             assert not ui.database_exists()
+
+
+class TestSavingsTargetSeed:
+    """The cumulative target counts up from each account's seed, not from zero.
+
+    It is measured against a *balance*, and these pots had years of contributions in them
+    before any of this was recorded. Starting the total at nothing makes every month read
+    as thousands ahead of target -- against the real data, April 2025 came out 15,659.21
+    ahead, where the workbook says 5,340.79 behind.
+    """
+
+    def accounts(self, marcus=None, stocks=None):
+        rows = []
+        for row in TestSavingsSeries.ACCOUNTS.to_dict("records"):
+            seed = {"Marcus": marcus, "Stocks": stocks}.get(row["name"])
+            rows.append({**row, "savings_seed": seed})
+        return pd.DataFrame(rows)
+
+    def series(self, **seeds):
+        return repo.savings_series(
+            TestSavingsSeries.POSTINGS, TestSavingsSeries.OPENINGS,
+            self.accounts(**seeds), TestSavingsSeries.TARGETS,
+            ["2026-04", "2026-05"], today=dt.date(2026, 6, 1),
+        )
+
+    def test_no_seed_starts_the_cumulative_target_at_the_first_month(self):
+        april = self.series().iloc[0]
+        assert april["savings_target_eom"] == Decimal("300")
+
+    def test_a_seed_starts_it_higher(self):
+        april = self.series(marcus=Decimal("21000")).iloc[0]
+        assert april["savings_target_eom"] == Decimal("21300")
+
+    def test_the_seed_carries_into_every_later_month(self):
+        may = self.series(marcus=Decimal("21000")).iloc[1]
+        assert may["savings_target_eom"] == Decimal("21600")  # 21,000 + 300 + 300
+
+    def test_required_is_measured_from_the_seeded_total(self):
+        """The whole point: 'required' is the cumulative target less the balance, so both
+        sides have to start from the same place."""
+        april = self.series(marcus=Decimal("21000")).iloc[0]
+        assert april["available_required"] == Decimal("20100")  # 21,300 - 1,200
+
+    def test_savings_and_investment_seeds_are_kept_apart(self):
+        april = self.series(marcus=Decimal("1000"), stocks=Decimal("5000")).iloc[0]
+        assert april["savings_target_eom"] == Decimal("1300")
+        assert april["investments_target_eom"] == Decimal("5100")
+
+    def test_a_missing_column_is_not_an_error(self):
+        """A database that predates the column still loads -- the frame simply has no
+        savings_seed, and the totals start where they always did."""
+        without = TestSavingsSeries.ACCOUNTS
+        rows = repo.savings_series(
+            TestSavingsSeries.POSTINGS, TestSavingsSeries.OPENINGS, without,
+            TestSavingsSeries.TARGETS, ["2026-04"], today=dt.date(2026, 6, 1),
+        )
+        assert rows.iloc[0]["savings_target_eom"] == Decimal("300")

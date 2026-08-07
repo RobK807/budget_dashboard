@@ -1239,6 +1239,54 @@ with tab_savings:
                 )
         show_outcome(outcome)
 
+    st.divider()
+    st.subheader("Target seed amounts")
+    st.caption(
+        "What each pot had already been credited towards its target before this record "
+        "begins. The cumulative target counts up from here rather than from zero — it is "
+        "measured against a balance, and these pots had years of contributions in them "
+        "before any of this was recorded. Left at nothing, every month reads as tens of "
+        "thousands ahead of target, because a total starting at zero is being compared "
+        "with a balance that never did."
+    )
+
+    seed_frame = data["accounts"][
+        data["accounts"]["is_savings"].astype(bool)
+        | data["accounts"]["is_investment"].astype(bool)
+    ].copy()
+    seed_frame["kind"] = seed_frame["is_investment"].astype(bool).map(
+        {True: "Investments", False: "Savings"}
+    )
+    seed_frame["seed"] = ui.to_float(seed_frame, ["savings_seed"])["savings_seed"].fillna(0.0)
+    edited_seeds = st.data_editor(
+        repo.sort_human(seed_frame[["id", "name", "kind", "seed"]], by="name"),
+        width="stretch",
+        hide_index=True,
+        disabled=["id", "name", "kind"] if not READ_ONLY else True,
+        column_order=["name", "kind", "seed"],
+        column_config={
+            "name": "Account",
+            "kind": "Counts towards",
+            "seed": st.column_config.NumberColumn(
+                "Seed", format="%.2f", min_value=0.0, step=100.0
+            ),
+        },
+        key="seed_editor",
+    )
+    seed_totals = edited_seeds.groupby("kind")["seed"].sum().to_dict()
+    st.caption(
+        f"Savings seed £{seed_totals.get('Savings', 0):,.2f} · "
+        f"Investments seed £{seed_totals.get('Investments', 0):,.2f}"
+    )
+    if st.button("Save seed amounts", disabled=READ_ONLY, key="save_seeds"):
+        with ui.session() as session, session.begin():
+            for _, row in edited_seeds.iterrows():
+                outcome = reference.update_account(
+                    session, int(row["id"]),
+                    savings_seed=Decimal(str(row["seed"])) if row["seed"] else None,
+                )
+        show_outcome(outcome)
+
 # ----------------------------------------------------------------------------- general
 
 with tab_general:

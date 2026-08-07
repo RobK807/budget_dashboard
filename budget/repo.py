@@ -67,7 +67,7 @@ def load_reference(session: Session) -> dict[str, pd.DataFrame]:
         session.scalars(select(Account).order_by(func.lower(Account.name))),
         ["id", "name", "short_code", "type", "is_savings", "is_investment", "is_isa",
          "exclude_from_savings", "interest_net", "statement_day", "payment_day",
-         "display_order", "valid_from", "valid_to"],
+         "display_order", "valid_from", "valid_to", "savings_seed"],
     )
     # Grouping then name: the workbook's display_order was roughly grouped already, but only
     # by convention -- a category added later landed wherever the row was inserted.
@@ -1898,12 +1898,26 @@ def savings_series(
         required      that cumulative target less what is actually available
 
     `required` is positive when the target is ahead of the balance, so a positive number is
-    money still to find. It compares a running total of contributions against a balance, so
-    it is only meaningful measured from the month the targets start in.
+    money still to find.
+
+    The cumulative target starts from each account's `savings_seed`, not from zero. It is
+    measured against a balance, and a balance does not start at zero either -- these pots had
+    years of contributions in them before any of this was recorded. Without a seed the
+    comparison is between a running total that starts at nothing and a balance that starts at
+    tens of thousands, and every month reads as hugely ahead of target.
     """
     today = today or dt.date.today()
     flag = accounts["exclude_from_savings"]
     excluded_names = set(accounts.loc[flag.fillna(False).astype(bool), "name"])
+
+    def seed_total(mask) -> Decimal:
+        if "savings_seed" not in accounts.columns:
+            return Decimal("0")
+        values = accounts.loc[mask, "savings_seed"].dropna()
+        return Decimal(values.sum()) if len(values) else Decimal("0")
+
+    savings_seed = seed_total(accounts["is_savings"].fillna(False).astype(bool))
+    investments_seed = seed_total(accounts["is_investment"].fillna(False).astype(bool))
 
     lookup = targets.set_index("period") if not targets.empty else None
 
@@ -1914,7 +1928,7 @@ def savings_series(
         return Decimal("0") if pd.isna(value) else Decimal(value)
 
     rows: list[dict] = []
-    savings_to_date = investments_to_date = Decimal("0")
+    savings_to_date, investments_to_date = savings_seed, investments_seed
 
     for period in periods:
         balances = account_balances(postings, openings, period, accounts)

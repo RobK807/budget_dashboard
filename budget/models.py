@@ -84,6 +84,12 @@ class Account(Base):
     savings_limit: Mapped[Decimal | None] = mapped_column(Money)
     is_investment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     investment_limit: Mapped[Decimal | None] = mapped_column(Money)
+    # What this pot had already been credited towards its target before the record here
+    # begins. The cumulative target starts from this rather than from zero, so 'required'
+    # compares like with like: without it a running total of contributions that starts at
+    # nothing is measured against a balance built up over years, and every month reads as
+    # thousands ahead of target.
+    savings_seed: Mapped[Decimal | None] = mapped_column(Money)
     is_isa: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Earmarked pots -- money that is nominally saved but already spoken for. The Summary
     # tab's 'Less SC & Wed' column subtracted these by hand; flagging the accounts means the

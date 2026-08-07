@@ -30,7 +30,7 @@ from pathlib import Path
 
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class SchemaTooNew(RuntimeError):
@@ -71,6 +71,9 @@ ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("bonus", "payday", "INTEGER"),
     # v5 -----------------------------------------------------------------------------
     ("salary_profile", "base_salary", "INTEGER"),
+    # v9 -----------------------------------------------------------------------------
+    # The cumulative savings target's starting point, per account. See models.Account.
+    ("account", "savings_seed", "INTEGER"),
     # v6 -----------------------------------------------------------------------------
     # Whether an account's interest arrives already taxed. Default gross, because every
     # account bar Halifax is -- the flag names the exception.
