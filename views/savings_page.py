@@ -119,7 +119,7 @@ savings = series[
 ].set_axis(["month"] + COLUMNS, axis="columns")
 
 st.dataframe(
-    ui.money_table(savings, COLUMNS, labels=LABELS),
+    ui.money_table(ui.newest_first(savings), COLUMNS, labels=LABELS),
     width="stretch",
     hide_index=True,
 )
@@ -131,7 +131,7 @@ investments = series[
 ].set_axis(["month"] + COLUMNS, axis="columns")
 
 st.dataframe(
-    ui.money_table(investments, COLUMNS, labels=LABELS),
+    ui.money_table(ui.newest_first(investments), COLUMNS, labels=LABELS),
     width="stretch",
     hide_index=True,
 )
@@ -187,7 +187,7 @@ else:
     matrix.index = [repo.period_label(p) for p in matrix.index]
     matrix.index.name = "Month"
     st.dataframe(
-        ui.money_table(matrix.reset_index(), [c for c in matrix.columns]),
+        ui.money_table(ui.newest_first(matrix.reset_index()), [c for c in matrix.columns]),
         width="stretch",
         hide_index=True,
     )
@@ -256,9 +256,12 @@ plot = ui.to_float(
     charted, ["available_added", "reserved_added", "investments_added"]
 ).copy()
 for bucket in ("available", "reserved", "investments"):
+    # Over `plot`'s own periods, not `series`'s. They were the same frame until the charts
+    # gained a start month; now plot is the windowed one, and a column built from the full
+    # series is simply the wrong length.
     plot[f"{bucket}_target"] = [
         float(targets.loc[p, bucket]) if p in targets.index else 0.0
-        for p in series["period"]
+        for p in plot["period"]
     ]
 
 fig = go.Figure()

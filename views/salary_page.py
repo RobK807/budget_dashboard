@@ -273,7 +273,7 @@ with tab_compare:
 
     st.dataframe(
         ui.money_table(
-            display, money_columns,
+            ui.newest_first(display), money_columns,
             labels={"month": "Month", "payday": "Payday"},
             integers=["payday"],
         ),
@@ -583,7 +583,7 @@ with tab_cumulative:
 
         st.dataframe(
             ui.money_table(
-                show,
+                ui.newest_first(show),
                 ["taxable", "taxable_to_date", "deducted", "deducted_to_date",
                  "due", "due_to_date", "difference"],
                 labels={
@@ -718,7 +718,7 @@ with tab_cumulative:
             gift_aid_additional=Decimal(str(in_gift_additional)),
         )
 
-        totals = st.columns(4)
+        totals = st.columns(5)
         totals[0].metric("Total taxable", ui.money(summary.total_taxable))
         totals[1].metric("Tax on the year", ui.money(summary.tax_due))
         totals[2].metric(
@@ -726,6 +726,17 @@ with tab_cumulative:
             help=f"{summary.gift_aid_rate:,.0f}% of {ui.money(summary.donations)} given",
         )
         totals[3].metric("Net of relief", ui.money(summary.net_of_relief))
+        # What payroll actually took, beside what the year comes to. The gap is what HMRC
+        # would settle -- and it is not the same gap as the cumulative-PAYE one above, which
+        # knows nothing of benefits, interest or dividends.
+        paid_to_date = Decimal(str(closing["deducted_to_date"]))
+        totals[4].metric(
+            "Tax paid", ui.money(paid_to_date),
+            delta=ui.money(paid_to_date - summary.net_of_relief),
+            delta_color="normal",
+            help="PAYE deducted through the year, from payslips where entered and the "
+                 "model where not. The delta is against net of relief: positive is overpaid.",
+        )
 
         made_up = pd.DataFrame(
             [
@@ -854,7 +865,7 @@ with tab_inputs:
                     outcome = reference.remove_salary_profile(session, int(to_remove))
                 ui.show_outcome(outcome, "the salary change")
 
-    with right:
+        st.divider()
         # A benefit in kind is taxable but reaches no payslip -- it is settled through the
         # tax code or a P11D, so it belongs to the year rather than to any month of it. One
         # figure per tax year, feeding the annual summary under **Tax year to date**.
@@ -888,7 +899,8 @@ with tab_inputs:
                     )
                 ui.show_outcome(outcome, "the benefits figure")
 
-        st.divider()
+
+    with right:
         st.subheader("Bonus")
         st.caption(
             "By the month it is paid, with its own deductions — a bonus usually arrives on "
@@ -1023,10 +1035,11 @@ with tab_inputs:
     )
     st.dataframe(
         ui.money_table(
-            derived, ["base", "car", "salary in force", "bonus", "expected gross"],
+            ui.newest_first(derived),
+            ["base", "car", "salary in force", "bonus", "expected gross"],
             labels={"month": "Month", "base": "Base (annual)",
                     "car": "Car allowance (annual)", "salary in force": "Total (annual)",
-                    "expected gross": "Expected gross (monthly)"},
+                    "bonus": "Bonus", "expected gross": "Expected gross (monthly)"},
         ),
         width="stretch",
         hide_index=True,

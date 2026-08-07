@@ -114,7 +114,7 @@ st.caption(
 
 matrix = repo.classification_by_month(postings)
 if not matrix.empty:
-    matrix = matrix.reindex([p for p in periods if p in matrix.index])
+    matrix = matrix.reindex([p for p in periods if p in matrix.index][::-1])
     display = matrix.copy()
     display.index = [repo.period_label(p) for p in display.index]
     display = display.astype(float)
@@ -142,7 +142,7 @@ if history.empty:
 else:
     st.dataframe(
         ui.money_table(
-            history[["month"] + ACCOUNT_COLUMNS],
+            ui.newest_first(history[["month"] + ACCOUNT_COLUMNS]),
             ACCOUNT_COLUMNS,
             labels={"month": "Month", **ACCOUNT_LABELS},
         ),

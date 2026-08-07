@@ -588,6 +588,19 @@ def cycling_rates(data: dict) -> dict:
     return {key: repo.rate_in_force(rates, key, today) for key in ("commute", "band", "gym")}
 
 
+def newest_first(frame: pd.DataFrame) -> pd.DataFrame:
+    """Reverse a month-ordered table so the most recent month is the first row.
+
+    Charts stay in time order -- a line running right to left is unreadable -- but a table
+    is looked at rather than traced, and the month wanted is almost always the last one. With
+    a second year backfilled that is now two dozen rows down.
+
+    Not for a schedule that runs forwards by nature: a balance transfer card's payoff plan is
+    a sequence to follow from where it starts, not a history to scan back through.
+    """
+    return frame.iloc[::-1]
+
+
 def month_from(
     periods: list[str],
     key: str,

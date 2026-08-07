@@ -142,7 +142,7 @@ st.subheader("Month-end position")
 matrix = closes.pivot_table(
     index="period", columns="classification", values="closing", aggfunc="first"
 )
-matrix = matrix.reindex([p for p in periods if p in matrix.index])
+matrix = matrix.reindex([p for p in periods if p in matrix.index][::-1])
 matrix = matrix[sorted(matrix.columns, key=lambda c: str(c).casefold())]
 display = matrix.copy()
 display.index = [repo.period_label(p) for p in display.index]
