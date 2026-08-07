@@ -57,7 +57,14 @@ if not chosen:
     st.caption("Pick a classification.")
     st.stop()
 
+chart_from = ui.month_from(periods, key="trends_chart_from", tax_year=data["tax_year"])
+
+# Filtered after the chain has run, never before it. The running total is cumulative, so
+# starting the *calculation* later would restart it from zero rather than showing it from
+# a later month -- which is the same mistake as counting the year-end twice, in reverse.
 view = daily[daily["classification"].isin(chosen)].copy()
+if chart_from:
+    view = view[view["date"].map(repo.period_of) >= chart_from]
 view["running"] = view["running"].astype(float)
 
 today = pd.Timestamp(dt.date.today())

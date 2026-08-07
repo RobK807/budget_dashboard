@@ -154,11 +154,16 @@ st.divider()
 
 # --------------------------------------------------------------------- savings over time
 
+# Trims what the charts draw, not what was computed: `series` is built over every period
+# above and only the window changes here.
+chart_from = ui.month_from(live_periods, key="summary_chart_from", tax_year=data["tax_year"])
+charted = [p for p in live_periods if p >= chart_from]
+
 left, right = st.columns(2)
 
 with left:
     st.subheader("Savings and investments")
-    plot = series[series["period"].isin(live_periods)].copy()
+    plot = series[series["period"].isin(charted)].copy()
     plot["Month"] = plot["period"].map(repo.period_label)
     # Available is drawn alongside the total rather than instead of it: the gap between the
     # two lines is what the earmarked pots hold, which is the thing worth seeing.
@@ -181,7 +186,7 @@ with left:
 
 with right:
     st.subheader("Net cashflow by month")
-    plot = series[series["period"].isin(live_periods)].copy()
+    plot = series[series["period"].isin(charted)].copy()
     plot["Month"] = plot["period"].map(repo.period_label)
     plot = ui.to_float(plot, ["net_cashflow"])
     fig = px.bar(plot, x="Month", y="net_cashflow", labels={"net_cashflow": "Net (£)"})

@@ -58,6 +58,10 @@ st.divider()
 if not savings.empty:
     st.subheader("Cumulative net saving")
 
+    chart_from = ui.month_from(
+        data["periods"], key="cycling_chart_from", tax_year=data["tax_year"]
+    )
+
     timeline = savings[["date", "saving", "kind"]].copy()
     timeline["cost"] = Decimal("0")
     if not outgoings.empty:
@@ -77,6 +81,10 @@ if not savings.empty:
     # where it did. Cut after the cumsum, so today's figure is still the running total of
     # everything before it rather than of a truncated series.
     to_date = timeline[pd.to_datetime(timeline["date"]).dt.date <= dt.date.today()]
+    # After the cumsum for the same reason: the line starts where you asked, holding the
+    # running total of everything before it rather than restarting from zero.
+    if chart_from:
+        to_date = to_date[to_date["date"].map(repo.period_of) >= chart_from]
 
     fig = px.area(
         to_date if not to_date.empty else timeline, x="date", y="cumulative",

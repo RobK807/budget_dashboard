@@ -218,6 +218,11 @@ st.divider()
 
 st.subheader("Balances over the year")
 
+chart_from = ui.month_from(periods, key="savings_chart_from", tax_year=data["tax_year"])
+# `series` keeps every month -- the balances are cumulative and the tables below read it.
+# Only the two charts here are windowed.
+charted = series[series["period"] >= chart_from] if chart_from else series
+
 BALANCE_SERIES = {
     "available_eom": "Savings (available)",
     "reserved_eom": "Savings (reserved)",
@@ -225,7 +230,7 @@ BALANCE_SERIES = {
     "combined": "Combined (total)",
     "combined_available": "Combined (available)",
 }
-plot = ui.to_float(series, list(BALANCE_SERIES)).rename(columns=BALANCE_SERIES)
+plot = ui.to_float(charted, list(BALANCE_SERIES)).rename(columns=BALANCE_SERIES)
 fig = px.line(
     plot, x="month", markers=True, y=list(BALANCE_SERIES.values()),
     labels={"value": "Balance (£)", "month": "", "variable": ""},
@@ -248,7 +253,7 @@ st.subheader("Added against target")
 # single month -- so nothing on the chart could be found in the table beneath it.
 targets = data["bucket_targets"].set_index("period")
 plot = ui.to_float(
-    series, ["available_added", "reserved_added", "investments_added"]
+    charted, ["available_added", "reserved_added", "investments_added"]
 ).copy()
 for bucket in ("available", "reserved", "investments"):
     plot[f"{bucket}_target"] = [

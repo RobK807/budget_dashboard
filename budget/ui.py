@@ -588,6 +588,38 @@ def cycling_rates(data: dict) -> dict:
     return {key: repo.rate_in_force(rates, key, today) for key in ("commute", "band", "gym")}
 
 
+def month_from(
+    periods: list[str],
+    key: str,
+    tax_year: int | None = None,
+    label: str = "Show from",
+) -> str:
+    """A 'from this month' picker for a chart. Returns the chosen period.
+
+    Backfilling a second year doubled the span every chart drew, which is more than most of
+    them can say anything with. This trims the *drawing*, and only the drawing: a running
+    total is cumulative, so trimming what goes into it would change the answer rather than
+    the view. Each caller filters its own plotting frame with the period this returns.
+
+    Defaults to the start of the current tax year where that is in range -- the most recent
+    complete story -- rather than to the earliest month there is.
+    """
+    if not periods:
+        return ""
+    default = repo.fiscal_periods(tax_year)[0] if tax_year else periods[0]
+    if default not in periods:
+        default = periods[0]
+    return st.selectbox(
+        label,
+        options=periods,
+        index=periods.index(default),
+        format_func=repo.period_label,
+        key=key,
+        help="The earliest month the charts below show. Figures are unaffected — this "
+             "changes the window, not the arithmetic.",
+    )
+
+
 def periods_with_data(data: dict) -> list[str]:
     used = set(data["postings"]["period"].unique()) if not data["postings"].empty else set()
     return [p for p in data["periods"] if p in used]
