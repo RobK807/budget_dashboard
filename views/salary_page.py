@@ -628,6 +628,153 @@ with tab_cumulative:
             "month and closes only at the year end, when HMRC reconciles."
         )
 
+    # ------------------------------------------------------------ the whole year's tax
+    #
+    # PAYE is only part of a tax year. A benefit in kind, savings interest and dividends are
+    # all taxable and none of them reaches a payslip, so everything above can be right and
+    # the year still come out differently.
+
+    st.divider()
+    st.subheader("The year as a whole")
+    st.caption(
+        "Everything taxable, not only what payroll saw. Interest comes from the ledger — "
+        "every credit filed under **Interest** in the year — and is taken **gross**, which "
+        "is a simplification: an account paying net has already had basic rate deducted and "
+        "the ledger does not separate the two. Benefits are entered under **Salary and "
+        "bonus**; dividends and the allowances are below."
+    )
+
+    year_inputs = repo.annual_tax_inputs(assumptions_by_year.get(chosen_year))
+
+    interest_rows = repo.interest_by_tax_year(data["transactions"], data["accounts"])
+    year_interest = Decimal("0")
+    if not interest_rows.empty:
+        mine = interest_rows[interest_rows["tax_year"] == chosen_year]
+        year_interest = Decimal(str(mine["amount"].sum())) if not mine.empty else Decimal("0")
+
+    given = repo.donations_by_tax_year(data["transactions"])
+    year_donations = Decimal("0")
+    if not given.empty:
+        mine = given[given["tax_year"] == chosen_year]
+        year_donations = Decimal(str(mine["amount"].sum())) if not mine.empty else Decimal("0")
+
+    with st.form("annual_tax_inputs"):
+        fields = st.columns(3)
+        in_dividends = fields[0].number_input(
+            "Dividends received", min_value=0.0, step=100.0, format="%.2f",
+            value=float(year_inputs["annual_dividends"]),
+            help="Total for the tax year. Not in the ledger — dividends reinvested inside "
+                 "an account never appear as a transaction.",
+        )
+        in_savings_allowance = fields[1].number_input(
+            "Savings allowance", min_value=0.0, step=100.0, format="%.2f",
+            value=float(year_inputs["savings_allowance"]),
+            help="500 at the higher rate, 1,000 at the basic rate, nothing at the "
+                 "additional rate. Only interest above it is taxed.",
+        )
+        in_dividend_allowance = fields[2].number_input(
+            "Dividend allowance", min_value=0.0, step=100.0, format="%.2f",
+            value=float(year_inputs["dividend_allowance"]),
+        )
+        rates = st.columns(3)
+        in_gift_higher = rates[0].number_input(
+            "Gift Aid relief, higher rate (%)", min_value=0.0, max_value=100.0, step=1.0,
+            format="%.2f", value=float(year_inputs["gift_aid_higher"]),
+            help="What comes back to you on a donation when the year lands in the 40% band.",
+        )
+        in_gift_additional = rates[1].number_input(
+            "Gift Aid relief, additional rate (%)", min_value=0.0, max_value=100.0,
+            step=1.0, format="%.2f", value=float(year_inputs["gift_aid_additional"]),
+        )
+        rates[2].write("")
+        if st.form_submit_button("Save", type="primary", disabled=READ_ONLY):
+            with ui.session() as session, session.begin():
+                for key, value in (
+                    ("annual_dividends", in_dividends),
+                    ("savings_allowance", in_savings_allowance),
+                    ("dividend_allowance", in_dividend_allowance),
+                    ("gift_aid_higher", in_gift_higher),
+                    ("gift_aid_additional", in_gift_additional),
+                ):
+                    outcome = reference.set_assumption(
+                        session, chosen_year, key, Decimal(str(value))
+                    )
+            ui.show_outcome(outcome, "the annual tax inputs")
+
+    if position.empty:
+        st.info("Nothing to total up for this tax year yet.")
+    else:
+        summary = tax.annual_summary(
+            Decimal(str(position.iloc[-1]["taxable_to_date"])),
+            bands_for(f"{chosen_year + 1:04d}-03"),
+            dt.date(chosen_year + 1, 3, 1),
+            benefits=year_inputs["annual_benefits"],
+            interest=year_interest,
+            dividends=Decimal(str(in_dividends)),
+            donations=year_donations,
+            savings_allowance=Decimal(str(in_savings_allowance)),
+            dividend_allowance=Decimal(str(in_dividend_allowance)),
+            gift_aid_higher=Decimal(str(in_gift_higher)),
+            gift_aid_additional=Decimal(str(in_gift_additional)),
+        )
+
+        totals = st.columns(4)
+        totals[0].metric("Total taxable", ui.money(summary.total_taxable))
+        totals[1].metric("Tax on the year", ui.money(summary.tax_due))
+        totals[2].metric(
+            "Gift Aid relief", ui.money(summary.gift_aid_refund),
+            help=f"{summary.gift_aid_rate:,.0f}% of {ui.money(summary.donations)} given",
+        )
+        totals[3].metric("Net of relief", ui.money(summary.net_of_relief))
+
+        made_up = pd.DataFrame(
+            [
+                {"line": "Taxable pay", "amount": summary.employment},
+                {"line": "Benefits in kind", "amount": summary.benefits},
+                {"line": "Interest (gross)", "amount": summary.interest},
+                {"line": "  less savings allowance",
+                 "amount": summary.taxable_interest - summary.interest},
+                {"line": "Dividends", "amount": summary.dividends},
+                {"line": "  less dividend allowance",
+                 "amount": summary.taxable_dividends - summary.dividends},
+                {"line": "Total taxable", "amount": summary.total_taxable},
+            ]
+        )
+        split = pd.DataFrame(
+            [
+                {"band": b.name, "eligible": b.eligible,
+                 "rate": float(b.rate) * 100, "amount": b.amount}
+                for b in summary.bands
+            ]
+        )
+
+        side = st.columns(2)
+        with side[0]:
+            st.markdown("**What is taxable**")
+            st.dataframe(
+                ui.money_table(made_up, ["amount"],
+                               labels={"line": "", "amount": "Amount"}),
+                width="stretch", hide_index=True,
+            )
+        with side[1]:
+            st.markdown("**Where it was charged**")
+            st.dataframe(
+                ui.money_table(
+                    split, ["eligible", "amount"],
+                    labels={"band": "Band", "eligible": "In this band",
+                            "rate": "Rate", "amount": "Tax"},
+                    formats={"Rate": "{:.0f}%"},
+                ),
+                width="stretch", hide_index=True,
+            )
+        st.caption(
+            "**Gift Aid relief** is what comes back to *you*, at the gap between your "
+            "marginal rate and the basic rate the charity reclaims — so it reduces what the "
+            "year costs rather than what it charges, which is why it sits apart from the "
+            "tax figure. The Tax Calculator models the same relief the other way about, by "
+            "widening the basic rate band, which is what HMRC does at their end."
+        )
+
 # ---------------------------------------------------------------- salary and bonus
 
 with tab_inputs:
@@ -708,6 +855,40 @@ with tab_inputs:
                 ui.show_outcome(outcome, "the salary change")
 
     with right:
+        # A benefit in kind is taxable but reaches no payslip -- it is settled through the
+        # tax code or a P11D, so it belongs to the year rather than to any month of it. One
+        # figure per tax year, feeding the annual summary under **Tax year to date**.
+        st.subheader("Benefits in kind")
+        st.caption(
+            "The year's taxable benefit — the Tax Calculator's B32. Not the 'benefits' "
+            "column on a payslip, which is part of expected gross and already counted."
+        )
+        with st.form("annual_benefits"):
+            benefit_cols = st.columns([1, 1, 2])
+            benefit_year = benefit_cols[0].selectbox(
+                "Tax year", options=available_years,
+                index=len(available_years) - 1,
+                format_func=lambda y: f"{y}/{str(y + 1)[-2:]}",
+                key="benefits_year",
+            )
+            in_benefits = benefit_cols[1].number_input(
+                "Benefits", min_value=0.0, step=100.0, format="%.2f",
+                value=float(
+                    repo.annual_tax_inputs(assumptions_by_year.get(benefit_year))[
+                        "annual_benefits"
+                    ]
+                ),
+            )
+            benefit_cols[2].write("")
+            if st.form_submit_button("Save benefits", disabled=READ_ONLY):
+                with ui.session() as session, session.begin():
+                    outcome = reference.set_assumption(
+                        session, benefit_year, "annual_benefits",
+                        Decimal(str(in_benefits)),
+                    )
+                ui.show_outcome(outcome, "the benefits figure")
+
+        st.divider()
         st.subheader("Bonus")
         st.caption(
             "By the month it is paid, with its own deductions — a bonus usually arrives on "

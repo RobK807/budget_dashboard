@@ -343,3 +343,126 @@ class TestBenefits:
         )
         assert with_extra.paye == base.paye
         assert with_extra.net == base.net + Decimal("100")
+
+
+# 2025/26 monthly bands, and the personal allowance fully tapered away by December.
+BANDS_2025 = tax.Bands(
+    ni_lower_earnings_limit=Decimal("1048"),
+    ni_upper_earnings_limit=Decimal("4189"),
+    ni_lower_rate=Decimal("0.08"),
+    ni_higher_rate=Decimal("0.02"),
+    basic_band=Decimal("3141.666666666667"),
+    higher_threshold=Decimal("10428.333333333334"),
+    basic_rate=Decimal("0.2"),
+    higher_rate=Decimal("0.4"),
+    additional_rate=Decimal("0.45"),
+    basic_rate_threshold=Decimal("4189.166666666667"),
+    allowance_steps=((dt.date(2025, 12, 1), Decimal("-200.83333333333334")),),
+)
+MARCH_2026 = dt.date(2026, 3, 1)
+
+
+class TestBandSplit:
+    """income_tax is the sum of what band_split returns, so they cannot disagree."""
+
+    @pytest.mark.parametrize("taxable", ["0", "3000", "9500", "40000"])
+    def test_the_parts_add_up_to_the_whole(self, taxable):
+        amount = Decimal(taxable)
+        parts = tax.band_split(amount, BANDS, dt.date(2026, 6, 15))
+        assert sum(p.amount for p in parts).quantize(Decimal("0.01")) == tax.income_tax(
+            amount, BANDS, dt.date(2026, 6, 15)
+        )
+
+    def test_the_personal_allowance_slice_never_costs_anything(self):
+        parts = tax.band_split(Decimal("40000"), BANDS, dt.date(2026, 6, 15))
+        assert parts[0].name == "Personal allowance"
+        assert parts[0].amount == Decimal("0")
+
+
+class TestAnnualSummary:
+    """Checked against Tax Calculator v0.3, tab '2025-2026 (P60)'."""
+
+    def summary(self, **kw):
+        defaults = dict(
+            benefits=Decimal("1860.04"), interest=Decimal("1000"),
+            dividends=Decimal("0"), donations=Decimal("0"),
+        )
+        return tax.annual_summary(
+            Decimal("119694.72"), BANDS_2025, MARCH_2026, **{**defaults, **kw}
+        )
+
+    def test_taxable_income_matches_the_spreadsheet(self):
+        """B42 = salary + benefits."""
+        s = self.summary()
+        assert s.employment + s.benefits == Decimal("121554.76")
+
+    def test_only_interest_above_the_allowance_is_taxed(self):
+        """B43 = MAX(0, interest - 500)."""
+        assert self.summary().taxable_interest == Decimal("500")
+
+    def test_interest_within_the_allowance_is_not_taxed(self):
+        assert self.summary(interest=Decimal("400")).taxable_interest == Decimal("0")
+
+    def test_dividends_have_their_own_allowance(self):
+        """B44 = MAX(0, dividends - 1000)."""
+        assert self.summary(dividends=Decimal("2500")).taxable_dividends == Decimal("1500")
+
+    def test_total_taxable_matches_the_spreadsheet(self):
+        """B45."""
+        assert self.summary().total_taxable == Decimal("122054.76")
+
+    def test_the_tax_matches_the_spreadsheet(self):
+        """L47 is 42,245.90. Two pence out, and the two pence are the monthly thresholds:
+        the bands are held per month, so a year is 3,141.6667 x 12 = 37,700.04 where the
+        spreadsheet types 37,700 flat."""
+        assert abs(self.summary().tax_due - Decimal("42245.90")) <= Decimal("0.02")
+
+    def test_the_band_split_matches_the_spreadsheet(self):
+        """L36:M39."""
+        by_name = {b.name: b for b in self.summary().bands}
+        assert abs(by_name["Basic rate"].amount - Decimal("7540")) <= Decimal("0.02")
+        assert abs(by_name["Higher rate"].amount - Decimal("34705.90")) <= Decimal("0.03")
+        assert by_name["Additional rate"].eligible == Decimal("0")
+
+
+class TestGiftAidRelief:
+    def relief(self, employment, donations=Decimal("100")):
+        return tax.annual_summary(
+            Decimal(employment), BANDS_2025, MARCH_2026, donations=donations
+        )
+
+    def test_nothing_below_the_higher_rate(self):
+        s = self.relief("30000")
+        assert s.gift_aid_rate == Decimal("0")
+        assert s.gift_aid_refund == Decimal("0")
+
+    def test_twenty_per_cent_in_the_higher_band(self):
+        s = self.relief("80000")
+        assert s.gift_aid_rate == Decimal("20")
+        assert s.gift_aid_refund == Decimal("20")
+
+    def test_twenty_five_per_cent_in_the_additional_band(self):
+        s = self.relief("200000")
+        assert s.gift_aid_rate == Decimal("25")
+        assert s.gift_aid_refund == Decimal("25")
+
+    def test_the_rates_are_parameters(self):
+        s = tax.annual_summary(
+            Decimal("80000"), BANDS_2025, MARCH_2026,
+            donations=Decimal("100"), gift_aid_higher=Decimal("21"),
+        )
+        assert s.gift_aid_refund == Decimal("21")
+
+    def test_relief_reduces_the_cost_not_the_charge(self):
+        """It is what comes back to the taxpayer, so the tax figure still means tax."""
+        s = self.relief("80000", donations=Decimal("1000"))
+        assert s.net_of_relief == s.tax_due - Decimal("200")
+
+    def test_the_band_is_chosen_from_total_income_not_from_the_donation(self):
+        """Interest can be what pushes a year into the next band."""
+        s = tax.annual_summary(
+            Decimal("124000"), BANDS_2025, MARCH_2026,
+            interest=Decimal("2000"), donations=Decimal("100"),
+        )
+        assert s.total_taxable > Decimal("125139.96")
+        assert s.gift_aid_rate == Decimal("25")

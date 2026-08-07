@@ -679,6 +679,36 @@ def assumption_tax_years(session: Session) -> list[int]:
 
 ADJUSTMENT_KEY = "personal_allowance_adjustment"
 
+# The year's tax inputs that no payslip carries: a benefit in kind, dividends, and the two
+# allowances and two Gift Aid rates the annual summary needs. Held as salary assumptions
+# because they are per tax year and effective-dated exactly as the bands are -- the savings
+# allowance is 1,000 for a basic-rate taxpayer and 500 for a higher-rate one, so it is a
+# parameter and not a constant. Interest is absent deliberately: it is in the ledger already.
+ANNUAL_TAX_DEFAULTS: dict[str, Decimal] = {
+    "annual_benefits": Decimal("0"),
+    "annual_dividends": Decimal("0"),
+    "savings_allowance": Decimal("500"),
+    "dividend_allowance": Decimal("1000"),
+    "gift_aid_higher": Decimal("20"),
+    "gift_aid_additional": Decimal("25"),
+}
+
+
+def annual_tax_inputs(assumptions: pd.DataFrame) -> dict[str, Decimal]:
+    """The stored annual tax inputs for a year, defaulted where nothing has been entered.
+
+    Defaulted rather than zeroed: a year with no stored savings allowance has the statutory
+    one, not none of it. Zero would quietly tax the first 500 of interest.
+    """
+    out = dict(ANNUAL_TAX_DEFAULTS)
+    if assumptions is None or assumptions.empty:
+        return out
+    for key in ANNUAL_TAX_DEFAULTS:
+        rows = assumptions[assumptions["key"] == key]
+        if not rows.empty:
+            out[key] = Decimal(str(rows.sort_values("effective_from").iloc[-1]["value"]))
+    return out
+
 
 def assumption_dates(assumptions: pd.DataFrame) -> list[dt.date]:
     """Every date on which a threshold or rate changed, most recent last.

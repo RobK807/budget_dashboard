@@ -27,7 +27,7 @@ from pathlib import Path
 from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 
-from budget import config, repo, xlsm_reader as xr
+from budget import config, repo, schema, xlsm_reader as xr
 from budget.backfill_year import db_accounts_for_block
 from budget.db import make_engine, make_session_factory
 from budget.models import Account, Classification, OpeningBalance, Txn
@@ -650,6 +650,19 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Workbook {args.workbook}")
     print(f"Database {args.db}")
+
+    # This only reads, and deliberately does not migrate: a check that quietly rewrote the
+    # thing it was checking would be a poor sort of check. But it does read through the
+    # current models, so an older file fails on a missing column -- which arrives as a
+    # SQLAlchemy traceback saying 'no such column' and nothing about what to do.
+    stored = schema.stored_version(args.db)
+    if stored and stored < schema.SCHEMA_VERSION:
+        print(
+            f"\nThis database is at schema version {stored}; the code expects "
+            f"{schema.SCHEMA_VERSION}.\nStart the dashboard once to migrate it, then run "
+            "this again. Nothing was read."
+        )
+        return 1
 
     values, formulas = xr.load(args.workbook)
     ref = xr.read_reference(values)

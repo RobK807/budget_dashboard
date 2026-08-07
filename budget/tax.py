@@ -178,16 +178,49 @@ def income_tax(
     the arithmetic is identical to before. See `year_to_date` for what the other values are
     for -- and for why the monthly figure remains the one the Salary page models against.
     """
+    return _round(sum(slice.amount for slice in band_split(taxable, bands, on, months)))
+
+
+@dataclass(frozen=True)
+class BandSlice:
+    """How much of a taxable figure fell in one band, and what it cost there."""
+
+    name: str
+    eligible: Decimal
+    rate: Decimal  # a fraction: 0.4, not 40
+    amount: Decimal
+
+
+def band_split(
+    taxable: Decimal, bands: Bands, on: dt.date, months: int = 1
+) -> list[BandSlice]:
+    """The same arithmetic as `income_tax`, kept as its parts.
+
+    Split out so the annual summary can show where a year's tax was charged without a second
+    implementation of the bands to drift from this one -- `income_tax` is now the sum of what
+    this returns, so they cannot disagree.
+    """
     adjustment = bands.allowance_for(on) * months
     basic_band = bands.basic_band * months
     higher_threshold = bands.higher_threshold * months
 
-    basic = min(taxable - adjustment, basic_band) * bands.basic_rate
+    basic = min(taxable - adjustment, basic_band)
     above_basic = max(Decimal("0"), taxable - adjustment - basic_band)
     higher_width = max(Decimal("0"), higher_threshold - basic_band)
-    higher = min(above_basic, higher_width) * bands.higher_rate
-    additional = max(Decimal("0"), taxable - higher_threshold) * bands.additional_rate
-    return _round(basic + higher + additional)
+    higher = min(above_basic, higher_width)
+    additional = max(Decimal("0"), taxable - higher_threshold)
+
+    return [
+        BandSlice("Personal allowance", adjustment, Decimal("0"), Decimal("0")),
+        BandSlice("Basic rate", basic, bands.basic_rate, basic * bands.basic_rate),
+        BandSlice("Higher rate", higher, bands.higher_rate, higher * bands.higher_rate),
+        BandSlice(
+            "Additional rate",
+            additional,
+            bands.additional_rate,
+            additional * bands.additional_rate,
+        ),
+    ]
 
 
 @dataclass(frozen=True)
@@ -324,4 +357,104 @@ def expected_pay(
         ),
         bands,
         on,
+    )
+
+
+# ------------------------------------------------------------------- the annual summary
+#
+# What the year comes to once everything outside the payslip is counted: a benefit in kind,
+# savings interest, dividends, and the relief a Gift Aid donation earns back.
+#
+# The Tax Calculator spreadsheet models Gift Aid the other way about -- it widens the basic
+# rate band by the gross donation, which is what HMRC actually does. The figure asked for
+# here is the taxpayer's side of the same thing: what comes back. Both are stated, so the
+# refund can be read on its own and the tax figure still means tax charged.
+
+# Standard 2025-26 allowances. Overridable per tax year, because they are not constants:
+# the savings allowance is 1,000 for a basic-rate taxpayer and nothing at all above the
+# higher-rate threshold.
+SAVINGS_ALLOWANCE = Decimal("500")
+DIVIDEND_ALLOWANCE = Decimal("1000")
+
+# Gift Aid relief, as a percentage of the donation. 20 for a higher-rate taxpayer, 25 for an
+# additional-rate one -- the gap between their rate and the basic rate the charity reclaims.
+GIFT_AID_HIGHER = Decimal("20")
+GIFT_AID_ADDITIONAL = Decimal("25")
+
+
+@dataclass(frozen=True)
+class AnnualTax:
+    """A tax year totalled up, and where the charge fell."""
+
+    employment: Decimal        # taxable pay, as the P60 states it
+    benefits: Decimal          # benefit in kind, not on any payslip
+    interest: Decimal          # received, gross
+    dividends: Decimal
+    taxable_interest: Decimal  # after the savings allowance
+    taxable_dividends: Decimal
+    total_taxable: Decimal
+    bands: tuple[BandSlice, ...]
+    tax_due: Decimal
+    donations: Decimal
+    gift_aid_rate: Decimal     # the percentage that applied, 0 below the higher rate
+    gift_aid_refund: Decimal
+
+    @property
+    def net_of_relief(self) -> Decimal:
+        """Tax charged less what Gift Aid gives back."""
+        return self.tax_due - self.gift_aid_refund
+
+
+def annual_summary(
+    employment: Decimal,
+    bands: Bands,
+    on: dt.date,
+    *,
+    benefits: Decimal = Decimal("0"),
+    interest: Decimal = Decimal("0"),
+    dividends: Decimal = Decimal("0"),
+    donations: Decimal = Decimal("0"),
+    savings_allowance: Decimal = SAVINGS_ALLOWANCE,
+    dividend_allowance: Decimal = DIVIDEND_ALLOWANCE,
+    gift_aid_higher: Decimal = GIFT_AID_HIGHER,
+    gift_aid_additional: Decimal = GIFT_AID_ADDITIONAL,
+    months: int = 12,
+) -> AnnualTax:
+    """One tax year's charge, counting what the payslips do not.
+
+    Interest and dividends carry their own allowances and only the excess is taxed, which is
+    the spreadsheet's B43 and B44. Interest is taken gross here -- a simplification the user
+    accepted, since an account paying net has already had basic rate deducted and the ledger
+    does not separate the two.
+
+    The Gift Aid rate is chosen from where the *total* taxable income lands, not from where
+    the donation itself does: relief follows the taxpayer's marginal rate for the year.
+    """
+    taxable_interest = max(Decimal("0"), interest - savings_allowance)
+    taxable_dividends = max(Decimal("0"), dividends - dividend_allowance)
+    total_taxable = employment + benefits + taxable_interest + taxable_dividends
+
+    split = band_split(total_taxable, bands, on, months)
+    tax_due = _round(sum(s.amount for s in split))
+
+    if total_taxable > bands.higher_threshold * months:
+        rate = gift_aid_additional
+    elif total_taxable > bands.basic_rate_threshold * months:
+        rate = gift_aid_higher
+    else:
+        rate = Decimal("0")
+
+    return AnnualTax(
+        employment=employment,
+        benefits=benefits,
+        interest=interest,
+        dividends=dividends,
+        taxable_interest=taxable_interest,
+        taxable_dividends=taxable_dividends,
+        total_taxable=total_taxable,
+        bands=tuple(split),
+        tax_due=tax_due,
+        donations=donations,
+        gift_aid_rate=rate,
+        gift_aid_refund=_round(donations * rate / 100),
     )
