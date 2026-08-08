@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backfilling 2025-26</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="backfilling-2025-26">Backfilling 2025-26</h1>
+<p><code>python -m budget.backfill_year --workbook "K:\Private\Finance\Budget 25-26.xlsm"</code></p>
+<p>Both years now reconcile against the same database, and nothing in 2026-27 moved.</p>
+<h2 id="the-result">The result</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>25-26</th>
+<th>26-27</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reconciliation</td>
+<td>RECONCILED, 40 accepted differences</td>
+<td>RECONCILED, 5 accepted differences</td>
+</tr>
+<tr>
+<td>Transactions</td>
+<td>1,944 (2 soft-deleted)</td>
+<td>unchanged</td>
+</tr>
+<tr>
+<td>Accounts</td>
+<td>5 created closed, 19 widened back to 1 April 2025</td>
+<td>unchanged</td>
+</tr>
+</tbody>
+</table>
+<p>The last row of that table is the one that mattered. <code>repo.rolled_forward_openings</code> anchors
+on the <em>earliest</em> stored opening per account, so backfilling moves the anchor from April
+2026 to April 2025 and every current-year figure becomes the far end of a twelve-month
+roll-forward that did not exist before. Comparing every account in every month of 2026-27
+before and against the backfilled database: <strong>0 cells moved</strong>.</p>
+<h2 id="what-the-workbook-needed-to-be-told">What the workbook needed to be told</h2>
+<p>Nothing here is guessed. Each is confirmed with the user and each self-verifies — a
+correction asserts the value it expects to find, so a workbook that has changed since fails
+loudly rather than correcting the wrong row.</p>
+<p><strong>Ten ledger corrections</strong> (<code>CORRECTIONS_25_26</code>). Three dates a day early on 8 January, a
+duplicate HSBC → First Direct transfer entered twice, a £148.40 charge on the wrong card,
+three amounts left at zero or mistyped, and row 1929's NY hotel charge at £499.85 rather
+than £500.61 — the 76p that stopped Platinum Amex's opening reconciling across the year end.</p>
+<p><strong>The Amex split.</strong> From 24 March 2026 the single 'Amex' column covers two cards. With the
+split applied, BA Amex and Platinum land on their stated April 2026 openings to the penny.</p>
+<p><strong>Cards, one at a time</strong> (<code>CARD_PLAN</code>). A card is one row describing one borrowing, not a row
+per year, so a name in both workbooks may be the same debt seen earlier or a different debt
+sharing a lender. MBNA and Tesco extend backwards to where their borrowing really began;
+Halifax's earlier tranche becomes its own row; Barclaycard is left alone.</p>
+<p><strong>A band the workbook does not model</strong> (<code>MISSING_BANDS</code>). 25-26 stops at 40%, which
+understated its own expected PAYE above £125,140. With the real 45% as the only deliberate
+difference, eleven of the twelve months reproduce the workbook's expected PAYE exactly.</p>
+<p><strong>The savings plan.</strong> April to July 2025 only — the months the interest tracker does not
+reach. From August the tracker wins, at the user's direction; it holds the real per-account
+split where Summary column G holds a single lump sum.</p>
+<h2 id="layout-that-could-not-be-read-by-position">Layout that could not be read by position</h2>
+<p>Four readers were written against 26-27 and would have imported nonsense from 25-26 rather
+than failing. Each rewrite was checked to give byte-identical results on 26-27 first.</p>
+<table>
+<thead>
+<tr>
+<th>Read by</th>
+<th>Would have produced</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Summary!Q19:Y31</code></td>
+<td>a month named <code>-4123.37</code> — 25-26 has two credit cards fewer, so the block is at <code>O19:W31</code></td>
+</tr>
+<tr>
+<td>Salary band rows</td>
+<td>a <strong>47,583% additional rate</strong> — 25-26 models no additional rate, so everything below it sits a row higher</td>
+</tr>
+<tr>
+<td>Card parameters at column P</td>
+<td>cards named <code>'10'</code> and <code>'24'</code>, with terms of 611 and −3,665 months</td>
+</tr>
+<tr>
+<td><code>Credit card bill BoM</code>, names two rows above</td>
+<td><strong>no statements at all</strong> — 25-26 names its columns nowhere</td>
+</tr>
+</tbody>
+</table>
+<p>A bonus is never a field of its own either. It is welded into whichever cell was convenient,
+and the two workbooks chose differently: 26-27 puts it in column P's formula, 25-26 in
+column O's (<code>=126022.4+7854</code>). Read as a value, 25-26 says May's annual salary was
+£133,876.40 — a pay rise that reverses the month after — and leaves a bonus of £7,199.50, a
+figure nobody was ever paid.</p>
+<h2 id="the-accepted-differences-and-why">The accepted differences, and why</h2>
+<p>Every one is the ledger being right and the workbook being wrong. They fall into four kinds.</p>
+<p><strong>A row on the wrong month tab.</strong> Row 1796's £85.05 Lottery debit is dated 27 February and
+was posted to March. Shows in February and closes again by March.</p>
+<p><strong>The category accumulator drifting one row.</strong> 'Expenses' sits directly above 'Other', and
+for a run of entries the macro added an 'Other' amount to the Expenses row. October is the
+larger case — every 'Other' debit from the 21st to month end, ten without exception, plus the
+four 31 October 'Emma –' credits, £3,053.41 in all. March is the same fault for five entries,
+£249.95.</p>
+<p>These are accumulators, not formulas: <code>New_entry</code> does <code>ActiveCell = dblAmt + dblCatAmt</code>, so
+nothing recomputes them and the drift is permanent in the workbook.</p>
+<p><strong>A purchase type the month tab records differently.</strong> Seven rows. Every other Coffee in the
+year is Excess and every other Waitrose is Food; the other Halifax Lottery entries are Bills
+and reconcile; three savings-interest credits carry no purchase type on the tab at all,
+though the money itself is there.</p>
+<p><strong>Cumulative views of the above.</strong> A running total carries an accepted difference into every
+later month until something cancels it, so the same figures appear again in checks D and F.
+Listed month by month rather than derived, so a <em>new</em> difference still fails the gate.</p>
+<p>Two more are the workbook netting off by hand: <code>Summary!D6</code> ends in <code>-10000</code> and <code>D7</code> in
+<code>-4130</code>, typed into the formula. That money is really in the accounts, and section A
+reconciles both of them in both months.</p>
+<h2 id="one-defect-the-backfill-exposed">One defect the backfill exposed</h2>
+<p><code>account_balances</code> returned a row for every account whatever the month. With one year that
+never showed, because every account ran the whole of it. With two, five accounts closed in
+2025 sat at £0.00 in every month of 2026-27. It now omits an account outside its validity
+window — but only when it has nothing to show, so a balance can never vanish because a
+<code>valid_to</code> was typed a month early.</p>
+<h2 id="adding-a-further-year">Adding a further year</h2>
+<ol>
+<li>Add a <code>Corrections</code> for the workbook, with its own tax year. The row check makes a wrong
+   guess fail rather than corrupt.</li>
+<li>Add the year to <code>CORRECTIONS</code>, and to <code>ACCEPTED_BY_YEAR</code> in <code>reconcile.py</code> — the
+   acceptance list is per workbook, because <code>(month, key)</code> is not unique across years.</li>
+<li>Run <code>--dry-run</code> until the report is right. <code>INCOMPLETE</code> is the switch to set while a
+   section is half-built.</li>
+<li>Reconcile <strong>both</strong> years against the result. The older one passing proves the import; the
+   newer one passing proves the join.</li>
+</ol>
+<p class="generated">Generated from <code>BACKFILL_25_26.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>

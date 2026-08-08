@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 0 results — **gate passed**</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="phase-0-results-gate-passed">Phase 0 results — <strong>gate passed</strong></h1>
+<p>All 264 account-months reconcile exactly. One accepted difference remains, where the
+database is deliberately more accurate than the workbook (finding 2).</p>
+<p>Schema, importer and reconciliation are built and running against
+<code>K:\Private\Finance\Budget 26-27.xlsm</code>. The workbook is only ever opened read-only.</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>python<span style="color: #BBB"> </span><span style="color: #666">-</span>m<span style="color: #BBB"> </span>budget.migrate_xlsm<span style="color: #BBB"> </span><span style="color: #666">--</span>force<span style="color: #BBB">     </span><span style="border: 1px solid #F00">#</span><span style="color: #BBB"> </span>workbook<span style="color: #BBB"> </span><span style="color: #666">-&gt;</span><span style="color: #BBB"> </span>SQLite
+python<span style="color: #BBB"> </span><span style="color: #666">-</span>m<span style="color: #BBB"> </span>budget.reconcile<span style="color: #BBB">                </span><span style="border: 1px solid #F00">#</span><span style="color: #BBB"> </span>the<span style="color: #BBB"> </span>acceptance<span style="color: #BBB"> </span>gate
+python<span style="color: #BBB"> </span><span style="color: #666">-</span>m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span><span style="color: #666">-</span>q<span style="color: #BBB">                 </span><span style="border: 1px solid #F00">#</span><span style="color: #BBB"> </span><span style="color: #40A070">18</span><span style="color: #BBB"> </span>passing
+</code></pre></div>
+
+<p>Database: <code>%LOCALAPPDATA%\BudgetDashboard\budget.db</code> (deliberately outside the repo).</p>
+<h2 id="what-imported">What imported</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Accounts</td>
+<td>22 (<strong>3 detected as credit cards</strong>: Platinum Amex, BA Amex, Mastercard)</td>
+</tr>
+<tr>
+<td>Categories</td>
+<td>36 + 1 recovered (below)</td>
+</tr>
+<tr>
+<td>Classifications</td>
+<td>8, with rollover and direction</td>
+</tr>
+<tr>
+<td>Transactions</td>
+<td>738 — 554 Debit, 103 Transfer, 81 Credit</td>
+</tr>
+<tr>
+<td>Opening balances</td>
+<td>258 (22 accounts × 12 months, fewer in Apr/May)</td>
+</tr>
+<tr>
+<td>Budget rows</td>
+<td>435</td>
+</tr>
+</tbody>
+</table>
+<p>Account type is <strong>derived from the month-tab row-4 formula</strong>, because it is stored
+nowhere: <code>add_account</code> takes it as a form argument, uses it to choose a formula, and
+discards it. <code>= &lt;start&gt; + &lt;credit&gt; - &lt;debit&gt;</code> is a bank; <code>- &lt;credit&gt; + &lt;debit&gt;</code> is a card.</p>
+<h2 id="reconciliation">Reconciliation</h2>
+<p>264 account-months and ~2,700 daily classification cells checked.</p>
+<p><strong>All but 4 tie exactly</strong>, and the 4 are three real data problems in the workbook, not
+code defects. Both remaining sign conventions were confirmed against the workbook's own
+formulas rather than assumed:</p>
+<ul>
+<li>posting signs, from the row-4 balance formulas</li>
+<li>classification totals = <code>direction × (debits − credits)</code>, from <code>DB4</code>'s trailing <code>*DB$38</code>,
+  which resolves to <code>INDEX(xlSelJ, …)</code>. Only <strong>Excess</strong> has direction −1 — miss this and
+  every Excess figure inverts, which is exactly what the first run showed.</li>
+</ul>
+<h3 id="finding-1-phantom-seed-transaction-10">Finding 1 — phantom seed transaction (£10)</h3>
+<p><code>Debug</code> row 2: First Direct, Electricity, £10, dated 2019-04-01 (corrected to 2026-04-01).</p>
+<p>The April tab's First Direct column has five entries on 1 April — 211.07, 26.61, 625.00,
+2643.97, 39.00 — and <strong>no £10</strong>. This row is a leftover from the original template: it sits
+in the ledger but was never posted to a month tab.</p>
+<blockquote>
+<p>April / First Direct: workbook 3,600.00 vs computed 3,590.00 (−10.00)</p>
+</blockquote>
+<p><strong>Resolved — soft-deleted</strong> (<code>PHANTOM_ROWS</code> in <code>xlsm_reader.py</code>). Imported so the audit
+trail survives, but carrying no weight. April / First Direct now ties exactly.</p>
+<h3 id="finding-2-the-date-fix-improves-on-the-workbook-1709">Finding 2 — the date fix improves on the workbook (£17.09)</h3>
+<p><code>Debug</code> row 360: BA Amex, Food, £17.09, dated 2029-05-29, corrected to 2026-05-29.</p>
+<p>The May <em>balance</em> reconciles, so the £17.09 is in the BA Amex column. But at 2029-05-29 the
+date falls outside May's daily grid, so the workbook's <code>MATCH</code> finds nothing and the amount
+contributes <strong>zero</strong> to Food. The workbook has been silently under-reporting May food
+spending by £17.09.</p>
+<blockquote>
+<p>May / Food 2026-05-29: workbook 0.00 vs computed 17.09</p>
+</blockquote>
+<p><strong>Resolved — registered as an accepted difference</strong> (<code>ACCEPTED_26_27</code> in <code>reconcile.py</code>), so the
+gate stays green and a genuine regression would still stand out. Your May food figure is
+now £17.09 higher than the spreadsheet ever showed, and correctly so.</p>
+<h3 id="finding-3-ledger-and-month-tab-disagree-790-needs-a-decision">Finding 3 — ledger and month tab disagree (£7.90) — needs a decision</h3>
+<p>3 July, BA Amex, Travel, classification Excess:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Amount</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Debug</code> ledger row 592</td>
+<td><strong>£0.10</strong></td>
+</tr>
+<tr>
+<td>July month tab, BA Amex</td>
+<td><strong>£8.00</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Same date, same account, same position in the sequence (8.50, 8.30, then this one). The two
+stores have drifted — most likely a mistyped £0.10 corrected directly in the month tab
+without re-running the macro, which updates the tab but never the ledger.</p>
+<blockquote>
+<p>July / BA Amex: workbook 1,653.27 vs computed 1,645.37 (−7.90)
+July / Excess 2026-07-03: workbook −32.07 vs computed −24.17 (+7.90)</p>
+</blockquote>
+<p>This is the dual-storage drift the single-table design removes: after migration there is
+one number, so the two cannot disagree again.</p>
+<p><strong>Resolved — the month tab wins</strong> (<code>AMOUNT_FIXES</code> in <code>xlsm_reader.py</code>): £0.10 → £8.00.
+Both July discrepancies cleared. Still worth a glance at the Amex statement to confirm.</p>
+<h2 id="also-found">Also found</h2>
+<p><strong>Recovered category <code>Claude</code></strong> — £18/month on Platinum Amex, classified Bills, on the 5th
+of April, May and June. Referenced by three transactions but absent from <code>Selections</code>:
+removed via <code>remove_category</code>, which strips the definition while leaving every historic
+transaction pointing at the name.</p>
+<p>Rather than drop real spending, the importer recreates it effective-dated to its actual
+span (2026-04-01 → 2026-06-30) under grouping <code>Other</code>. <strong>The grouping is a guess and should
+be corrected.</strong> Under the new model this cannot recur — <code>valid_to</code> retires a category
+without erasing it.</p>
+<h2 id="corrections-applied">Corrections applied</h2>
+<p>All three are enumerated and self-verifying: each asserts the current workbook value before
+changing it, so a re-run against a changed workbook fails loudly rather than misapplying.
+None is a blanket rule, so the prior-year backfill cannot inherit them.</p>
+<table>
+<thead>
+<tr>
+<th>Where</th>
+<th>Row</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DATE_FIXES</code></td>
+<td>2, 360, 601</td>
+<td>wrong year → 2026, day and month preserved</td>
+</tr>
+<tr>
+<td><code>AMOUNT_FIXES</code></td>
+<td>592</td>
+<td>£0.10 → £8.00, month tab authoritative</td>
+</tr>
+<tr>
+<td><code>PHANTOM_ROWS</code></td>
+<td>2</td>
+<td>soft-deleted, template seed row</td>
+</tr>
+</tbody>
+</table>
+<h2 id="next">Next</h2>
+<p>Gate passed. Phase 1 (read-only Overview / Month / Transactions) can start.</p>
+<p>One outstanding item for you: the <code>Claude</code> category is filed under grouping <code>Other</code> and
+should be reassigned — most likely <code>Regular outgoings</code>.</p>
+<p class="generated">Generated from <code>PHASE0_FINDINGS.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>

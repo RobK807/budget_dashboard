@@ -205,6 +205,21 @@ schema migrations only ever run forwards.
 Rebuilding from the workbook (`migrate_xlsm`) is the last resort, not the first: it resets the
 sync revision and loses anything entered since the workbook stopped being the source of truth.
 
+## The HTML copies of these notes
+
+Every `.md` in the project has an `.html` beside it, for reading without a Markdown viewer.
+They are generated, not written:
+
+```bash
+.venv\Scripts\python.exe -m budget.render_docs
+```
+
+`--check` reports which have drifted without writing anything, and the test suite runs it —
+so editing a document and forgetting to regenerate its page is a failing test rather than a
+page that quietly says something out of date. Which is what happened to `README.html`: it
+was produced once at the start and left, and by the time anyone opened it, it described a
+dashboard that had moved on considerably.
+
 ## Everyday commands
 
 ```bash

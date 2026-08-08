@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 2b — cross-machine sync</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="phase-2b-cross-machine-sync">Phase 2b — cross-machine sync</h1>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>streamlit<span style="color: #BBB"> </span>run<span style="color: #BBB"> </span>app.py<span style="color: #BBB">          </span><span style="color: #60A0B0; font-style: italic"># Manage → Sync</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span>-q<span style="color: #BBB">     </span><span style="color: #60A0B0; font-style: italic"># 124 passing</span>
+</code></pre></div>
+
+<p>Implements DESIGN.md §6.3. The database always lives on a local disk; the NAS at
+<code>K:\Private\Finance\budget_db</code> holds pushed copies only. Nothing ever opens the master over
+SMB, because SQLite's locking is not reliable there.</p>
+<h2 id="first-time-setup">First-time setup</h2>
+<ol>
+<li>On the machine with the good database (this laptop), open <strong>Manage → Sync</strong> and press
+   <strong>Push now</strong>. That creates <code>budget.db</code>, <code>budget.meta.json</code> and <code>budget.db.bak</code> on the NAS.</li>
+<li>On the desktop, follow <a href="README.md">README.md</a> to install, then press <strong>Pull now</strong> instead
+   of running the migration. Both machines are then on the same revision.</li>
+</ol>
+<h2 id="how-it-protects-you">How it protects you</h2>
+<p>Two guards, and the second is the one that matters.</p>
+<p>A <strong>lock</strong> (<code>budget.lock</code>) records who is working. A <strong>revision counter</strong> records what they
+started from: every write bumps <code>db_meta.revision</code>, and a push refuses if the master's
+revision has moved away from the <code>base_revision</code> this machine pulled. Without that check a
+lock slipped or force-taken loses a machine's work silently; with it, the same slip becomes
+a refusal you can reconcile.</p>
+<p><strong>Pushes are staged</strong>, so a dropped connection cannot leave a truncated master:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>VACUUM<span style="color: #BBB"> </span>INTO<span style="color: #BBB"> </span>snapshot<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>integrity_check<span style="color: #BBB"> </span><span style="color: #666">+</span><span style="color: #BBB"> </span>sha256<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>re<span style="color: #666">-</span>check<span style="color: #BBB"> </span><span style="color: #007020; font-weight: bold">master</span><span style="color: #BBB"> </span>revision
+<span style="color: #BBB">   </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>upload<span style="color: #BBB"> </span><span style="color: #007020; font-weight: bold">as</span><span style="color: #BBB"> </span>budget<span style="color: #666">.</span>db<span style="color: #666">.</span>incoming<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>verify<span style="color: #BBB"> </span>sha256<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>promote<span style="color: #BBB"> </span>(old<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span><span style="color: #666">.</span>bak)<span style="color: #BBB"> </span><span style="border: 1px solid #F00">→</span><span style="color: #BBB"> </span>write<span style="color: #BBB"> </span>sidecar
+</code></pre></div>
+
+<p><code>VACUUM INTO</code> rather than a file copy, because copying a live SQLite database can capture a
+torn state. The upload is verified <em>after</em> transfer, which is what catches silent SMB write
+corruption. The master is only replaced once a complete verified copy sits beside it, and the
+previous generation is kept as <code>budget.db.bak</code>.</p>
+<p><strong>The invariant: <code>pushed_revision</code> only advances after a push verifies end to end.</strong> Every
+failure path leaves it untouched, so the next trigger retries rather than believing itself
+synced. Two tests pin this.</p>
+<p><strong>Revision is read from the sidecar</strong>, never by opening the master over SMB — a small JSON
+file is safe to read over a network share.</p>
+<h2 id="automatic-push">Automatic push</h2>
+<p>After every committed write — add, import, undo, remove, restore — so the window in which two
+machines can diverge is seconds rather than days.</p>
+<p>Failure handling distinguishes the normal from the exceptional:</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Treatment</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NAS unreachable (laptop away)</td>
+<td>Quiet caption, stays pending, retries next write</td>
+</tr>
+<tr>
+<td>Deliberate offline mode</td>
+<td>Suppressed entirely — no pointless retries</td>
+</tr>
+<tr>
+<td>Conflict or foreign lock</td>
+<td>Warning pointing at the Sync page</td>
+</tr>
+</tbody>
+</table>
+<p>The unreachable case is deliberately understated. Away from home it is the normal state, and
+an error banner on every entry would train you to ignore the real ones.</p>
+<p>The sidebar carries a <strong>persistent</strong> badge — 🟢 in sync · rev N, 🟡 N pending, 🔴 conflict —
+rather than a toast, for the same reason: a status that disappears after a few seconds takes
+the genuine conflicts with it.</p>
+<h2 id="deliberate-offline-mode">Deliberate offline mode</h2>
+<p><strong>Check out</strong> before going away with the laptop: it requires being in sync, takes a
+long-lived lease with a stated return date, and refreshes the ancestor snapshot. Automatic
+pushing is then suspended. <strong>Check in</strong> pushes and releases the lease.</p>
+<p>The value is what the <em>other</em> machine sees. Under accidental divergence the desktop finds a
+stale lock and has to guess; under a deliberate checkout it sees a stated intent and an
+expected return, which is a far better basis for deciding whether to force-take.</p>
+<p>Force-taking is available and explicit. The other machine's work is not lost — its next push
+hits the revision check and routes to reconciliation.</p>
+<h2 id="reconciliation">Reconciliation</h2>
+<p><code>budget.base.db</code> holds the <strong>common ancestor</strong>: a copy of exactly what was last pulled.
+Without it there is no way to distinguish <em>"this machine added a row"</em> from <em>"the other
+machine deleted it"</em> — a two-way diff gets that wrong.</p>
+<p>On a conflict the Sync page lists the transactions that exist only here (by <code>uid</code>, absent
+from the ancestor) and exports them as CSV <strong>in the Import page's own format</strong>. Pull the
+fresh master, feed the file back through Import, and it arrives validated, previewed and
+tagged as its own undoable batch. That is why §6.3.5 needed almost no new code — and why
+Phase 2 had to come first.</p>
+<p>A test asserts the export parses cleanly through <code>importer.parse</code>, so the two halves cannot
+drift apart.</p>
+<h2 id="verified">Verified</h2>
+<p>124 tests, covering conflict detection, the dirty-flag invariant on failure, lock refusal
+and force-take, overdue leases, checkout requiring sync, pull refusing to overwrite unpushed
+work, and the export round-trip.</p>
+<p>Also exercised end to end against the real NAS on a scratch database and a scratch folder:
+first push created the master and sidecar (327,680 bytes, sha256 verified, backup kept), a
+local edit showed as pending, a simulated push from another machine was detected as a
+conflict, the push was refused with the revisions named, and the reconciliation export
+produced exactly the one local-only transaction. The scratch folder was then removed — your
+real <code>budget_db</code> folder does not exist yet and will be created by your first push.</p>
+<p><strong>A bug that probe caught:</strong> reachability originally tested whether <code>budget_db/</code> itself
+existed, which meant the very first push could never happen — that folder is ours to create.
+It now tests the share above it. Worth noting because it would only ever have appeared on a
+first run, on a machine with nothing to fall back on.</p>
+<h2 id="next">Next</h2>
+<p>Phase 3 — settings CRUD for accounts, categories and classifications, which is where
+effective dating finally replaces <code>update_months</code> in the interface as well as the schema.
+Then Phase 4 for projections, salary, cards and cycling.</p>
+<p class="generated">Generated from <code>PHASE2B_NOTES.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>

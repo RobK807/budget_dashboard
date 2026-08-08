@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 5 — refinements</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="phase-5-refinements">Phase 5 — refinements</h1>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase5<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># seeds the new tables from the workbook</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.reconcile<span style="color: #BBB">       </span><span style="color: #60A0B0; font-style: italic"># gate: green, all six checks</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span>-q<span style="color: #BBB">        </span><span style="color: #60A0B0; font-style: italic"># 354 passing</span>
+</code></pre></div>
+
+<blockquote>
+<p>A second round of refinements followed a full review of the dashboard. They are at the end
+of this file, under <a href="#after-the-review">After the review</a>.</p>
+</blockquote>
+<p>Twenty-one refinements across the Salary, Cards, Cycling, Projections, Month and Summary
+pages, one new page, and five new Settings sections.</p>
+<p>The theme underneath them is the same one every phase has had: <strong>things the workbook held as
+constants inside formulas become data.</strong> The annual salary was typed into all twelve rows of
+column O. The bonus was <code>+29028.48</code> welded into the middle of May's expected-gross formula.
+The cycling fares were a nested <code>IF</code> in a column. The card terms, the statement days, the
+savings targets — all cells with no way in but the cell itself.</p>
+<h2 id="what-changed">What changed</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Page</th>
+<th>Was</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1–2</td>
+<td><strong>Salary</strong></td>
+<td>Holiday pay, benefits and additional pay shown; the actual side is now enterable, for future months too</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Salary</strong></td>
+<td>Gross salary by effective date and bonus by month, which together derive expected gross</td>
+</tr>
+<tr>
+<td>4–6</td>
+<td><strong>Salary</strong></td>
+<td>Bands, rates and allowance steps editable per tax year; rates as whole percentages</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Salary</strong></td>
+<td>The net-salary-to-daily-allowance calculation</td>
+</tr>
+<tr>
+<td>8–10</td>
+<td><strong>Cards</strong></td>
+<td>Minimum % to 2dp; next payment rather than first; total-payment chart segmented by card</td>
+</tr>
+<tr>
+<td>11–12</td>
+<td><strong>Settings → Cards</strong></td>
+<td>Every card parameter, and adding a card</td>
+</tr>
+<tr>
+<td>13</td>
+<td><strong>Settings → Cycling</strong></td>
+<td>Fares with effective dates</td>
+</tr>
+<tr>
+<td>14</td>
+<td><strong>Record → Cycling</strong></td>
+<td>Enter a ride or a running cost</td>
+</tr>
+<tr>
+<td>15</td>
+<td><strong>Cycling</strong></td>
+<td>Days ridden over a chosen date range</td>
+</tr>
+<tr>
+<td>17</td>
+<td><strong>Projections</strong></td>
+<td>Enter a month's projections, Import-style</td>
+</tr>
+<tr>
+<td>18</td>
+<td><strong>Settings → Monthly figures</strong></td>
+<td>Daily allowance and category targets, by month</td>
+</tr>
+<tr>
+<td>19</td>
+<td><strong>Month</strong></td>
+<td>Credit cards outstanding</td>
+</tr>
+<tr>
+<td>20</td>
+<td><strong>Summary</strong></td>
+<td>Account targets against balances</td>
+</tr>
+<tr>
+<td>21</td>
+<td><strong>Savings and investments</strong></td>
+<td>New page — the Summary tab's two headline tables</td>
+</tr>
+</tbody>
+</table>
+<h2 id="everything-still-ties-to-the-workbook">Everything still ties to the workbook</h2>
+<p>Verified against the workbook's own figures before anything was wired up:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Expected gross, all 12 months</td>
+<td>Exact, including May's £39,724.33 bonus month</td>
+</tr>
+<tr>
+<td>NI and PAYE, all months</td>
+<td>Zero difference — the rate rescale changed nothing</td>
+</tr>
+<tr>
+<td>Cycling total saved</td>
+<td>£367.20, the workbook's <code>L1</code></td>
+</tr>
+<tr>
+<td>Credit card outstanding, July</td>
+<td>−£3,400.79 / £75.73 / £272.67, the workbook's C52:E52</td>
+</tr>
+<tr>
+<td>Account targets, July</td>
+<td>Halifax, HSBC, First Direct and Nationwide all exact</td>
+</tr>
+<tr>
+<td>Savings and investments</td>
+<td>Month-end available: £10,603.72 / £12,601.56 / £13,673.02 / £12,290.58</td>
+</tr>
+<tr>
+<td>Spending calculation</td>
+<td>Card limit £1,189.74, monthly £639.74, daily £21.32</td>
+</tr>
+</tbody>
+</table>
+<h2 id="three-findings">Three findings</h2>
+<p><strong>'Less SC &amp; Wed' had stopped meaning what it said.</strong> The Summary tab's savings column
+subtracted a hand-typed 2,819.77 from the total. That figure covered Service Charge and
+Wedding in April — but from June it also covered <strong>Tembo</strong>, which had joined at £17,536 and
+was silently included in the subtraction while the heading stayed the same. Confirmed by
+solving for the excluded set in all four months: only <code>{Service Charge, Wedding, Tembo}</code>
+reproduces June and July. The accounts are now flagged, so the column follows when a pot is
+added and the label cannot go stale.</p>
+<p><strong>The opening row of that table used the wrong month's exclusions.</strong> <code>E3</code> is the year's
+opening savings less 2,819.77 — but 2,819.77 is April's <em>closing</em> balance of the earmarked
+pots, not its opening. At the opening they came to 2,263.87. Every month-end row ties
+exactly; only the opening row is out, by £556. The build subtracts each row's own balances,
+so it reports £10,345.53 where the workbook says £9,789.63.</p>
+<p><strong>Expected gross <em>is</em> salary/12 after all.</strong> Phase 4 concluded it was not, because May's
+figure could not be reproduced. It could not be reproduced because the bonus was inside the
+formula. With <code>salary_profile</code> and <code>bonus</code> as tables, all twelve months derive exactly, and
+<code>payslip.expected_gross</code> is no longer the source of truth — it is kept only as what the
+workbook stated.</p>
+<h2 id="rates-are-stored-as-percentages-now">Rates are stored as percentages now</h2>
+<p><code>salary_assumption.value</code> holds 8.00 for 8%, not 0.08. The column is integer pence, so a
+fraction could only ever express whole percentage points — 8.5% would have rounded to 9%.
+Nothing in the data needed the precision, which is exactly why it was worth fixing before
+something did.</p>
+<p>The migration multiplies the five rate rows by 100, once, guarded by the stored schema
+version rather than by inspecting the values: 0.2 and 20 are both plausible rates, so there
+is no way to tell from a number alone whether it has already been converted, and running it
+twice would turn 20% into 2000%.</p>
+<h2 id="the-basic-band-is-derived">The basic band is derived</h2>
+<p>The workbook's <code>D36</code> is <code>=D28-D22</code> — the basic rate threshold less the personal allowance.
+Phase 4 stored only the result. Both inputs are now stored and the band is computed, because
+storing all three would let them drift apart the moment one was edited.</p>
+<h2 id="schema">Schema</h2>
+<p>Version 3. New tables: <code>salary_profile</code>, <code>bonus</code>, <code>cycling_rate</code>, <code>card_statement</code>,
+<code>account_target</code>, <code>savings_target</code>. New columns: <code>account.exclude_from_savings</code>,
+<code>account.statement_day</code>, <code>account.payment_day</code>, <code>card.credit_limit</code>.</p>
+<h2 id="a-new-kind-of-test">A new kind of test</h2>
+<p><code>tests/test_pages_render.py</code> runs all fourteen pages through Streamlit's <code>AppTest</code> and fails
+on any uncaught exception. Pages are scripts, so until now a typo in one only showed up when
+someone opened it.</p>
+<p>It runs against a <em>copy</em> of the database, not the real one — opening a page calls
+<code>create_all</code>, which applies pending migrations, so pointing the tests at the live file would
+have quietly migrated it as a side effect of running the suite. It did exactly that once
+before the fixture was fixed.</p>
+<h2 id="note">Note</h2>
+<p><code>import_phase5</code> has seeded your live database and there is a <strong>push pending</strong> on the Sync
+page. The previous backup is at <code>budget.pre-phase5.db</code>.</p>
+<p><strong>Credit limits are not imported.</strong> The workbook's 'Total available' column is a derived
+figure that goes negative (<code>=9000-C4/1.033</code>), not a limit. All five cards need one entered
+under <strong>Settings → Cards</strong>.</p>
+<h2 id="remaining">Remaining</h2>
+<p>Backfill prior years (<code>Budget 25-26.xlsm</code> and earlier) with the same importer, which is what
+turns Trends into genuine multi-year analysis — and makes the tax-year selector on the Salary
+page useful rather than a list of one.</p>
+<hr />
+<h1 id="after-the-review">After the review</h1>
+<p>A read-through of the whole dashboard produced a second list. Most of it is presentation, but
+four items were substantive, and three of those were the same mistake in different clothes:
+<strong>something that was true of a workbook had been carried across as though it were true of the
+database.</strong></p>
+<h2 id="nothing-is-scoped-to-one-fiscal-year-any-more">Nothing is scoped to one fiscal year any more</h2>
+<p>Every month dropdown was <code>repo.fiscal_periods(tax_year)</code> — April 2026 to March 2027, and no
+further. That is one file's worth of months. Backfilling an earlier year would have loaded
+rows that no dropdown could reach, and next April every list would have needed the setting
+changed by hand.</p>
+<p>The range is derived instead: from the first month anything is recorded against, through the
+current month, plus a look-forward for the lists that plan ahead. <code>look_forward_months</code> is a
+setting (default twelve). Trends also exposes it as a slider, because its balances are
+cumulative — six months ahead and eighteen are different calculations, not the same one
+truncated. <code>fiscal_periods</code> remains, used only by the reconciliation gate, which compares
+against a workbook and so genuinely is scoped to a year.</p>
+<h2 id="the-credit-card-outstanding-figure-was-wrong">The credit-card outstanding figure was wrong</h2>
+<p>Reported: July's Platinum Amex showed a balance of £49.68 and an outstanding of <strong>−£3,400.79</strong>.</p>
+<p>The old rule decided which bill was standing from the day of the month, which is all a month
+tab could see. It has no way to express "collected on the 30th", so at a July month end it
+deducted July's bill from every card — including the one that had already paid it.</p>
+<p>The cycle is two dates. Where the payment day is the <em>smaller</em> number, the bill is collected
+the following month:</p>
+<table>
+<thead>
+<tr>
+<th>Card</th>
+<th>Statement</th>
+<th>Payment</th>
+<th>Bill standing at 31 July</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Platinum Amex</td>
+<td>16th</td>
+<td>30th</td>
+<td>none — collected on the 30th</td>
+</tr>
+<tr>
+<td>BA Amex</td>
+<td>26th</td>
+<td>9th</td>
+<td>July's, until 9 August</td>
+</tr>
+<tr>
+<td>Mastercard</td>
+<td>12th</td>
+<td>6th</td>
+<td>July's, until 6 August</td>
+</tr>
+</tbody>
+</table>
+<p>So outstanding is the balance before a statement is issued, the balance less that bill while
+it awaits collection, and the balance again once it has gone. July now reads £49.68 / £75.73 /
+£272.67 — the last two still matching the workbook's own D52, which happened to be right for
+the two cards whose cycle crossed a month.</p>
+<p>The table also lost its duplicate column. <strong>This month's bill</strong> is the statement figure entered
+for the month; <strong>awaiting payment</strong> is whichever bill is actually standing, which for a card
+collected the following month is the previous month's. They looked like duplicates because for
+half the year they are.</p>
+<p>Bills can be entered as they arrive: a blank stays blank rather than being stored as zero, and
+saving writes only what is filled in.</p>
+<h2 id="a-month-can-hold-two-payments">A month can hold two payments</h2>
+<p><code>payslip</code> is keyed by period, so a bonus paid on its own day had nowhere to go — entering it
+overwrote the salary. <code>bonus</code> now carries its own actual gross, NI, PAYE, net and payday, and
+the comparison table adds the two together, with an 'of which bonus' column. Both a bonus and
+a payslip can be removed outright, for when the wrong month was filled in.</p>
+<p>The alternative was a surrogate key on <code>payslip</code>, which would have turned every lookup into a
+group-by for the sake of one case a year.</p>
+<h2 id="tax-bands-are-effective-dated-for-real">Tax bands are effective-dated for real</h2>
+<p><code>salary_assumption</code> always had <code>effective_from</code> in its primary key, but only the allowance
+taper used it: everything else was written at 1 April and read back without reference to a
+date. <code>repo.bands_from(assumptions, on)</code> takes the last set starting on or before <code>on</code>, and
+each month is now taxed under the bands of <em>its own</em> tax year at the values in force on its
+first day — which matters as soon as the month lists run past a fiscal year end.</p>
+<p>The editors write against a chosen effective date, so a mid-year change is a new set rather
+than an edit that silently rewrites what earlier months were taxed at. The existing figures
+keep 01/04/2026. Underneath, read-only tables show the set as at any stored date, and an
+expander lists every stored figure by effective date.</p>
+<h2 id="presentation">Presentation</h2>
+<ul>
+<li><strong>Money carries a thousands separator everywhere, including editable cells.</strong> <code>st.dataframe</code>
+  had it via a Styler; every <code>st.data_editor</code> did not, because printf has no thousands flag —
+  £39255.98. Streamlit parses column formats with sprintf-js, which treats <code>,</code> as one, so
+  <code>"£%,.2f"</code> works where <code>"£%.2f"</code> did not. Chart axes get <code>,.2f</code> too: Plotly's default is
+  SI-prefixed, which drew £10,000 as <code>10.00000k</code>.</li>
+<li><strong>Percentages are quoted, not fractional, to two places</strong> — 80.00, not 0.8 and not 80.</li>
+<li><strong>Date filters open on the last ninety days</strong> rather than on the full extent of the data, so
+  the default does not widen as history accumulates.</li>
+<li><strong><code>nan</code> is named.</strong> A transfer carries no category or classification, so those cells are
+  genuinely empty and pandas rendered them <code>nan</code>. The picker on the Transactions page was worse:
+  it read <code>category or type</code>, and a missing category arrives as float NaN, which is <em>truthy</em> —
+  so every transfer was labelled <code>nan</code> rather than <code>Transfer</code>.</li>
+<li><strong>Settings sections are in alphabetical order</strong>, like every other list in the app.</li>
+<li><strong>Summary is reordered</strong> to position, accounts, spend by classification, account by month,
+  charts, targets.</li>
+<li><strong>The remove-a-transaction list has its own date, account and comment filters</strong>, since
+  picking the right row out of five hundred is the hard part.</li>
+<li><strong>The projection grid opens pre-populated</strong> with every day of the month against every
+  classification, is filterable by classification, and can copy a previous month across — bills
+  that repeat on the same date need entering once. Saving only touches the classifications on
+  screen, so a filtered view cannot delete what it is hiding, and a day left at zero is not
+  stored.</li>
+<li><strong>Savings and investments</strong> now show BoM and EoM side by side, with a cumulative target
+  column and a <code>Required</code> that is the cumulative target less what is available. The opening row
+  is gone: with both ends of the month in one row it was saying the same thing twice.</li>
+</ul>
+<h2 id="schema_1">Schema</h2>
+<p>Version 4. New columns: <code>bonus.gross</code>, <code>bonus.ni</code>, <code>bonus.paye</code>, <code>bonus.net</code>, <code>bonus.payday</code>.
+All nullable and additive; the migration is an <code>ALTER TABLE</code> per column.</p>
+<hr />
+<h1 id="the-pull-that-corrupted-a-database">The pull that corrupted a database</h1>
+<p>Worth writing down, because the cause was a single missing <code>dispose()</code> and the symptom looked
+like disk corruption.</p>
+<p><strong>What happened.</strong> The laptop sat at revision 8 while the desktop had pushed revision 21.
+Running <code>sync.pull()</code> against the live database left it reporting <code>malformed database schema
+(sqlite_autoindex_txn_1) - orphan index</code>. The file was provably healthy thirteen seconds
+earlier — a copy taken immediately before opens cleanly and passes <code>integrity_check</code>.</p>
+<p><strong>Why.</strong> <code>pull()</code> opened an Engine to read the local revision and never disposed it. Closing
+a <code>Session</code> only returns its connection to the <em>pool</em>; the engine keeps the file handle and
+the WAL open. <code>pull()</code> then deletes <code>-wal</code>/<code>-shm</code> and replaces the database underneath its own
+live connection. <code>_snapshot</code> and <code>_integrity_ok</code> both had <code>finally: engine.dispose()</code>. The
+pull path was the one that did not, which is exactly the kind of inconsistency worth treating
+as a bug report in itself.</p>
+<p>Worse, <code>make_engine</code> runs <code>PRAGMA journal_mode=WAL</code> on connect — a <strong>write to the header</strong>. So
+merely asking "what revision is this database at?" modified it, on a file whose WAL state was
+about to be interfered with.</p>
+<p><strong>Three fixes.</strong></p>
+<ol>
+<li><code>_read_counters</code> reads the revision with plain <code>sqlite3</code>, opened <code>mode=ro</code>. It writes
+   nothing and closes deterministically. An Engine closes on the pool's schedule, and a
+   connection that fails during setup can outlive <code>dispose()</code> until garbage collection —
+   which on Windows turns the following rename into <code>WinError 32</code>.</li>
+<li><code>ui.close_connections()</code> disposes the app's cached engine, and the Sync page calls it
+   before any pull. The engine is <code>@st.cache_resource</code>, so without this it was still holding
+   the old file when the new one landed.</li>
+<li>An unreadable local database is <strong>moved aside</strong>, never overwritten. A pull is usually
+   reached because something has already gone wrong once, which makes the file it replaces
+   evidence. And a database still held open is now refused with an explanation rather than
+   replaced.</li>
+</ol>
+<p><strong>Behind is not a conflict.</strong> Separately, <code>Status.conflict</code> was <code>nas.revision !=
+local.base_revision</code> — true whenever the master had moved, whether or not this machine had
+anything of its own. A clean machine that is simply behind was shown a red <em>Conflict</em> banner
+and a set of export-and-reimport instructions, with nothing to reconcile. Now <code>behind</code> (master
+moved, nothing unpushed here → pull, lossless) is distinct from <code>conflict</code> (both sides moved →
+genuinely needs reconciling), and being behind offers a <strong>Pull now and catch up</strong> button.</p>
+<p><code>Refresh data</code> never helped with this, and now says so: it clears cached queries, and the
+local database really was a different, older one.</p>
+<hr />
+<h1 id="a-payslip-decomposed">A payslip, decomposed</h1>
+<p>The salary model held one number where the payslip has five, which is why nothing quite tied
+out. Source: <code>K:\Private\Finance\Tax Calculator v0.3.xlsx</code>, tab <code>2026-2027</code>, <code>A18:D25</code> and
+<code>G1:I23</code>. Rates cross-checked against HMRC — every stored threshold is already correct for
+2026/27 and none were changed.</p>
+<h2 id="what-the-single-figure-was-hiding">What the single figure was hiding</h2>
+<table>
+<thead>
+<tr>
+<th>Stored as one</th>
+<th>Actually</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>annual_salary</code> 128,350.25</td>
+<td>base <strong>118,905</strong> + car allowance <strong>9,445.25</strong></td>
+<td>12% × 50,000 + 5% × 68,905</td>
+</tr>
+<tr>
+<td><code>benefits</code> 1,177.88</td>
+<td>pension <strong>990.88</strong> + holiday pay <strong>187.00</strong></td>
+<td>= 1,177.875</td>
+</tr>
+<tr>
+<td><code>additional</code> 24</td>
+<td>home working allowance</td>
+<td>paid on top, not taxable</td>
+</tr>
+</tbody>
+</table>
+<p>The car allowance is derived, not stored — a pay rise moves it automatically. <code>base_salary</code>
+is the input; the v5 migration recovers it by inverting the formula, <code>base = (total − 3,500)
+/ 1.05</code>, which returned 118,905.00 and 116,688.00 exactly. Both round numbers, and the second
+matches the Tax Calculator's own April column, which is the check that this is the right
+inversion rather than a plausible one.</p>
+<p><strong>Why it has to be split.</strong> The pension is a percentage of base <em>alone</em> — the car allowance is
+not pensionable. Charged against the combined 128,350.25 it would take £1,069.59 a month
+instead of £990.88, and everything downstream would be wrong by the difference.</p>
+<h2 id="two-quantities-both-called-gross">Two quantities both called "gross"</h2>
+<p><code>base + car</code> is <strong>10,695.85</strong>. The payslip says <strong>9,728.97</strong>. The gap is not an error: the
+pension is salary sacrifice, so it comes out before gross is stated, and the home working
+allowance is inside it.</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>payslip gross = base + car + bonus + home working − pension
+</code></pre></div>
+
+<p>Verified to the penny for every recorded month, including the bonus one (38,757.45). Both are
+now available as <code>Components.gross</code> and <code>Components.payslip_gross</code>, so the comparison table
+puts like against like instead of showing a phantom £966.88 every month.</p>
+<p>Taxable is a third quantity again — <code>base + car + bonus − pension − holiday pay</code>, excluding
+the home working allowance. The workbook says this the roundabout way, in <code>B25 = B22 − B23 −
+B24 − B21</code>: that last term takes back out the allowance <code>B22</code> had just added.</p>
+<h2 id="the-higher-rate-band-overlapped-the-additional-rate">The higher-rate band overlapped the additional rate</h2>
+<p>Found by checking May against the real payslip. <code>income_tax</code> capped the higher-rate slice at
+<code>higher_threshold</code> — the point where the <em>additional</em> rate starts — rather than at the width
+of the higher band. The two differ by exactly the basic band, so any month reaching the
+additional rate had £3,141.67 charged at 40% <strong>and</strong> at 45%.</p>
+<p>Ordinary months never get there, which is why it survived: the only month it ever bit was the
+bonus one.</p>
+<table>
+<thead>
+<tr>
+<th>May PAYE</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workbook / previous code</td>
+<td>17,452.82</td>
+</tr>
+<tr>
+<td>Corrected</td>
+<td><strong>16,196.15</strong></td>
+</tr>
+<tr>
+<td>Actual (payslip + bonus)</td>
+<td>16,169.64</td>
+</tr>
+</tbody>
+</table>
+<p>From £1,283.18 out to £26.51. The thresholds are untouched — this is the arithmetic between
+them. <code>tests/test_tax.py</code> now carries one case where the workbook is <em>not</em> the authority,
+because an actual payslip is.</p>
+<h2 id="the-tax-year-does-not-add-up-to-the-sum-of-its-months">The tax year does not add up to the sum of its months</h2>
+<p>PAYE can be operated two ways: charge each month on its own bands, or charge the year to date
+against one set of bands stretched across the months elapsed. HMRC reconciles on the second.
+The payslips say this payroll runs the first:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Actual</th>
+<th>Per-month model</th>
+<th>Cumulative model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>June 2026</td>
+<td>3,276.86</td>
+<td><strong>3,277.42</strong></td>
+<td>3,133.34</td>
+</tr>
+<tr>
+<td>July 2026</td>
+<td>3,276.86</td>
+<td><strong>3,277.42</strong></td>
+<td>3,133.34</td>
+</tr>
+<tr>
+<td>May bonus</td>
+<td>13,011.09 on 29,028.48 — a flat 44.82%, the additional rate on the payment alone</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>So the per-month figure stays what the page models a payslip against; a cumulative one would
+be £143.52 out every month after the bonus. What the cumulative basis is <em>for</em> is the
+different question of whether the year comes out right, and it does not:</p>
+<table>
+<thead>
+<tr>
+<th>2026/27</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Taxable pay</td>
+<td>143,068.62</td>
+</tr>
+<tr>
+<td>Charged month by month</td>
+<td>52,020.78</td>
+</tr>
+<tr>
+<td>Due on the year as a whole</td>
+<td>50,583.87</td>
+</tr>
+<tr>
+<td><strong>Overpaid</strong></td>
+<td><strong>1,436.91</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The cause is structural, not an error in either calculation. A bonus month gets one month's
+basic and higher bands and throws the remaining £28k at 45%; across a full year far more of it
+falls below the £125,140 additional-rate threshold. Nothing is wrong — HMRC settles it after
+5 April. The <strong>Tax year to date</strong> tab exists so the refund is visible before it arrives.</p>
+<p><code>income_tax</code> gained a <code>months</code> argument to do this: it scales every threshold, so <code>months=1</code>
+is the monthly charge and is byte-identical to before, and <code>months=12</code> is the year. One known
+quirk is pinned rather than fixed — the allowance adjustment applies to the basic and higher
+slices but not to the additional-rate threshold, which leaves a stretch (£122,381–£125,140 a
+year) taxed at nothing at the margin. It bites on no figure in this file, and the monthly form
+of the same formula is what reproduces the payslips.</p>
+<h2 id="where-everything-now-lands">Where everything now lands</h2>
+<table>
+<thead>
+<tr>
+<th>Month</th>
+<th>Payslip gross</th>
+<th>NI</th>
+<th>PAYE</th>
+<th>Net</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>April</td>
+<td>exact</td>
+<td>exact</td>
+<td>−0.21</td>
+<td>−0.21</td>
+</tr>
+<tr>
+<td>May</td>
+<td>exact</td>
+<td>exact</td>
+<td>+26.51</td>
+<td>+26.51</td>
+</tr>
+<tr>
+<td>June</td>
+<td>exact</td>
+<td>exact</td>
+<td>+0.56</td>
+<td>+0.56</td>
+</tr>
+<tr>
+<td>July</td>
+<td>exact</td>
+<td>exact</td>
+<td>+0.56</td>
+<td>+0.56</td>
+</tr>
+</tbody>
+</table>
+<p>Gross and NI reproduce exactly. The residual PAYE is the tax-code assumption: the model
+applies a monthly personal-allowance step where PAYE is really cumulative across the year, so
+a month is only ever approximately right on its own. Closing that would mean a cumulative
+model — a bigger change, and one that needs the actual tax code rather than a fitted step.</p>
+<h2 id="parameters">Parameters</h2>
+<p>New <strong>Settings → Salary</strong> section: pension rate (10% of base), home working allowance (£24),
+holiday pay (£187), and the car allowance threshold and its two rates. Held as plain settings
+rather than in <code>salary_assumption</code>, deliberately — so editing them cannot disturb a tax
+threshold. A month with a recorded payslip uses its actual holiday pay in preference to the
+standing figure.</p>
+<h2 id="schema_2">Schema</h2>
+<p>Version 5. New column: <code>salary_profile.base_salary</code>. <code>annual_salary</code> is retained as the
+pre-split record and is no longer read.</p>
+<h1 id="the-second-review">The second review</h1>
+<p>Presentation, mostly — but two of the items turned out to be bugs rather than preferences.</p>
+<h2 id="one-dictionary-or-none-of-the-formats-survive">One dictionary, or none of the formats survive</h2>
+<p>The Cards page and Settings → Cards were both asked for money formatting they already had in
+the code:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>ui<span style="color: #666">.</span>money_table(<span style="color: #666">...</span>, [<span style="color: #4070A0">&quot;credit_limit&quot;</span>, <span style="color: #4070A0">&quot;opening_balance&quot;</span>])<span style="color: #666">.</span>format({<span style="color: #4070A0">&quot;Minimum %&quot;</span>: <span style="color: #4070A0">&quot;</span><span style="color: #70A0D0; font-style: italic">{:.2f}</span><span style="color: #4070A0">&quot;</span>})
+</code></pre></div>
+
+<p><code>Styler.format</code> clears nothing only when <em>every</em> argument is left at its default. Given a
+dict, it walks all the columns in the subset — and with no <code>subset</code> that is all of them —
+assigning a display function to each, falling back to the default formatter for any the dict
+does not mention. The second call therefore replaced the first. Both tables lost the pound
+sign and the separator, silently, and both were the only two places in the app that chained.</p>
+<p><code>ui.money_table</code> now takes <code>formats=</code> for the non-money columns, so there is one dict and
+nothing to overwrite. <code>tests/test_refinements.py</code> asserts the broken spelling stays broken —
+if a future pandas makes chaining cumulative, that test says so rather than quietly passing.</p>
+<p>The same call now renders missing values as <code>—</code>. <code>£nan</code> was always wrong and became hard to
+miss once expected and actual were shown line for line, where a future month is empty on one
+side by definition.</p>
+<h2 id="holiday-pay-counted-twice">Holiday pay, counted twice</h2>
+<p>Putting expected and actual side by side is what exposed it. The comparison table mapped the
+stored <code>benefits</code> to "Actual — Pension" and read £1,177.88 against an expected £990.88 —
+adrift by exactly the £187.00 in the holiday pay column two places to its left.</p>
+<p><code>benefits</code> is the old workbook's lumped figure: pension <em>and</em> holiday pay. Shown beside its
+own holiday pay column it counted that twice. Taking it back out reproduces the expected
+pension to the penny in all four recorded months. Nothing stored changed; this was only ever
+a display of it.</p>
+<h2 id="a-note-that-said-0">A note that said 0</h2>
+<p>Found while checking the pages rendered. The Projections day-by-day table merged projected
+against actual and called <code>.fillna(Decimal("0"))</code> on the result, which reached the comment
+column too — so a day with no note showed <code>0</code>, and the column held Decimals beside strings,
+which Arrow cannot type. Streamlit recovered by coercing the column, so it never surfaced as
+an error, only as a wrong-looking table. Now only the two amount columns are filled.</p>
+<h2 id="savings-on-three-bases">Savings, on three bases</h2>
+<p>The Savings table had grown to nine columns interleaving total and available. It is six now —
+BoM, Added, EoM, monthly target, cumulative target, required — with a <strong>Basis</strong> dropdown
+choosing between total, available and reserved. <code>savings_series</code> gained <code>total_required</code>,
+<code>available_required</code> and <code>reserved_required</code>: one cumulative target measured against each of
+the three balances, since what the dropdown switches is which pot is being asked to meet the
+target, not the target itself.</p>
+<p>'Available' now lives on <code>account_balances</code> as an <code>earmarked</code> flag rather than being derived
+from the account list at each call site, so the Summary chart and the savings tables cannot
+disagree about what the word means. NaN is truthy, so the flag is read through a guard — a
+bare <code>bool()</code> would have earmarked every unflagged pot.</p>
+<h2 id="added-against-a-cumulative-target">Added against a cumulative target</h2>
+<p>Asked for directly, and it forces the other side to accumulate too: a month's £200 set beside
+a target that has reached £2,400 by December is not a comparison, it is two quantities an
+order of magnitude apart. Both sides now run cumulatively from the first month shown, so a
+bar below its target bar is a shortfall not yet made up.</p>
+<h2 id="charts-that-stop-where-the-data-does">Charts that stop where the data does</h2>
+<p>Two of them ran on into empty space. The cycling cumulative saving is built from recorded
+days, and days are recorded for the whole year ahead — so the line ran flat out to next
+March, squeezing the part where something actually happened. It is cut at today, after the
+cumsum, so today's figure is still the running total of everything before it.</p>
+<p>The card balance charts started at the oldest card's opening date and spent most of their
+width on balances already cleared. They start at the current month, with a <strong>From</strong> dropdown
+back to April 2026 for when a card's history is the point.</p>
+<h1 id="the-savings-interest-tracker">The Savings interest tracker</h1>
+<p><code>K:\Private\Finance\Banking\Savings\Savings interest tracker.xlsx</code>, four sheets of it. None
+of it is new <em>data</em> — all four are aggregations of a ledger that already holds the underlying
+transactions. What was missing was the structure to ask the questions.</p>
+<h2 id="the-tax-year-is-not-the-fiscal-year">The tax year is not the fiscal year</h2>
+<p>Everything here is grouped by HMRC's year, 6 April to 5 April. The dashboard's <code>tax_year_of</code>
+takes a period and so can only ever be right to the month; interest belongs to the day it was
+paid, and 1 April is a different tax year from 30 April. Hence <code>tax_year_of_date</code> alongside
+it, with <code>TAX_YEAR_START_DAY = 6</code>.</p>
+<p>The tracker could not express the boundary at all, so it split April into two hand-labelled
+rows — <code>Apr (before 6th)</code> and <code>Apr (after 6th)</code> — and filed them under different years by
+eye. There are two such payments in the data: 0.16 of Nationwide interest and 2.35 of HSBC's,
+both dated 1 April 2026, both belonging to 25-26 rather than to 26-27.</p>
+<h2 id="interest-gross-and-net">Interest, gross and net</h2>
+<p><code>account.interest_net</code>, the tracker's row 3. It held <code>Gross</code>/<code>Net</code> per account and used it to
+decide whether tax should come off again: <code>IF(D3="Net", D4-D5, D4)</code>. Everything is gross bar
+Halifax, so the flag names the exception and defaults to false.</p>
+<p>Interest itself needed nothing: it is already in the ledger under the <strong>Interest</strong> category,
+26 payments of it, so the table is a <code>groupby</code> rather than a second record. Gross and net are
+reported side by side and never summed into one figure — they are not interchangeable at tax
+time, which is the entire reason the flag exists.</p>
+<h2 id="a-donation-and-the-fee-it-was-paid-with">A donation and the fee it was paid with</h2>
+<p><code>txn.is_donation</code>, flagged on the payment rather than inferred from a category, because no
+category can tell the two apart. Transaction 582 was a single debit of 35.70 covering both a
+30.00 gift and a 5.70 platform fee: same day, same account, same category, same comment.
+Only the person entering it knows which is which.</p>
+<p><code>budget/seed_interest_tracker.py</code> splits it — 30.00 commented 'Charity' and flagged, 5.70
+commented 'transaction fee' and not. Everything else is untouched, and 30.00 + 5.70 leaves
+every month total exactly where it was, which is what keeps the reconciliation green.</p>
+<p>The flag is offered on <strong>Add transaction</strong>, on <strong>Import</strong> (a <code>Donation</code> column, which accepts
+<code>Y</code>, <code>TRUE</code>, <code>1</code> or a real tick box), and on the <strong>Transactions</strong> page for anything already
+recorded.</p>
+<h2 id="the-targets-were-the-totals-of-a-plan-nobody-could-see">The targets were the totals of a plan nobody could see</h2>
+<p>The dashboard held 900 a month into savings and 350 into investments. The tracker's
+'Savings &amp; investment plan' says where those came from:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>savings      NS&amp;I 250 + Wedding 350 + Marcus 300 = 900
+investments  CSD  250 + HSBC     100            = 350
+</code></pre></div>
+
+<p>The same figures — but only because nobody had yet changed one without the other. So the plan
+is now the record and the overview is derived from it, the same relationship <code>base_salary</code>
+has to the car allowance.</p>
+<p><code>CSD</code> is Charles Stanley Direct, which is the ledger's <strong>Stocks &amp; Shares ISA</strong>. Proven by the
+balance rather than the name: the plan's April 2026 actual of 7,509.80 is that account's
+April opening to the penny, and its 1,679.75 is HSBC Investments'.</p>
+<p>Effective-dated per account, in five revisions (08/25, 10/25, 03/26, 11/26, 05/27), because
+the tracker held one column per revision with the date in the row above — so reading it meant
+knowing which column was current. A pot being wound down stores an explicit <strong>0</strong>: from
+November 2026 the plan stops paying into Wedding, and leaving the row out would carry the
+previous 350 forward.</p>
+<p><code>savings_target</code> is retained as the pre-split record and is no longer read.</p>
+<h2 id="investment-return-from-what-happened-rather-than-what-was-planned">Investment return, from what happened rather than what was planned</h2>
+<p>The tracker's 'Investment Return' tab typed its balances in month by month and <em>assumed</em> the
+contributions — a fixed 250 and 100 on every row, whatever was really paid. Both are already
+in the ledger: a contribution is a transfer into the account, and a valuation change is a
+credit or debit commented 'Investment return'. So</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>closing = opening + contributions + gain
+</code></pre></div>
+
+<p>and the monthly return is <code>gain / opening</code>, which is what its
+<code>=IF(C5&gt;0, E5/C4-1, "")</code> computed — but from the real contributions. The identity balances on
+every row of the live data.</p>
+<p>The summary reproduces its L3:N10 (start, current, payments, net, return, months,
+annualised), measured to <em>today</em> rather than to the end of the plan, so months that have not
+happened are not counted. <code>annualised</code> is its <code>=(1+M8)^(12/M9)-1</code>: a fair summary over a year
+and a noisy one over a quarter, which the caption says rather than hides.</p>
+<p>The table starts at the earliest month in the database, not at a row number, so it extends
+when history is backfilled.</p>
+<p>The expected annual return (6%) is a setting under <strong>Settings → Savings targets</strong> and is
+drawn on the return chart as a benchmark. It converts to a monthly figure by compounding —
+<code>repo.monthly_rate</code>, the plan's <code>=(1+L4)^(1/12)-1</code> — not by dividing by twelve, which would
+overstate the month and compound past the rate it started from.</p>
+<h2 id="not-carried-over">Not carried over</h2>
+<p>The 'Savings Account Planner' tab, as asked. The plan's 'Minimum' column is also left out: it
+is a floor rather than a dated target, and nothing reads it yet.</p>
+<h2 id="schema_3">Schema</h2>
+<p>Version 6. New table <code>savings_plan</code>; new columns <code>account.interest_net</code> and
+<code>txn.is_donation</code>. New setting <code>investment_return_annual</code>, held as a percentage like every
+other rate since v3.</p>
+<h2 id="the-guard-that-could-not-see-a-reader">The guard that could not see a reader</h2>
+<p>Reported as "the donation has not been split" and "the targets are missing". Both had been
+written and both had been verified. They were gone because the database had been corrupted,
+and the corruption traces back to <code>in_use()</code> — the check the one-off scripts make before
+writing.</p>
+<p>It tested with <code>BEGIN EXCLUSIVE</code>. In WAL mode, which is what this application runs, a writer
+and any number of readers coexist <em>by design</em>, so an exclusive write transaction is granted
+with the dashboard open. An idle Streamlit holds a read connection and nothing else, so the
+guard reported the database free and the seed script wrote underneath a live handle. Twice.</p>
+<p>The result was one malformed index, <code>sqlite_autoindex_setting_1</code> — the primary key on
+<code>setting</code>. Localised, but enough: <code>session.get(Setting, key)</code> goes through it, so every
+subsequent run of the seed died mid-transaction and rolled back, taking the 25 plan rows
+with it. Nothing announced this; the script's output was truncated at the snapshot line and
+the failure looked like the writes had simply not happened.</p>
+<p>Proved rather than assumed, with the dashboard running:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>locking_mode<span style="color: #666">=</span>EXCLUSIVE<span style="color: #BBB">   </span>True<span style="color: #BBB">    </span><span style="color: #666">&lt;-</span><span style="color: #BBB"> </span>correct
+BEGIN<span style="color: #BBB"> </span>EXCLUSIVE<span style="color: #BBB">          </span>False<span style="color: #BBB">   </span><span style="color: #666">&lt;-</span><span style="color: #BBB"> </span>reported<span style="color: #BBB"> </span>free<span style="color: #BBB"> </span>with<span style="color: #BBB"> </span>the<span style="color: #BBB"> </span>app<span style="color: #BBB"> </span>open
+</code></pre></div>
+
+<p><code>db.in_use</code> now takes the file lock outright, which in WAL mode cannot be granted while any
+other connection has the shared-memory index mapped — reader or writer. It restores
+<code>locking_mode=NORMAL</code> on the way out so the check does not itself lock the file. Both
+one-off scripts share it rather than carrying a copy each, and <code>tests/test_sync.py</code> pins the
+old spelling as <em>not</em> detecting a reader, so nobody reinstates it.</p>
+<p>Recovery was lossless apart from the plan, which the seed rebuilds: <code>REINDEX</code> returned
+<code>integrity_check</code> to <code>ok</code>, all 738 transactions were intact, the split and the interest flags
+survived, and the repaired file reconciled against the workbook before it was promoted. The
+corrupt original is kept as <code>budget.corrupt-&lt;stamp&gt;.db</code> rather than discarded.</p>
+<h2 id="targets-that-can-be-negative-and-targets-that-happen-once">Targets that can be negative, and targets that happen once</h2>
+<p>Two things the plan could not say.</p>
+<p><strong>Negative.</strong> Moving money from one pot to another is a negative target in the first and a
+positive one in the second. The pair nets to nothing overall, which is right — the month has
+saved no more than it started with — while the breakdown still shows one pot up and the other
+down. The non-negative check in <code>set_savings_plan</code> is gone.</p>
+<p><strong>One-off.</strong> <code>savings_adjustment</code> holds a lump sum planned into or out of a pot in a single
+named month: a windfall going in, a deposit coming out. Folding one into the standing plan
+would misstate every month after it; leaving it out means the target is knowingly wrong for
+the month it lands in. They are netted into that month's target and carried as their own rows
+in the breakdown, with a <code>source</code> of <code>Plan</code> or <code>One-off</code>, so a month whose target looks odd
+can be read back to the thing that moved it. Several are allowed in a month — two unrelated
+lump sums are two facts, and the note is what tells them apart.</p>
+<p>Every revision of the plan is kept and selectable from a dropdown rather than reachable only
+by typing its date, so an earlier plan can be read back instead of reconstructed.</p>
+<h2 id="added-against-target-again">Added against target, again</h2>
+<p>The chart had been made cumulative on both sides so the comparison would be like for like.
+But the table's <strong>Added</strong> is a single month, so the bars matched nothing on screen and the
+chart quietly disagreed with the numbers printed beside it.</p>
+<p>It became bars for the month's Added against a left axis and the Cumulative target as a line
+against a right one — every figure then appearing in the table, which was the property that
+had been missing.</p>
+<p>Then again, and better: the second axis is gone and the target is a <strong>hollow column drawn
+over</strong> the solid column of what was added. Traces sharing an <code>offsetgroup</code> take the same slot
+instead of standing side by side, which is what puts one on top of the other. A monthly
+target against a monthly addition needs no second scale at all.</p>
+<p>Savings targets now split the way the balances do — an account's target counts as reserved if
+its pot is earmarked and available if not — so every column has a target of its own rather
+than one savings figure spanning two columns. On the live data: 550 available (NS&amp;I 250 +
+Marcus 300), 350 reserved (Wedding), 350 investments, and the first two sum to the 900 the
+table shows.</p>
+<p>The investment balance chart keeps its second axis, for a different reason — one account is
+four times the size of the others, so the smaller two were flat lines along the bottom. Which
+accounts go on the right is a multiselect defaulted to those materially below the largest,
+rather than a hard-coded pair of names.</p>
+<h2 id="three-ways-to-read-a-payslip">Three ways to read a payslip</h2>
+<p>Grouped columns are for scanning one side; they are the wrong shape for finding where a month
+diverges, which needs each pair adjacent rather than eight columns apart. So the comparison
+takes a choice of three: <strong>Actual</strong> and <strong>Expected</strong> each show one side in the payslip's own
+order, and <strong>Actual vs expected</strong> interleaves them — Gross (E), Gross (A), Bonus (E), Bonus
+(A) — with the net difference last. The difference column is dropped from the expected-only
+view, where it would be comparing a figure against something not on screen.</p>
+<h2 id="the-window-that-would-not-close">The window that would not close</h2>
+<p>Reported as a nuisance; it was also the cause of the worst hour of this project. <code>streamlit
+run</code> is a server and keeps running whether or not anybody is looking at it, so closing the
+tab left the console window — and the process — behind. That is how a dashboard from 18:52
+was still serving port 8501 hours later, with every page failing on columns that existed.</p>
+<p><code>budget/watchdog.py</code> polls the runtime's session registry, the closest thing Streamlit has to
+'is anyone connected'. A browser tab is a session; closing it drops the websocket and the
+session with it. Two things keep it from firing wrongly: a grace period, because a refresh
+briefly drops to zero and is not someone finishing up, and a startup window, because zero is
+legitimate between binding the port and the browser arriving. If no browser <em>ever</em> connects
+it keeps waiting rather than exiting — that state means something else is wrong, and quietly
+exiting would hide it.</p>
+<p><code>os._exit</code>, not <code>sys.exit</code>: this runs on a daemon thread, where <code>SystemExit</code> is caught by the
+thread and the server carries on regardless.</p>
+<p>Off unless <code>BUDGET_EXIT_WHEN_IDLE</code> is set, so <code>streamlit run app.py</code> from a terminal still
+behaves like a server and a headless test run cannot kill itself. <code>budget.bat</code> sets it, and
+its trailing <code>pause</code> is gone — a prompt there would leave the window open, which is the whole
+point of the change.</p>
+<p class="generated">Generated from <code>PHASE5_NOTES.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>

@@ -6,3 +6,5 @@ plotly>=5.20
 
 # dev
 pytest>=8.0
+# Renders the .md docs to the .html copies beside them; see budget/render_docs.py.
+markdown>=3.5

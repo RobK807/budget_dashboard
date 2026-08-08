@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 1 results — read-only dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="phase-1-results-read-only-dashboard">Phase 1 results — read-only dashboard</h1>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>streamlit<span style="color: #BBB"> </span>run<span style="color: #BBB"> </span>app.py<span style="color: #BBB">          </span><span style="color: #60A0B0; font-style: italic"># http://127.0.0.1:8501</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.reconcile<span style="color: #BBB">    </span><span style="color: #60A0B0; font-style: italic"># the gate: green</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span>-q<span style="color: #BBB">     </span><span style="color: #60A0B0; font-style: italic"># 30 passing</span>
+</code></pre></div>
+
+<p>Three pages, all read-only:</p>
+<table>
+<thead>
+<tr>
+<th>Page</th>
+<th>Replaces</th>
+<th>Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Summary</strong> (<code>views/summary.py</code>)</td>
+<td>Summary (actuals)</td>
+<td>Position at a chosen month, savings/investments over time, net cashflow, classification-by-month matrix, one account across the year, account detail</td>
+</tr>
+<tr>
+<td><strong>Month</strong> (<code>views/month.py</code>)</td>
+<td>A whole month tab</td>
+<td>Account balances, budget vs actual by category, daily and cumulative spend by classification</td>
+</tr>
+<tr>
+<td><strong>Transactions</strong> (<code>views/transactions.py</code>)</td>
+<td><code>RemoveTransaction</code> + <code>TransactList</code></td>
+<td>Filter by date/account/type/category/classification/comment, CSV export</td>
+</tr>
+</tbody>
+</table>
+<p>Pages are declared with <code>st.navigation</code> in <code>app.py</code> rather than via a <code>pages/</code> directory:
+that convention takes each tab's label from the filename, which is why the first tab read
+"app". Declaring them explicitly also keeps <code>set_page_config</code> in one place, since
+<code>st.navigation</code> runs the entrypoint and the selected page as a single script run.</p>
+<p>Bound to <code>127.0.0.1</code> in <code>.streamlit/config.toml</code> — this page shows salary, balances and card
+debt, so it does not listen on the network.</p>
+<h2 id="the-gate-proved-not-eyeballed">The gate: proved, not eyeballed</h2>
+<p>"Numbers match on screen" is a weak gate if it means looking at them. Instead every figure
+the pages display is checked against the workbook by <code>budget/reconcile.py</code>, which now runs
+five checks:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Check</th>
+<th>Against</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>Account balances</td>
+<td>Month-tab row 61 <code>End</code></td>
+<td>264 account-months, <strong>all tie</strong></td>
+</tr>
+<tr>
+<td>B</td>
+<td>Daily classification totals</td>
+<td>Month-tab <code>DB:DI</code></td>
+<td>~2,700 cells, 1 accepted difference</td>
+</tr>
+<tr>
+<td>C</td>
+<td>Per-category income and spend</td>
+<td>Month-tab <code>C</code> and <code>E</code></td>
+<td>~490 cells, 4 pending</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Summary classification matrix</td>
+<td>—</td>
+<td><strong>skipped</strong>, see below</td>
+</tr>
+<tr>
+<td>E</td>
+<td>Savings / investment position</td>
+<td><code>Summary!D</code> and <code>K</code></td>
+<td>8 cells, <strong>all tie</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Check E covers the Overview's headline metrics, so a mis-imported <code>is_savings</code> flag would
+fail the build rather than quietly misreport £39k.</p>
+<p>Check D is deliberately not run. <code>Summary!R20</code> is
+<code>=OFFSET(INDIRECT("xlCloseValue"&amp;LEFT($Q20,3)),0,P$18)</code> — it reads row 37 of the running
+columns, which is the <strong>cumulative closing position</strong>: prior months rolled forward per each
+classification's rollover rule, plus projections for dates after today. It is not monthly
+actuals. Reproducing it needs the rollover engine and the projection table, both of which
+arrive in Phase 4. The Overview therefore shows actual spend per classification per month,
+labelled as such.</p>
+<p>Check E also skips month-ends in the future, because both Summary formulas are
+<code>=IF(TODAY()&gt;=&lt;month end&gt;, SUM(...), 0)</code> — comparing against those zeroes would be asserting
+the workbook's own placeholder.</p>
+<h2 id="two-things-the-workbook-did-that-the-design-had-wrong">Two things the workbook did that the design had wrong</h2>
+<p><strong>Income and spend are not netted.</strong> <code>New_entry</code> sends a credit to column C and a debit to
+column E:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code><span style="color: #007020; font-weight: bold">If</span><span style="color: #BBB"> </span><span style="color: #BB60D5">k</span><span style="color: #BBB"> </span><span style="color: #666">=</span><span style="color: #BBB"> </span><span style="color: #40A070">1</span><span style="color: #BBB"> </span><span style="color: #007020; font-weight: bold">Then</span><span style="color: #BBB"> </span><span style="color: #BB60D5">Selection</span>.<span style="color: #BB60D5">Offset</span><span style="color: #517918">(</span><span style="color: #40A070">0</span>,<span style="color: #BBB"> </span><span style="color: #40A070">1</span><span style="color: #517918">)</span><span style="color: #BBB">             </span><span style="border: 1px solid #F00">&#39; C, Income</span>
+<span style="color: #007020; font-weight: bold">Else</span><span style="color: #BBB">          </span><span style="color: #BB60D5">Selection</span>.<span style="color: #BB60D5">Offset</span><span style="color: #517918">(</span><span style="color: #40A070">0</span>,<span style="color: #BBB"> </span><span style="color: #BB60D5">intColReduced</span><span style="color: #517918">)</span><span style="color: #BBB"> </span><span style="border: 1px solid #F00">&#39; E, Total Spent</span>
+</code></pre></div>
+
+<p>So a category with <code>spend_type = 'All'</code> — <code>Other</code>, <code>Going Out</code>, <code>Band</code> — accumulates both
+independently. Netting them understated June's <code>Other</code> spend by over £20,000. The repo now
+returns <code>spent</code> and <code>income</code> separately and check C verifies both.</p>
+<p><strong><code>Budget.income</code> is redundant and should be dropped.</strong> Month-tab column C is not a budget:
+it is an accumulator of actual credits, maintained by the macro. Only column D
+(<code>Expected Costs</code>) is a budget. The Month page therefore derives income from the ledger and
+ignores the imported value. Removing the column is a small migration, worth doing before
+Phase 2 adds writes.</p>
+<p>Related: these columns are macro-maintained accumulators (<code>ActiveCell = dblAmt + dblCatAmt</code>),
+not formulas, so they can drift from the ledger in a way a formula could not — which is what
+findings below are.</p>
+<h2 id="pending-decisions-4-differences-2-underlying-issues">Pending decisions (4 differences, 2 underlying issues)</h2>
+<p>Both are category attribution only and net to zero on the month totals, so they do not
+affect any balance. Reported by every reconciliation run until resolved.</p>
+<p><strong>£75 — txn 532</strong>, 25 Jun, HSBC, "Emma birthday - M&amp;D". Ledger says <code>Omaze</code>; the month tab
+says <code>Other</code>, and its cell comment lists "Emma birthday - M&amp;D 25/06" under <code>Other</code>. <code>Omaze</code>
+is otherwise only a £15/month subscription, so the ledger looks wrong.</p>
+<p><strong>£100 — txn 566</strong>, 30 Jun, Platinum Amex, "Cashback". Ledger says <code>Other</code>; the month tab
+says <code>Going Out</code> per its comment "Cashback 30/06". Note the 27 Jun cashback of £100 is
+<code>Other</code> in both — so here the <em>ledger</em> is the self-consistent reading and the tab looks
+wrong. This one runs the opposite way to the £75.</p>
+<p>Also still open from Phase 0: the recovered <code>Claude</code> category sits in grouping <code>Other</code> and
+should be reassigned, most likely <code>Regular outgoings</code>.</p>
+<h2 id="observation-not-a-defect">Observation, not a defect</h2>
+<p>July shows 15 categories over budget, which is faithful — the workbook's own <code>Total Left</code>
+column agrees to the penny (Mortgage −1,311.42, Service Charge −1,153.35, Council Tax
+−107.50). July genuinely carries double payments: Council Tax £215 against a £107.50 budget,
+Water £39 against £19.50. Worth knowing why, but the dashboard is reporting it correctly.</p>
+<h2 id="transfers-split-out-of-paid-in-paid-out">Transfers split out of paid in / paid out</h2>
+<p>The workbook's rows 62 and 63 are <code>=SUM(I4:I59)</code> and <code>=SUM(J4:J59)</code> — the whole Credit and
+Debit columns — so transfers between your own accounts are counted as income and spending.
+July's HSBC is the clearest case:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Workbook</th>
+<th>Split out</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Paid in</td>
+<td>£20,360.29</td>
+<td>£9,809.25 real, £10,551.04 transfers</td>
+</tr>
+<tr>
+<td>Paid out</td>
+<td>£20,630.29</td>
+<td>£2,842.23 real, £17,788.06 transfers</td>
+</tr>
+</tbody>
+</table>
+<p>More than half of each side was money moving between your own accounts. <code>account_balances</code>
+now returns <code>paid_in</code>, <code>paid_out</code>, <code>transfer_in</code> and <code>transfer_out</code> separately, keeping
+<code>total_in</code> / <code>total_out</code> for the workbook's original definition. Balances are unaffected —
+the split only changes how the movement is bucketed, and a test pins that.</p>
+<h2 id="formatting">Formatting</h2>
+<p><code>st.column_config.NumberColumn</code> takes a <em>printf</em> format string, and printf has no thousands
+separator — hence <code>£39255.98</code>. Tables now render through a pandas <code>Styler</code> with <code>{:,.2f}</code>,
+which gives <code>£39,255.98</code> while keeping the underlying values numeric so sorting still works
+on magnitude rather than on text. The <code>st.metric</code> figures were already comma-formatted.</p>
+<h2 id="ordering-and-horizon">Ordering and horizon</h2>
+<p><strong>Alphabetical, case-insensitively.</strong> Accounts previously came out in the workbook's column
+order, which was a storage detail — an account's position determined its column offset
+(<code>position * 4</code>) and means nothing here. Sorting is case-<em>insensitive</em> because a plain
+<code>ORDER BY</code> / <code>sorted()</code> is ASCII, which gives <code>HSBC, Halifax</code> and <code>ISA, Investments</code>:
+correct by codepoint, wrong to a reader. Handled by <code>func.lower()</code> in the query and
+<code>ui.alphabetical()</code> (keyed on <code>casefold</code>) for dropdowns.</p>
+<p>Months stay in fiscal order — alphabetical would give "April, August, December".</p>
+<p><strong>Nothing beyond the current month.</strong> <code>repo.periods_to_date()</code> trims the fiscal year to
+months that have started, so with today at 3 August 2026 the UI offers April–August and
+hides September onward. The current month is included: it is in progress, not future.</p>
+<p>Two details worth keeping: <code>'YYYY-MM'</code> strings are zero-padded and fixed width, so a plain
+string comparison orders them correctly across the January–March rollover into the next
+calendar year; and a year that has not begun falls back to the full list, so the page cannot
+end up with no months to select. <code>data["all_periods"]</code> retains the full year for the
+year-end projections coming in Phase 4.</p>
+<h2 id="next">Next</h2>
+<p>Phase 2 — add transaction, bulk import, soft delete. Phase 2b — sync (§6.3). Dropping
+<code>Budget.income</code> is worth folding into whichever comes first.</p>
+<p>See <a href="README.md">README.md</a> for setting the project up on a second machine — note that until
+Phase 2b lands, each machine keeps its own separate database.</p>
+<p class="generated">Generated from <code>PHASE1_NOTES.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>

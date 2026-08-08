@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 4 — projections, trends, salary, cards, cycling</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6; max-width: 46rem; margin: 2rem auto; padding: 0 1.25rem;
+    color: #1a1a1a; background: #fff;
+  }
+  h1, h2, h3, h4 { line-height: 1.25; margin-top: 2rem; }
+  h1 { border-bottom: 2px solid #e5e5e5; padding-bottom: .3rem; }
+  h2 { border-bottom: 1px solid #ececec; padding-bottom: .2rem; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    font-size: .9em; background: #f4f4f4; padding: .1em .35em; border-radius: 3px;
+  }
+  pre { background: #f7f7f7; padding: .85rem 1rem; overflow-x: auto; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  blockquote {
+    border-left: 3px solid #ccc; margin-left: 0; padding-left: 1rem; color: #555;
+  }
+  hr { border: none; border-top: 1px solid #e5e5e5; margin: 2rem 0; }
+  a { color: #0b62c4; }
+  .generated { margin-top: 3rem; font-size: .85em; color: #777; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ddd; background: #1b1b1b; }
+    code { background: #2a2a2a; }
+    pre { background: #222; }
+    th { background: #262626; }
+    th, td { border-color: #3a3a3a; }
+    h1 { border-bottom-color: #3a3a3a; }
+    h2 { border-bottom-color: #303030; }
+    a { color: #6fb3ff; }
+  }
+</style>
+</head>
+<body>
+<h1 id="phase-4-projections-trends-salary-cards-cycling">Phase 4 — projections, trends, salary, cards, cycling</h1>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase4<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># loads Phase 4 data into an existing database</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.reconcile<span style="color: #BBB">       </span><span style="color: #60A0B0; font-style: italic"># gate: green, all six checks live</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span>-q<span style="color: #BBB">        </span><span style="color: #60A0B0; font-style: italic"># 209 passing</span>
+</code></pre></div>
+
+<p>Five new pages, and the rollover engine underneath them.</p>
+<table>
+<thead>
+<tr>
+<th>Page</th>
+<th>Replaces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Trends</strong> (<code>views/trends_page.py</code>)</td>
+<td>Cumulative Analysis</td>
+</tr>
+<tr>
+<td><strong>Projections</strong> (<code>views/projections_page.py</code>)</td>
+<td>Projected Costs</td>
+</tr>
+<tr>
+<td><strong>Salary</strong> (<code>views/salary_page.py</code>)</td>
+<td>Salary tracker</td>
+</tr>
+<tr>
+<td><strong>Cards</strong> (<code>views/cards_page.py</code>)</td>
+<td>Balance Transfer Cards</td>
+</tr>
+<tr>
+<td><strong>Cycling</strong> (<code>views/cycling_page.py</code>)</td>
+<td>Cycling</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-rollover-engine">The rollover engine</h2>
+<p>Reproduces the month tabs' <code>Running &lt;Classification&gt;</code> columns. Each day:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>running = carried_forward(previous month&#39;s close)
+          + (actual daily total, or the projection if the day is in the future)
+          + any daily allowance
+</code></pre></div>
+
+<p>Two reconciliation checks cover it, both live:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>D</strong></td>
+<td>Summary!Q19:Y31 — skipped since Phase 1</td>
+<td>84 cells, all tie</td>
+</tr>
+<tr>
+<td><strong>F</strong></td>
+<td>Month-tab <code>Running …</code> columns, 12 months</td>
+<td>84 columns, all tie</td>
+</tr>
+</tbody>
+</table>
+<p>Check D was the last skipped check. Every figure the workbook computes is now reproduced.</p>
+<h2 id="salary-matches-to-the-penny">Salary: matches to the penny</h2>
+<p><code>budget/tax.py</code> is a pure port of the Salary tracker's NI (<code>S8</code>) and PAYE (<code>U8</code>) formulas,
+including the personal allowance tapered in four dated steps. Verified against all twelve
+months — ordinary months, the May bonus month that reaches additional rate, and each side of
+every allowance step. Zero differences.</p>
+<p><code>expected_gross</code> is stored rather than derived: it is <strong>not</strong> <code>salary / 12</code>. May carries
+its own figure (£39,724 against an annual salary of £128,350), and deriving it produced a
+£15,480 phantom gap before I caught it. The remaining £1,284 difference between actual and
+modelled net pay is real, and the workbook records the same figure in its own <code>AB</code> column.</p>
+<blockquote>
+<p><strong>Superseded by Phase 5.</strong> It <em>is</em> <code>salary/12</code> — plus a bonus, which was welded into May's
+formula as <code>+29028.48</code>. With the bonus held as data all twelve months derive exactly. See
+PHASE5_NOTES.md.</p>
+</blockquote>
+<h2 id="cycling-matches-exactly">Cycling: matches exactly</h2>
+<p>£367.20 saved, £102.99 of running costs, £264.21 net — the workbook's <code>L1</code> and <code>V1</code>. The
+nested <code>IF(commute, 10.5, IF(band, 8.9, IF(gym, 4.6, 0)))</code> becomes stored flags plus rates
+in settings, so changing a fare does not mean editing every historic row.</p>
+<h2 id="three-findings-in-the-workbook">Three findings in the workbook</h2>
+<p><strong>The Total column omits MBNA 2.</strong> <code>Balance Transfer Cards</code> column M sums only four of the
+five cards. From June, when MBNA 2 opens, the stated total is short by exactly that card's
+balance — £4,198.28 in June, £3,990.99 in August. The per-card columns are right; only the
+total is wrong.</p>
+<p><strong>Card terms are counted from April, not from when the card started.</strong> The schedule's payoff
+test is <code>IF($A5 = term, …)</code>, where <code>A</code> is the row index from the start of the whole schedule.
+So Halifax, opened in June with a 13-month term, is shown clearing in May 2027 — thirteen
+months after <em>April</em>, i.e. eleven months after it actually started.</p>
+<p>This build measures the term from each card's own opening date, which is what "13-month
+balance transfer" normally means, so Halifax clears in July 2027 instead. Barclaycard and
+MBNA both start in April and match the workbook exactly (0.00 across all 22 and 24 rows).</p>
+<p><strong>Confirmed: the term runs from the card's own start date</strong>, which is what this build does.
+Counting from April was tolerable only because every card's term began before the year did;
+it stops being tolerable once prior years are backfilled.</p>
+<p><strong>Outstanding is now measured at a date.</strong> The cards start in different months, so adding
+their opening balances totals figures from different points in the year. The page shows the
+balance today.</p>
+<h2 id="also-carried-across">Also carried across</h2>
+<ul>
+<li><strong>Projections</strong> are keyed by date, so several months coexist rather than the workbook's one
+  at a time.</li>
+<li><strong>Daily allowance</strong> ('Spend per day') is keyed by period and classification instead of
+  being applied to whichever column was named Excess.</li>
+<li><strong>April's opening balance</strong> for Running Excess was a bare <code>-2632.45</code> typed into the
+  formula; it now has a table.</li>
+</ul>
+<h2 id="schema">Schema</h2>
+<p>New tables: <code>projection</code>, <code>classification_allowance</code>, <code>classification_opening</code>, <code>payslip</code>,
+<code>salary_assumption</code>, <code>card</code>, <code>cycling_outgoing</code>, <code>cycling_day</code>. Schema version 2 adds
+<code>payslip.expected_gross</code> to an existing database via <code>ALTER TABLE</code> — <code>create_all</code> only
+creates whole tables, so a new column on an existing one needs an explicit step.</p>
+<h2 id="remaining">Remaining</h2>
+<p>Phase 5 made every parameter on these pages editable — see PHASE5_NOTES.md.</p>
+<p class="generated">Generated from <code>PHASE4_NOTES.md</code> on 08 August 2026
+ — <code>python -m budget.render_docs</code> to refresh.</p>
+</body>
+</html>
