@@ -10,3 +10,6 @@ __pycache__/
 *.db-shm
 *.xlsm
 *.xlsx
+
+# Windows shortcuts. Taskbar pins are local and hold machine-specific paths.
+*.lnk
