@@ -117,8 +117,38 @@ briefly in case the browser comes back.
 <http://127.0.0.1:8501> after a few seconds. The dashboard runs for as long as that window
 stays open — closing it, or pressing Ctrl+C, stops the server.
 
-For a Start Menu or taskbar entry, right-click `budget.bat` → *Send to* → *Desktop (create
-shortcut)*, then pin or rename the shortcut. Set its icon under *Properties* if you like.
+### Pinning it to the taskbar
+
+Windows offers *Pin to taskbar* for programs, and a `.bat` is not one — the option simply
+does not appear, for the shortcut either. The way round it is to point a shortcut at
+`cmd.exe`, which **is** a program, and hand it the batch file as an argument.
+
+1. Right-click `budget.bat` → *Show more options* → *Create shortcut*. A
+   `budget.bat - Shortcut` appears beside it.
+2. Right-click that shortcut → *Properties*.
+3. Set **Target** to, with your own path:
+
+   ```
+   cmd.exe /c "C:\Users\you\PycharmProjects\budget_dashboard\budget.bat"
+   ```
+
+4. Set **Start in** to the project folder itself:
+
+   ```
+   C:\Users\you\PycharmProjects\budget_dashboard
+   ```
+
+5. *Change Icon* if you like — `%SystemRoot%\System32\imageres.dll` holds the stock set.
+   The default is the cmd icon, which is indistinguishable from a terminal on the taskbar.
+6. *Apply*, then right-click the shortcut again → *Pin to taskbar*.
+
+Rename it to something like **Budget** first: the pin keeps whatever name the shortcut had.
+
+The console window still opens and still has to stay open, exactly as double-clicking does —
+`/c` runs the batch file and closes when it ends, and the dashboard *is* that window.
+
+Shortcuts are not tracked (`*.lnk` is in `.gitignore`). They hold an absolute path, so one
+made here would be wrong on another machine and would go stale if this checkout moved.
 
 Or from a terminal in the project folder:
 
