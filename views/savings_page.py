@@ -11,6 +11,8 @@ changing. Flagging the accounts instead means the column follows when a pot is a
 
 from __future__ import annotations
 
+import datetime as dt
+
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -159,9 +161,9 @@ st.divider()
 st.subheader("Where the target comes from")
 st.caption(
     "The overview above is the sum of these, not a second figure typed beside it. The plan "
-    "is held per account and effective-dated — the interest tracker kept one column per "
-    "revision with the date in the row above, so reading it meant knowing which column was "
-    "current. Set it under **Settings → Savings targets**."
+    "is held per account and effective-dated, so a revision applies from its own date and "
+    "the earlier figures stand for the months they covered. Set it under "
+    "**Settings → Savings targets**."
 )
 
 plan_detail = data["plan_detail"]
@@ -314,11 +316,10 @@ st.subheader("Accounts at end of the month")
 # a question the page could not answer. Defaults to the same month it always showed, so
 # the reading on arrival is unchanged.
 month_options = list(series["period"])
-detail_period = st.selectbox(
-    "Month",
-    month_options,
-    index=len(month_options) - 1,
-    format_func=repo.period_label,
+detail_period = ui.month_select(
+    "Month", month_options,
+    default=month_options[-1]
+    if repo.period_of(dt.date.today()) not in month_options else None,
     key="accounts_month",
     label_visibility="collapsed",
 )

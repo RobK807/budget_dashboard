@@ -109,9 +109,9 @@ with tab_accounts:
 
     st.markdown("**How interest is paid**")
     st.caption(
-        "Whether an account's interest arrives already taxed. The interest tracker held this "
-        "as a Gross/Net row per account and used it to decide whether tax should be taken "
-        "off again. Almost everything is gross, so this flags the exceptions. It drives the "
+        "Whether an account's interest arrives already taxed, which decides whether tax "
+        "should be taken off again. Almost everything is gross, so this flags the "
+        "exceptions. It drives the "
         "interest table under **Savings and investments**."
     )
     interest_frame = repo.sort_human(
@@ -548,9 +548,8 @@ with tab_cards:
             hide_index=True,
         )
         st.caption(
-            "The term runs from the date of borrowing, so a 13-month transfer taken out in "
-            "June clears the following July. The workbook counted every card's term from "
-            "April regardless of when it started."
+            "The term runs from the date of borrowing, so a 13-month transfer taken out "
+            "in June clears the following July."
         )
 
     with st.expander("Add a card"):
@@ -662,15 +661,13 @@ with tab_cards:
 with tab_monthly:
     st.caption(
         "The two things that vary by month: the daily allowance that feeds a "
-        "classification's running total, and the target spend for each category. Both were "
-        "cells inside a month tab — C54 and column D — so a new month meant copying the "
-        "template and hoping the right numbers came with it."
+        "classification's running total, and the target spend for each category. Both are "
+        "held per month, so a new month starts from what was set rather than from whatever "
+        "a template happened to carry."
     )
 
-    monthly_period = st.selectbox(
-        "Month", data["all_periods"],
-        index=data["all_periods"].index(data["periods"][-1]),
-        format_func=repo.period_label, key="monthly_period",
+    monthly_period = ui.month_select(
+        "Month", data["all_periods"], key="monthly_period",
     )
 
     allowances = data["allowances"]
@@ -916,8 +913,7 @@ with tab_savings:
     # ---- the plan, per account, effective-dated ------------------------------------
     st.markdown("**The plan**")
     st.caption(
-        "Per account and effective-dated, which is how the interest tracker held it — one "
-        "column per revision, with the date above. Saving against a date that has no set yet "
+        "Per account and effective-dated. Saving against a date that has no set yet "
         "creates one and leaves the earlier figures intact for the months they applied to. "
         "A pot being wound down needs an explicit **0**, not a blank: a blank carries the "
         "previous figure forward."
@@ -1121,10 +1117,10 @@ with tab_savings:
 
     with st.form("savings_adjustment"):
         fields = st.columns([1, 1, 1, 2])
-        one_off_period = fields[0].selectbox(
-            "Month", data["all_periods"], index=len(data["periods"]) - 1,
-            format_func=repo.period_label, key="one_off_period",
-        )
+        with fields[0]:
+            one_off_period = ui.month_select(
+                "Month", data["all_periods"], key="one_off_period",
+            )
         one_off_account = fields[1].selectbox(
             "Account", ui.alphabetical(pots["name"]), key="one_off_account",
         )
@@ -1210,9 +1206,8 @@ with tab_savings:
     st.subheader("Earmarked savings")
     st.caption(
         "Pots that are nominally saved but already spoken for. They are excluded from the "
-        "'available' column so the figure means money that is genuinely spare. The workbook "
-        "subtracted a hand-typed total under the heading 'Less SC & Wed' — which had "
-        "silently come to include Tembo as well by June, without the label changing."
+        "'available' column so the figure means money that is genuinely spare. Flagging the "
+        "accounts means the column follows when a pot is added or stops being earmarked."
     )
 
     excluded_frame = data["accounts"][data["accounts"]["is_savings"].astype(bool)].copy()
@@ -1292,8 +1287,7 @@ with tab_savings:
 # ----------------------------------------------------------------------------- general
 
 with tab_general:
-    st.caption("Replaces the Control tab. DeveloperParameters is gone — it only ever "
-               "described the spreadsheet's own geometry.")
+    st.caption("Settings that apply everywhere rather than to one page.")
     settings = data["settings"]
 
     with st.form("general"):
@@ -1346,10 +1340,9 @@ with tab_general:
     # ---- credit card billing days ---------------------------------------------------
     st.subheader("Credit card billing")
     st.caption(
-        "The day the statement is issued and the day the direct debit is taken. The "
-        "workbook held these in every month tab even though they never varied by month, so "
-        "changing one meant editing twelve. They drive the 'outstanding' figure on the "
-        "Month page, which is the spending not yet on a statement."
+        "The day the statement is issued and the day the direct debit is taken. They "
+        "drive the 'outstanding' figure on the Month page, which is the spending not yet on "
+        "a statement."
     )
 
     card_accounts = data["accounts"][data["accounts"]["type"] == "credit_card"].copy()
@@ -1401,14 +1394,11 @@ with tab_general:
     st.subheader("Account targets")
     st.caption(
         "How much an account should hold in a month, shown against its balance on the "
-        "Summary page. The workbook held one set of these for whichever month it happened "
-        "to be showing; here each month keeps its own."
+        "Summary page. Each month keeps its own."
     )
 
-    target_period = st.selectbox(
-        "Month", data["all_periods"],
-        index=data["all_periods"].index(data["periods"][-1]),
-        format_func=repo.period_label, key="account_target_period",
+    target_period = ui.month_select(
+        "Month", data["all_periods"], key="account_target_period",
     )
     stored_targets = data["account_targets"]
     here = stored_targets[stored_targets["period"] == target_period]
@@ -1460,7 +1450,6 @@ with tab_general:
 
 st.divider()
 st.caption(
-    "Adding or closing anything here never rewrites a month. The workbook's equivalent "
-    "forms each warned that they would overwrite every month from the chosen one onwards, "
-    "because an account's position in the sheet *was* its storage location."
+    "Adding or closing anything here never rewrites a month. An account is identified by "
+    "name rather than by a position, so months already recorded are left as they are."
 )

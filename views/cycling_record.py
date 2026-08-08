@@ -114,7 +114,7 @@ with right:
         )
         flag = fields[1].selectbox(
             "Kind", ["Commute", "General"],
-            help="Which running total it comes off — the workbook kept the two apart",
+            help="Which running total it comes off",
         )
         if st.form_submit_button("Add cost", type="primary", disabled=READ_ONLY):
             with ui.session() as session, session.begin():

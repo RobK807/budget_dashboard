@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import plotly.express as px
 import streamlit as st
 
@@ -37,11 +39,9 @@ ACCOUNT_LABELS = {
 
 head_left, head_right = st.columns([3, 1])
 head_left.subheader("Position at end of month")
-selected = head_right.selectbox(
-    "Month",
-    options=periods,
-    index=periods.index(live_periods[-1]),
-    format_func=repo.period_label,
+selected = ui.month_select(
+    "Month", periods,
+    default=live_periods[-1] if repo.period_of(dt.date.today()) not in periods else None,
     key="summary_period",
     help="Drives the figures below. The charts always cover the whole year.",
 )
@@ -75,7 +75,7 @@ st.divider()
 st.subheader(f"Accounts at end of {repo.period_label(selected)}")
 st.caption(
     "Paid in and out are money genuinely entering or leaving. Transfers between your own "
-    "accounts are shown separately — the workbook mixed them into the same totals."
+    "accounts are shown separately, so neither side is flattered by them."
 )
 
 table = balances[
@@ -208,10 +208,9 @@ st.divider()
 
 st.subheader(f"Account targets for {repo.period_label(selected)}")
 st.caption(
-    "Summary B21:E26 — what each account should be holding against what it is. 'Current' is "
-    "the closing balance; 'Required' is the shortfall. Targets are set per month under "
-    "**Settings → General → Account targets**; the workbook kept one set, for whichever "
-    "month it happened to be showing."
+    "What each account should be holding against what it is. 'Current' is the closing "
+    "balance; 'Required' is the shortfall. Targets are set per month under "
+    "**Settings → General → Account targets**."
 )
 
 targets = repo.account_target_table(

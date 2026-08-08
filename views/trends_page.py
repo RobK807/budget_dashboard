@@ -190,7 +190,7 @@ with st.expander("How the carry-forward works"):
 carries. An overspend always carries in full; retention exists so a surplus is not banked
 twice, not to forgive debt.
 
-Some classifications also gain a daily allowance ('Spend per day' on the month tab), added
-for every day of the month on top of actual spend.
+Some classifications also gain a daily allowance, added for every day of the month on top
+of actual spend.
 """
     )

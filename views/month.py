@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from decimal import Decimal
 
 import pandas as pd
@@ -19,11 +21,10 @@ if not live_periods:
     st.info("No transactions yet.")
     st.stop()
 
-period = st.selectbox(
-    "Month",
-    options=data["periods"],
-    index=data["periods"].index(live_periods[-1]),
-    format_func=repo.period_label,
+period = ui.month_select(
+    "Month", data["periods"],
+    default=live_periods[-1] if repo.period_of(dt.date.today()) not in data["periods"]
+    else None,
 )
 
 balances = repo.account_balances(postings, data["openings"], period, data["accounts"])
@@ -65,9 +66,8 @@ st.divider()
 
 st.subheader("Accounts")
 st.caption(
-    "Month-tab rows 60–63, with transfers separated out. The workbook's 'Total paid in' and "
-    "'Total paid out' are `=SUM(I4:I59)` and `=SUM(J4:J59)`, so moving money between your "
-    "own accounts inflated both sides."
+    "Opening and closing balances with transfers separated out, so moving money between "
+    "your own accounts does not count as money paid in and paid out again."
 )
 
 table = balances[
@@ -230,9 +230,8 @@ st.divider()
 
 st.subheader("Budget vs actual")
 st.caption(
-    "Month-tab columns B–F. Income and Spent are actuals from the ledger; only Expected "
-    "Costs is a budget. The workbook keeps these two separate rather than netting them, so "
-    "a category can carry both."
+    "Income and Spent are actuals from the ledger; only Expected Costs is a budget. The "
+    "two are kept apart rather than netted, so a category can carry both."
 )
 
 groupings = ui.alphabetical(budget["grouping"])

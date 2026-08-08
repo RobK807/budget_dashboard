@@ -151,7 +151,9 @@ for period in data["all_periods"]:
             "pension": parts.pension if parts else None,
             "expected_holiday": parts.holiday_pay if parts else None,
             "taxable": parts.taxable if parts else None,
-            "actual_gross": paid("gross"),
+            # The payslip's own gross, not the month's. A bonus has its own line, so
+            # adding it here would show it twice across the row.
+            "actual_gross": actual["gross"] if actual is not None else None,
             # Gross is base alone, with the car allowance beside it. They are taxed together
             # but the pension is charged on base only, so a single 'gross' cannot describe
             # both -- and the payslips are being re-entered to the same granularity.
@@ -164,16 +166,11 @@ for period in data["all_periods"]:
             "bonus_gross": bonus["gross"] if bonus is not None else None,
             "holiday_pay": recorded("holiday_pay"),
             "benefits": recorded("benefits"),
-            # The recorded 'benefits' is the workbook's lumped figure: pension *and* holiday
-            # pay. Shown as-is beside its own holiday pay column it counts that twice, and
-            # reads 1,177.88 against an expected pension of 990.88 -- a discrepancy of
-            # exactly the 187.00 sitting in the next column along. Taking it back out
-            # reproduces the expected pension to the penny in every recorded month.
-            "actual_pension": (
-                actual["benefits"] - as_decimal(actual["holiday_pay"])
-                if has_actual and actual is not None and pd.notna(actual["benefits"])
-                else None
-            ),
+            # Pension as entered. It used to have holiday pay taken back out of it, because
+            # the figure inherited from the old records lumped the two together and counted
+            # holiday twice across the row. The payslips have since been re-entered with the
+            # two apart, so the column now means what it says.
+            "actual_pension": recorded("benefits"),
             "additional": recorded("additional"),
             "actual_ni": paid("ni"),
             "expected_ni": expected.ni if expected else None,
@@ -292,13 +289,9 @@ with tab_compare:
         + "**Gross** is base salary alone, with the **car allowance** on its own line beside "
         "it. The two are taxed together — NI and PAYE are charged on the pair — but the "
         "pension is a percentage of base only, so a single gross figure cannot describe "
-        "both. **Actual gross** is salary **plus** bonus, since the two are separate "
-        "payments in the same month, and the bonus line shows how much of it came from the "
-        "bonus. Enter each under **Salary and bonus** and below, respectively, so neither "
-        "overwrites the other. On the actual side, home working is what the old workbook "
-        "recorded as 'additional pay', and pension is its 'benefits' less the holiday pay "
-        "that had been lumped in with it — otherwise holiday pay would be counted twice "
-        "across the row."
+        "both. **Actual gross** is the salary payment alone — a bonus has its own line, so "
+        "the two are read down the column rather than added into one. Enter each under "
+        "**Salary and bonus** and below, respectively, so neither overwrites the other."
     )
 
     st.divider()
@@ -362,14 +355,12 @@ with tab_compare:
     st.subheader("Record a payslip")
     st.caption(
         "The salary payment only — a bonus paid separately goes under **Salary and bonus**, "
-        "which keeps its own figures. The workbook had no way to enter a future month at "
-        "all; benefits and additional pay drive the model, so they can be set for months "
-        "that have not been paid yet."
+        "which keeps its own figures. Pension and home working drive the model, so they can "
+        "be set for months that have not been paid yet."
     )
 
-    entry_period = st.selectbox(
-        "Month", data["all_periods"], index=len(data["periods"]) - 1,
-        format_func=repo.period_label, key="payslip_period",
+    entry_period = ui.month_select(
+        "Month", data["all_periods"], key="payslip_period",
     )
     stored_payslip = (
         by_period.loc[entry_period]
@@ -473,7 +464,7 @@ with tab_compare:
         if in_gross and abs(consistency - Decimal(str(in_gross))) > Decimal("1"):
             st.caption(
                 f"NI + holiday pay + PAYE + net comes to {ui.money(consistency)} against a "
-                f"gross of {ui.money(in_gross)} — the workbook's column N check."
+                f"gross of {ui.money(in_gross)}, which is the check that the row adds up."
             )
 
 # ---------------------------------------------------------------- tax year to date
@@ -812,9 +803,8 @@ with tab_inputs:
         st.subheader("Base salary")
         st.caption(
             "One row per change, and **base only** — the car allowance is derived from it, "
-            "so a pay rise moves both. The workbook repeated a single combined figure down "
-            "all twelve months, which is why 128,350.25 could never be found on a payslip: "
-            "it was a base of 118,905 with the allowance already added in."
+            "so a pay rise moves both. A combined figure could never be found on a "
+            "payslip: 128,350.25 is a base of 118,905 with the allowance already in it."
         )
         if profiles.empty:
             st.info("No salary recorded.")
@@ -944,9 +934,8 @@ with tab_inputs:
                 hide_index=True,
             )
 
-        bonus_period = st.selectbox(
-            "Month", data["all_periods"], format_func=repo.period_label,
-            index=len(data["periods"]) - 1, key="bonus_period",
+        bonus_period = ui.month_select(
+            "Month", data["all_periods"], key="bonus_period",
         )
         stored_bonus = (
             bonus_by_period.loc[bonus_period]
@@ -1248,9 +1237,8 @@ with tab_bands:
     st.subheader("Personal allowance adjustment")
     st.caption(
         "The allowance is revised in steps across the year as HMRC reissues the tax code. "
-        "The step in force on a month's first day is the one applied — the workbook's "
-        "`MATCH(..., $F$24:$F$27, 1)`. Adjustments are negative: they reduce the allowance, "
-        "which increases the amount taxed."
+        "The step in force on a month's first day is the one applied. Adjustments are "
+        "negative: they reduce the allowance, which increases the amount taxed."
     )
 
     adjustments = assumptions[assumptions["key"] == ADJUSTMENT_KEY].copy()
@@ -1310,8 +1298,8 @@ with tab_bands:
     current_bands = repo.bands_from(assumptions, effective)
     st.info(
         f"**Basic rate band: {ui.money(current_bands.basic_band)} a month.** Derived, not "
-        "entered — the basic rate threshold less the personal allowance, which is what the "
-        "workbook's `=D28-D22` did. Editing either input moves it."
+        "entered — the basic rate threshold less the personal allowance. Editing either "
+        "input moves it."
     )
 
     # ---- historic sets ------------------------------------------------------------
@@ -1388,9 +1376,9 @@ with tab_bands:
 with tab_spend:
     st.subheader("What's left to spend")
     st.caption(
-        "Salary tracker H17:I28. The latest net salary, less what is already committed, "
-        "divided by thirty. The divisor is thirty whatever the month's length — this is a "
-        "spending allowance, not an apportionment."
+        "The latest net salary, less what is already committed, divided by thirty. The "
+        "divisor is thirty whatever the month's length — this is a spending allowance, not "
+        "an apportionment."
     )
 
     settings = data["settings"]
@@ -1398,9 +1386,8 @@ with tab_spend:
     net_salary = (
         Decimal(str(latest["actual_net"])) if latest is not None else Decimal("0")
     )
-    spend_period = st.selectbox(
-        "Costs from", data["periods"], index=len(data["periods"]) - 1,
-        format_func=repo.period_label, key="spend_period",
+    spend_period = ui.month_select(
+        "Costs from", data["periods"], key="spend_period",
         help="Bills and other costs come from this month's expected costs.",
     )
 

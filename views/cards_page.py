@@ -102,10 +102,9 @@ st.dataframe(
 
 st.caption(
     "The term runs from each card's own opening date, so a 13-month transfer taken out in "
-    "June clears the following July. The workbook counted from April for every card, "
-    "whenever it actually started. The final instalment settles whatever is left — the "
-    "promotional term ends and the balance falls due, which is the step the workbook's "
-    "`IF(month = term, balance, …)` made. Parameters are under **Settings → Cards**."
+    "June clears the following July. The final instalment settles whatever is left: the "
+    "promotional term ends and the balance falls due. Parameters are under "
+    "**Settings → Cards**."
 )
 
 st.divider()
@@ -131,11 +130,9 @@ if not projection.empty:
     projection["period"] = projection["date"].map(repo.period_of)
     months = sorted(projection["period"].unique())
     this_month = repo.period_of(today)
-    from_month = st.selectbox(
-        "From",
-        options=months,
-        index=months.index(this_month) if this_month in months else 0,
-        format_func=repo.period_label,
+    from_month = ui.month_select(
+        "From", months,
+        default=this_month if this_month in months else None,
         key="cards_from_month",
         help="Defaults to the current month. Pick an earlier one to see what has already "
              "been repaid.",

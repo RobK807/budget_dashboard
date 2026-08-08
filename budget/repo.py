@@ -1852,7 +1852,13 @@ def card_outstanding(
                 position = f"Billed {issued:%d %b}, due {due:%d %b}"
             else:
                 awaiting = Decimal("0")
-                position = f"Paid {due:%d %b} — next bill not yet issued"
+                # 'Not yet issued' said only that nothing was outstanding. The date it will
+                # be issued on is the useful half, and the card bills on the same day each
+                # month, so it is one month on from the statement just settled.
+                following = month_add(f"{issued.year:04d}-{issued.month:02d}", 1)
+                year, month = (int(p) for p in following.split("-"))
+                next_bill = _clamp_day(year, month, int(card["statement_day"]))
+                position = f"Paid {due:%d %b} — next bill due on {next_bill:%d %b}"
 
         rows.append(
             {

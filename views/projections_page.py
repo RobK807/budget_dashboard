@@ -38,11 +38,9 @@ else:
 selectable = sorted(set(available) | set(data["all_periods"]))
 default = available[-1] if available else data["periods"][-1]
 
-period = st.selectbox(
-    "Month",
-    options=selectable,
-    index=selectable.index(default),
-    format_func=repo.period_label,
+period = ui.month_select(
+    "Month", selectable,
+    default=default if repo.period_of(dt.date.today()) not in selectable else None,
 )
 
 month_proj = projections[projections["period"] == period]
@@ -120,11 +118,16 @@ chosen = st.multiselect(
 
 if chosen:
     proj = month_proj[month_proj["classification"].isin(chosen)]
-    act = (
-        daily_actual[daily_actual["classification"].isin(chosen)]
-        if not daily_actual.empty
-        else pd.DataFrame(columns=["date", "classification", "total"])
-    )
+    if daily_actual.empty:
+        # Sliced from proj rather than built fresh: a DataFrame declared by column names
+        # alone types every column as object, and merging an object 'date' against the
+        # datetime one proj carries raises instead of returning the projections unmatched.
+        # That is any month with projections but nothing spent yet -- including, now that
+        # the dropdown opens on the current month, the common case.
+        act = proj.iloc[:0][["date", "classification"]].copy()
+        act["total"] = pd.Series(dtype="object")
+    else:
+        act = daily_actual[daily_actual["classification"].isin(chosen)]
     merged = proj.merge(act, on=["date", "classification"], how="outer")
     # Only the amounts. A blanket fillna(Decimal("0")) reached the comment too, so a day
     # with no note showed '0' -- and left the column holding Decimals beside strings, which
@@ -173,9 +176,9 @@ if READ_ONLY:
 
 st.caption(
     "Same shape as the Import page, minus the account and category — a projection is a "
-    "day's expected spend against a classification, which is all the workbook's Projected "
-    "Costs grid held. The grid opens with every day of the month against every "
-    "classification, so planning is filling figures in rather than building the rows first."
+    "day's expected spend against a classification. The grid opens with every day of the "
+    "month against every classification, so planning is filling figures in rather than "
+    "building the rows first."
 )
 
 first_day = repo.period_start(period)

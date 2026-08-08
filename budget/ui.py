@@ -588,6 +588,35 @@ def cycling_rates(data: dict) -> dict:
     return {key: repo.rate_in_force(rates, key, today) for key in ("commute", "band", "gym")}
 
 
+def month_select(label: str, periods, key: str | None = None, default=None, **kwargs):
+    """A month dropdown, newest first, defaulting to the current month.
+
+    Reversed for the same reason the tables are: with two years of history the month wanted
+    is a recent one, and it was two dozen entries down.
+
+    The default is *today's* month wherever it is in range, including in the lists that run
+    into the future. Those exist so a target or a projection can be set ahead of time, but
+    the month being worked on is still this one -- opening on next March because it happens
+    to be last in the list makes the common case the awkward one.
+    """
+    import datetime as dt
+
+    options = list(reversed(list(periods)))
+    if not options:
+        return None
+    if default is None:
+        today = repo.period_of(dt.date.today())
+        default = today if today in options else options[0]
+    return st.selectbox(
+        label,
+        options=options,
+        index=options.index(default) if default in options else 0,
+        format_func=repo.period_label,
+        key=key,
+        **kwargs,
+    )
+
+
 def newest_first(frame: pd.DataFrame) -> pd.DataFrame:
     """Reverse a month-ordered table so the most recent month is the first row.
 
