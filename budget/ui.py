@@ -651,10 +651,13 @@ def month_from(
     default = repo.fiscal_periods(tax_year)[0] if tax_year else periods[0]
     if default not in periods:
         default = periods[0]
+    # Newest first, like every other month list. The default is unchanged -- it is the start
+    # of the current tax year, which is a long way down a list that now spans two of them.
+    options = list(reversed(list(periods)))
     return st.selectbox(
         label,
-        options=periods,
-        index=periods.index(default),
+        options=options,
+        index=options.index(default),
         format_func=repo.period_label,
         key=key,
         help="The earliest month the charts below show. Figures are unaffected — this "

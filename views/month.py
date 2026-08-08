@@ -119,9 +119,19 @@ else:
         balances, data["card_statements"], data["accounts"], period
     )
     as_of = outstanding["as_of"].iloc[0] if not outstanding.empty else None
+    shown = outstanding.drop(columns="as_of")
+    if not shown.empty:
+        # Where in the cycle is per card and cannot be summed, so the total leaves it blank
+        # rather than inventing something to put there.
+        totals = {c: shown[c].sum() for c in
+                  ("closing", "statement", "awaiting", "outstanding")}
+        shown = pd.concat(
+            [shown, pd.DataFrame([{"account": "Total", **totals, "position": ""}])],
+            ignore_index=True,
+        )
     st.dataframe(
         ui.money_table(
-            outstanding.drop(columns="as_of"),
+            shown,
             ["closing", "statement", "awaiting", "outstanding"],
             labels={
                 "account": "Card",

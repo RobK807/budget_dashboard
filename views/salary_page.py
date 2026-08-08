@@ -241,6 +241,11 @@ with tab_compare:
     EXPECTED_ONLY = "Expected"
     BOTH = "Actual vs expected"
 
+    chart_from = ui.month_from(
+        data["all_periods"], key="salary_chart_from", tax_year=data["tax_year"]
+    )
+    shown_frame = frame[frame["period"] >= chart_from] if chart_from else frame
+
     view = st.radio(
         "Show",
         options=[ACTUAL_ONLY, EXPECTED_ONLY, BOTH],
@@ -251,11 +256,11 @@ with tab_compare:
              "expected pairs them line by line.",
     )
 
-    display = frame[["month", "payday"]].copy()
+    display = shown_frame[["month", "payday"]].copy()
     money_columns = []
 
     def add(column: str, source: str) -> None:
-        display[column] = frame[source]
+        display[column] = shown_frame[source]
         money_columns.append(column)
 
     if view == ACTUAL_ONLY:
@@ -272,7 +277,9 @@ with tab_compare:
             add(f"{label} (A)", actual)
 
     if view != EXPECTED_ONLY:
-        display["Net difference"] = frame["actual_net"] - frame["expected_net"]
+        display["Net difference"] = (
+            shown_frame["actual_net"] - shown_frame["expected_net"]
+        )
         money_columns.append("Net difference")
 
     st.dataframe(
@@ -304,7 +311,7 @@ with tab_compare:
         "**Settings → Salary**."
     )
 
-    build_up = frame[
+    build_up = shown_frame[
         ["month", "base", "car", "bonus_gross", "home_working", "pension",
          "expected_holiday", "taxable", "expected_ni", "expected_paye", "expected_net",
          "actual_net"]
@@ -339,8 +346,11 @@ with tab_compare:
         "working − pension − holiday pay − NI − PAYE."
     )
 
-    if not paid_months.empty:
-        chart = ui.to_float(paid_months, ["actual_net", "expected_net"]).melt(
+    # The headline metrics above the tabs stay whole-year -- they are 'to date' figures --
+    # so the window applies to the chart alone.
+    charted_months = shown_frame[shown_frame["actual_net"].notna()]
+    if not charted_months.empty:
+        chart = ui.to_float(charted_months, ["actual_net", "expected_net"]).melt(
             id_vars="month", value_vars=["actual_net", "expected_net"],
             var_name="series", value_name="amount",
         )
