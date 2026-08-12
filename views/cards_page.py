@@ -54,9 +54,10 @@ final = max(
 )
 
 cols = st.columns(3)
-cols[0].metric("Outstanding today", ui.money(outstanding))
-cols[1].metric("Left to repay", ui.money(remaining))
-cols[2].metric("Clear by", final.strftime("%b %Y") if final else "—")
+ui.metric(cols[0], "Outstanding today", ui.money(outstanding))
+ui.metric(cols[1], "Left to repay", ui.money(remaining))
+# A payoff date is a plan, not a balance -- nothing about it is worth hiding.
+ui.metric(cols[2], "Clear by", final.strftime("%b %Y") if final else "—", sensitive=False)
 
 st.divider()
 

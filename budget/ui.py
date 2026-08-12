@@ -413,6 +413,65 @@ def money(value) -> str:
     return f"£{Decimal(str(value)):,.2f}"
 
 
+# ------------------------------------------------------------------------------- privacy
+#
+# One switch, on the Summary page, that blanks every figure a passer-by would read at a
+# glance: the headline metrics on every page, and the whole of Salary.
+#
+# The state cannot live on the toggle's own key. Streamlit discards the session state of a
+# widget that is not rendered in the current run, and the switch is rendered on exactly one
+# page -- so navigating to Month would have turned it off again. `PRIVACY_KEY` is a plain
+# session-state entry, which persists, and the widget key is seeded from it on the way in.
+PRIVACY_KEY = "privacy_mode"
+_PRIVACY_WIDGET = "privacy_switch"
+
+# Fixed width regardless of the figure behind it: a mask that got longer for larger numbers
+# would leak the magnitude, which for a savings balance is most of what is worth hiding.
+MASK = "••••••"
+
+
+def private() -> bool:
+    """Whether figures are being hidden. Read on every page; set only on Summary."""
+    return bool(st.session_state.get(PRIVACY_KEY, False))
+
+
+def privacy_switch() -> bool:
+    """The switch itself, for the top of the Summary page.
+
+    Returns the state it leaves behind, so the rest of the run reads the new value rather
+    than the one the page started with.
+    """
+    st.session_state.setdefault(_PRIVACY_WIDGET, private())
+    on = st.toggle(
+        "Privacy",
+        key=_PRIVACY_WIDGET,
+        help="Hides the headline figures on every page and every amount on **Salary**. "
+             "Nothing is changed or hidden from the data itself — this is for reading the "
+             "dashboard where someone else can see the screen.",
+    )
+    st.session_state[PRIVACY_KEY] = on
+    return on
+
+
+def hidden(text: str) -> str:
+    """`text`, or the mask while privacy is on."""
+    return MASK if private() else text
+
+
+def metric(where, label: str, value, *, sensitive: bool = True, delta=None, **kwargs):
+    """A headline metric the privacy switch can blank.
+
+    `where` is the container to draw into -- `st` or one of `st.columns(...)` -- so the call
+    sites keep the shape they had. `sensitive=False` is for a figure that gives nothing away:
+    a count of transactions, a machine name, a revision number.
+    """
+    if sensitive and private():
+        value = MASK
+        if delta is not None:
+            delta = MASK
+    return where.metric(label, value, delta=delta, **kwargs)
+
+
 def percent(value, places: int = 2) -> str:
     """A rate as it is quoted -- 80.00, not 0.8.
 
@@ -465,6 +524,7 @@ def money_table(
     labels: dict[str, str] | None = None,
     formats: dict[str, str] | None = None,
     integers: list[str] | None = None,
+    mask: bool = False,
 ):
     """Table with thousands separators on the money columns.
 
@@ -486,6 +546,12 @@ def money_table(
     `integers` is for a column of whole numbers that has blanks in it -- a day of the month,
     say. One missing value makes the whole column float, and a payday then reads '1.0'.
     Int64 is pandas' nullable integer: the blanks survive as <NA> and the rest stay whole.
+
+    `mask` blanks every numeric column for the privacy switch. The values are *replaced*
+    rather than merely formatted away: st.dataframe sends the underlying frame to the browser
+    alongside the display text, so a formatter alone would leave the real figures sitting in
+    the page for anyone who thought to look. The column labels and the row count stay, which
+    is what makes the table still recognisable as the one it is.
     """
     out = df.copy()
     spec = dict.fromkeys(money_columns, "£{:,.2f}")
@@ -505,6 +571,13 @@ def money_table(
     # Everything but the whole-number columns: to_float would undo the Int64 that is the
     # whole point of them, and hand back the '1.0' this exists to avoid.
     out = to_float(out, [c for c in spec if c not in whole])
+    if mask:
+        for column in spec:
+            if column in out.columns:
+                out[column] = MASK
+        # '{}' rather than the numeric formats above, which would raise on a string. na_rep
+        # never fires: every cell now holds the mask, and none of them is missing.
+        spec = dict.fromkeys(spec, "{}")
     # A blank is not zero: a month with no payslip yet has no NI, and '£nan' says that
     # badly. The dash matches ui.name_blanks, so an empty cell reads the same everywhere.
     return out.style.format(spec, na_rep="—")
@@ -517,16 +590,23 @@ def currency_columns(*names: str) -> dict:
     }
 
 
-def money_axis(fig, axis: str = "y", label: str | None = None):
+def money_axis(fig, axis: str = "y", label: str | None = None, mask: bool = False):
     """Thousands separators on a chart's value axis and in its hover text.
 
     Plotly's default tick format is SI-prefixed, so £10,000 is drawn as '10.00000k' -- a
     notation nobody reading a bank balance wants. `,.2f` is the same format the tables use,
     so a figure means the same thing wherever it appears.
+
+    `mask` is the privacy switch: the shape of the line stays, the numbers beside it go. Both
+    halves are needed -- dropping the tick labels alone leaves every point readable by
+    hovering it, which on a chart of net pay is the whole figure.
     """
     settings = {"tickformat": ",.2f", "hoverformat": ",.2f"}
     if label is not None:
         settings["title_text"] = label
+    if mask:
+        settings["showticklabels"] = False
+        fig.update_layout(hovermode=False)
     if axis == "y":
         fig.update_yaxes(**settings)
     else:
@@ -699,6 +779,13 @@ def page_header(title: str, subtitle: str = "") -> dict:
         live = data["transactions"][~data["transactions"]["deleted"]]
         st.caption("Transactions")
         st.write(f"**{len(live):,}** live")
+        # Only when it is on, and only ever as a statement: the switch lives on Summary, and
+        # a second copy of it here would mean two controls disagreeing about one flag. What
+        # this has to do is stop a page of masked figures reading as a page of broken ones.
+        if private():
+            st.caption("Privacy")
+            st.write("🙈 **Figures hidden**")
+            st.caption("Switch it off at the top of **Summary**.")
         st.divider()
         sync_badge()
         st.divider()

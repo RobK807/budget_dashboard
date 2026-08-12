@@ -70,6 +70,47 @@ def test_page_renders(page):
     )
 
 
+@pytest.mark.parametrize("page", PAGES)
+def test_page_renders_with_privacy_on(page):
+    """The same sweep with the privacy switch set.
+
+    It is a second code path, not a stylesheet: Salary withholds five entry forms and takes
+    the variables they define with them, and every masked table and chart is a different
+    call. Half of that page is only ever executed with the switch on, so without this it is
+    only ever executed by the person who turned it on.
+    """
+    from budget import ui
+
+    app = AppTest.from_file(str(ROOT / "views" / page), default_timeout=90)
+    app.session_state[ui.PRIVACY_KEY] = True
+    app.run()
+    assert not app.exception, (
+        f"{page} raised with privacy on: "
+        + "; ".join(f"{e.type}: {e.message}" for e in app.exception)
+    )
+
+
+def test_privacy_actually_reaches_the_salary_page():
+    """The sweep above only proves nothing raised, which a switch that did nothing would
+    also satisfy. This is the one that says it worked: the headline amounts are masked, the
+    count beside them is not, and the entry forms have been withheld."""
+    from budget import ui
+
+    app = AppTest.from_file(str(ROOT / "views" / "salary_page.py"), default_timeout=90)
+    app.session_state[ui.PRIVACY_KEY] = True
+    app.run()
+    assert not app.exception
+
+    figures = {m.label: m.value for m in app.metric}
+    assert figures["Gross to date"] == ui.MASK
+    assert figures["Net to date"] == ui.MASK
+    # A count of payslips is not an amount, and reads as '4 of 8'.
+    assert ui.MASK not in figures["Payslips received"]
+
+    withheld = sum("Held back while privacy is on" in c.value for c in app.caption)
+    assert withheld >= 5, f"only {withheld} form(s) withheld"
+
+
 def test_no_page_uses_the_retired_width_flag():
     """`use_container_width` was removed from Streamlit after 2025-12-31.
 

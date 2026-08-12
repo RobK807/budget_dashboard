@@ -205,8 +205,9 @@ def update_account(session: Session, account_id: int, **fields) -> Outcome:
             return Outcome(False, f"An account named {name!r} already exists")
         if name != account.name:
             warnings.append(
-                "Renaming affects historic reporting labels; the reconciliation script "
-                "matches the workbook by name and will flag the difference."
+                "Renaming affects historic reporting labels, and the reconciliation check "
+                "matches accounts by name — it will flag this account as unrecognised until "
+                "it is told the new name."
             )
         account.name = name
 

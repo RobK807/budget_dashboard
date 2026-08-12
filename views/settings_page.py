@@ -173,7 +173,7 @@ with tab_accounts:
             savings = row2[0].checkbox("Savings account")
             savings_limit = row2[1].number_input(
                 "Savings limit (£)", min_value=0.0, step=100.0,
-                help="0 for no cap — mirrors Selections!S",
+                help="0 for no cap",
             )
             investment = row2[2].checkbox("Investment account")
             investment_limit = row2[3].number_input(
@@ -456,10 +456,10 @@ with tab_classes:
 
 with tab_cycling:
     st.caption(
-        "What a day's cycling saves, by kind. These were buried in a nested IF inside the "
-        "Cycling tab — `IF(commute, 10.5, IF(band, 8.9, IF(gym, 4.6, 0)))` — so a fare rise "
-        "meant either rewriting every historic row or letting old rows claim the new fare. "
-        "Dating each rate settles both: history keeps the fare that applied on the day."
+        "What a day's cycling saves, by kind — the fare a ride avoided. Each rate is stored "
+        "against the date it took effect, and a day is valued at the rate in force on that "
+        "day, so raising a fare applies from here on and leaves earlier rides at what they "
+        "were actually worth."
     )
 
     rates = data["cycling_rates"]
@@ -825,9 +825,16 @@ with tab_salary:
 
         st.markdown("**Car allowance**")
         st.caption(
-            "A percentage of base salary up to a threshold and a lower one above it, so a "
-            "base of £118,905 gives 12% of £50,000 plus 5% of £68,905 — £9,445.25 a year. "
-            "Derived rather than stored, so a pay rise moves it automatically."
+            "A percentage of base salary up to a threshold and a lower one above it. "
+            + (
+                # The worked example is the real base salary, which is the one figure this
+                # section exists to explain and the one the privacy switch is there to hide.
+                ""
+                if ui.private()
+                else "On a base of £118,905 that is 12% of £50,000 plus 5% of £68,905 — "
+                     "£9,445.25 a year. "
+            )
+            + "Derived rather than stored, so a pay rise moves it automatically."
         )
         car = st.columns(3)
         car_threshold = car[0].number_input(
@@ -884,6 +891,7 @@ with tab_salary:
                 ui.money_table(
                     summary, ["annual", "monthly"],
                     labels={"line": "", "annual": "Annual", "monthly": "Monthly"},
+                    mask=ui.private(),
                 ),
                 width="stretch",
                 hide_index=True,
@@ -1184,10 +1192,9 @@ with tab_savings:
     # ---- the derived overview ------------------------------------------------------
     with st.expander("The resulting monthly overview"):
         st.caption(
-            "Derived from the plan above, not entered. The two used to be typed separately, "
-            "which is how the dashboard came to hold 900 and 350 while the plan behind them "
-            "said 250 + 350 + 300 and 250 + 100 — the same figures, but only because nobody "
-            "had yet changed one without the other."
+            "Derived from the plan above, not entered. Holding a headline figure separately "
+            "from the per-account amounts that make it up would mean the two could be "
+            "changed apart and quietly disagree, so there is only one of them."
         )
         st.dataframe(
             ui.money_table(

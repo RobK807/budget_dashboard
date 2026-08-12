@@ -52,9 +52,10 @@ projected_total = month_proj["amount"].sum()
 actual_total = daily_actual["total"].sum() if not daily_actual.empty else Decimal("0")
 
 cols = st.columns(3)
-cols[0].metric("Projected", ui.money(projected_total))
-cols[1].metric("Actual so far", ui.money(actual_total))
-cols[2].metric(
+ui.metric(cols[0], "Projected", ui.money(projected_total))
+ui.metric(cols[1], "Actual so far", ui.money(actual_total))
+ui.metric(
+    cols[2],
     "Difference",
     ui.money(actual_total - projected_total),
     help="Positive means more was spent than planned",

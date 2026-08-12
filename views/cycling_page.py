@@ -35,10 +35,11 @@ total_cost = outgoings["amount"].sum() if not outgoings.empty else Decimal("0")
 ridden = int((savings["saving"] > 0).sum()) if not savings.empty else 0
 
 cols = st.columns(4)
-cols[0].metric("Days ridden", f"{ridden:,}")
-cols[1].metric("Fares saved", ui.money(total_saved))
-cols[2].metric("Running costs", ui.money(total_cost))
-cols[3].metric(
+ui.metric(cols[0], "Days ridden", f"{ridden:,}", sensitive=False)
+ui.metric(cols[1], "Fares saved", ui.money(total_saved))
+ui.metric(cols[2], "Running costs", ui.money(total_cost))
+ui.metric(
+    cols[3],
     "Net saving", ui.money(total_saved - total_cost),
     help="Fares avoided less what the bike has cost",
 )
@@ -171,8 +172,8 @@ with right:
         ridden_in_range = int((window["saving"] > 0).sum())
 
         counts = st.columns(2)
-        counts[0].metric("Days ridden", f"{ridden_in_range:,}")
-        counts[1].metric("Saved", ui.money(window["saving"].sum()))
+        ui.metric(counts[0], "Days ridden", f"{ridden_in_range:,}", sensitive=False)
+        ui.metric(counts[1], "Saved", ui.money(window["saving"].sum()))
 
         st.dataframe(
             ui.money_table(

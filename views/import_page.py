@@ -170,9 +170,9 @@ if candidates:
 
     st.subheader("Balance check")
     st.caption(
-        "The old BulkImport!CK3:CQ32 check. Enter each account's real balance and confirm "
-        "the import lands on it. Leave a target blank to skip that account. Credit-card "
-        "balances are debt owed, so spending increases them."
+        "Enter each account's real balance and confirm the import lands on it. Leave a "
+        "target blank to skip that account. Credit-card balances are debt owed, so spending "
+        "increases them."
     )
 
     verification = repo.import_verification(

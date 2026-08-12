@@ -380,6 +380,53 @@ the first rather than adding to it, and the money columns lose their pound sign 
 with no error. This is what had un-formatted the Cards page and Settings → Cards.</p>
 <p>Missing values render as <code>—</code>, not <code>£nan</code>: a month with no payslip has no NI, and that is not
 the same as zero.</p>
+<p><strong>Privacy is a switch on Summary, and every page has to opt in.</strong> It hides the headline
+figures on every page and every amount on <strong>Salary</strong>, for reading the dashboard where
+someone else can see the screen. Nothing is changed on disk, and the sidebar says so while
+it is on. Four helpers do the work:</p>
+<table>
+<thead>
+<tr>
+<th>Where</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A headline metric</td>
+<td><code>ui.metric(col, label, value)</code> — pass <code>sensitive=False</code> for a count</td>
+</tr>
+<tr>
+<td><code>st.dataframe</code></td>
+<td><code>ui.money_table(df, columns, mask=ui.private())</code></td>
+</tr>
+<tr>
+<td>A Plotly chart</td>
+<td><code>ui.money_axis(fig, mask=ui.private())</code></td>
+</tr>
+<tr>
+<td>A caption or a form</td>
+<td>branch on <code>ui.private()</code> yourself</td>
+</tr>
+</tbody>
+</table>
+<p><code>cols[0].metric(...)</code> renders the same headline and ignores the switch, so a new page that
+uses it leaks its top row. <code>tests/test_privacy.py</code> fails on any <code>.metric</code> call whose value is
+built with <code>ui.money</code> and does not go through <code>ui.metric</code>.</p>
+<p>Masking a table <em>replaces</em> the values rather than formatting them away — <code>st.dataframe</code> sends
+the frame to the browser beside the display text, so a formatter alone would leave the real
+amounts in the page. Masking a chart drops the tick labels <strong>and</strong> turns hover off; without
+the second, every point is one hover away from being read off.</p>
+<p>Forms are the case that needs judgement. A <code>number_input</code> pre-filled from what is stored puts
+the figure straight back on screen, so Salary withholds its five entry forms outright and
+says so where each one was. Anything new that displays a stored amount in an input needs the
+same treatment.</p>
+<p><strong>The dashboard explains itself, not its predecessor.</strong> Screen text says how the tool works;
+it does not compare itself to the spreadsheet this replaced, and it never cites a cell
+reference — <code>the tracker's L3:N10</code> means nothing to a reader who has never opened that file,
+and less every year. Source docstrings and comments are exempt: they record why the design is
+what it is, and nobody reads them from the browser. <code>tests/test_privacy.py</code> pins this over
+every string literal in <code>views/</code> that is not a docstring.</p>
 <p><strong>There are two tax-year functions and they are not interchangeable.</strong></p>
 <table>
 <thead>
@@ -406,7 +453,7 @@ version whenever the thing being grouped has a date of its own.</p>
 <h2 id="layout">Layout</h2>
 <div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code>app<span style="color: #666">.</span>py                  Streamlit entrypoint <span style="color: #007020; font-weight: bold">and</span> navigation
 views<span style="color: #666">/</span>
-  summary<span style="color: #666">.</span>py            Summary <span style="color: #666">--</span> the year at a glance, <span style="color: #007020; font-weight: bold">and</span> account targets
+  summary<span style="color: #666">.</span>py            Summary <span style="color: #666">--</span> the year at a glance, account targets, privacy switch
   month<span style="color: #666">.</span>py              Month <span style="color: #666">--</span> balances, budget, daily spend, cards outstanding
   transactions<span style="color: #666">.</span>py       Transactions <span style="color: #666">--</span> filtered ledger, remove <span style="color: #007020; font-weight: bold">and</span> restore
   add<span style="color: #666">.</span>py                Add a single transaction
@@ -442,7 +489,7 @@ budget<span style="color: #666">/</span>
   ui<span style="color: #666">.</span>py                 shared Streamlit helpers
 tests<span style="color: #666">/</span>
 </code></pre></div>
-<p class="generated">Generated from <code>README.md</code> on 08 August 2026
+<p class="generated">Generated from <code>README.md</code> on 11 August 2026
  — <code>python -m budget.render_docs</code> to refresh.</p>
 </body>
 </html>

@@ -89,10 +89,10 @@ credits = view.loc[view["type"] == "Credit", "amount"].sum()
 transfers = view.loc[view["type"] == "Transfer", "amount"].sum()
 
 cols = st.columns(4)
-cols[0].metric("Matching", f"{len(view):,}")
-cols[1].metric("Debits", ui.money(debits))
-cols[2].metric("Credits", ui.money(credits))
-cols[3].metric("Transfers", ui.money(transfers))
+ui.metric(cols[0], "Matching", f"{len(view):,}", sensitive=False)
+ui.metric(cols[1], "Debits", ui.money(debits))
+ui.metric(cols[2], "Credits", ui.money(credits))
+ui.metric(cols[3], "Transfers", ui.money(transfers))
 
 # --------------------------------------------------------------------------------- table
 

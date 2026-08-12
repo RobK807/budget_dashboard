@@ -19,6 +19,10 @@ accounts = data["accounts"]
 periods = data["periods"]
 live_periods = ui.periods_with_data(data)
 
+# The one place the privacy switch is set; every page reads it. Above the early return as
+# well as above the figures, so it can still be turned back off on an empty database.
+PRIVATE = ui.privacy_switch()
+
 if not live_periods:
     st.info("No transactions yet.")
     st.stop()
@@ -66,7 +70,7 @@ for col, (label, key, help_text) in zip(
         ("Card balances", "cards", "Credit cards, shown as debt owed"),
     ],
 ):
-    col.metric(label, ui.money(position[key]), help=help_text)
+    ui.metric(col, label, ui.money(position[key]), help=help_text)
 
 st.divider()
 

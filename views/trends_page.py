@@ -151,9 +151,8 @@ st.dataframe(ui.heatmap(display.astype(float)), width="stretch")
 st.caption(
     f"{repo.period_label(periods[0])} to {repo.period_label(periods[-1])} — the range starts "
     "at the first month anything is recorded against and runs to the look-forward set above, "
-    "rather than to the end of a fixed fiscal year. These are the figures Summary!Q19:Y31 "
-    "reads. They are cumulative, not monthly totals — a month's closing balance carries into "
-    "the next according to its rollover rule."
+    "rather than to the end of a fixed fiscal year. These are cumulative, not monthly totals "
+    "— a month's closing balance carries into the next according to its rollover rule."
 )
 
 st.divider()

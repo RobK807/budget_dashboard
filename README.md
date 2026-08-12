@@ -300,6 +300,39 @@ with no error. This is what had un-formatted the Cards page and Settings → Car
 Missing values render as `—`, not `£nan`: a month with no payslip has no NI, and that is not
 the same as zero.
 
+**Privacy is a switch on Summary, and every page has to opt in.** It hides the headline
+figures on every page and every amount on **Salary**, for reading the dashboard where
+someone else can see the screen. Nothing is changed on disk, and the sidebar says so while
+it is on. Four helpers do the work:
+
+| Where | How |
+|---|---|
+| A headline metric | `ui.metric(col, label, value)` — pass `sensitive=False` for a count |
+| `st.dataframe` | `ui.money_table(df, columns, mask=ui.private())` |
+| A Plotly chart | `ui.money_axis(fig, mask=ui.private())` |
+| A caption or a form | branch on `ui.private()` yourself |
+
+`cols[0].metric(...)` renders the same headline and ignores the switch, so a new page that
+uses it leaks its top row. `tests/test_privacy.py` fails on any `.metric` call whose value is
+built with `ui.money` and does not go through `ui.metric`.
+
+Masking a table *replaces* the values rather than formatting them away — `st.dataframe` sends
+the frame to the browser beside the display text, so a formatter alone would leave the real
+amounts in the page. Masking a chart drops the tick labels **and** turns hover off; without
+the second, every point is one hover away from being read off.
+
+Forms are the case that needs judgement. A `number_input` pre-filled from what is stored puts
+the figure straight back on screen, so Salary withholds its five entry forms outright and
+says so where each one was. Anything new that displays a stored amount in an input needs the
+same treatment.
+
+**The dashboard explains itself, not its predecessor.** Screen text says how the tool works;
+it does not compare itself to the spreadsheet this replaced, and it never cites a cell
+reference — `the tracker's L3:N10` means nothing to a reader who has never opened that file,
+and less every year. Source docstrings and comments are exempt: they record why the design is
+what it is, and nobody reads them from the browser. `tests/test_privacy.py` pins this over
+every string literal in `views/` that is not a docstring.
+
 **There are two tax-year functions and they are not interchangeable.**
 
 | Use | For |
@@ -317,7 +350,7 @@ version whenever the thing being grouped has a date of its own.
 ```
 app.py                  Streamlit entrypoint and navigation
 views/
-  summary.py            Summary -- the year at a glance, and account targets
+  summary.py            Summary -- the year at a glance, account targets, privacy switch
   month.py              Month -- balances, budget, daily spend, cards outstanding
   transactions.py       Transactions -- filtered ledger, remove and restore
   add.py                Add a single transaction

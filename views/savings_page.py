@@ -50,16 +50,19 @@ latest = series.iloc[-1]
 # --------------------------------------------------------------------------- headline
 
 cols = st.columns(4)
-cols[0].metric(
+ui.metric(
+    cols[0],
     "Savings", ui.money(latest["savings_eom"]),
     help="Every account flagged as savings",
 )
-cols[1].metric(
+ui.metric(
+    cols[1],
     "Available", ui.money(latest["available_eom"]),
     help="Savings less the earmarked pots below",
 )
-cols[2].metric("Investments", ui.money(latest["investments_eom"]))
-cols[3].metric(
+ui.metric(cols[2], "Investments", ui.money(latest["investments_eom"]))
+ui.metric(
+    cols[3],
     "Combined", ui.money(latest["combined"]),
     help="Savings and investments together",
 )
@@ -368,11 +371,9 @@ tab_return, tab_interest, tab_donations = st.tabs(
 
 with tab_return:
     st.caption(
-        "What the investments have actually returned, net of what was paid into them. The "
-        "tracker typed its balances in month by month and assumed the contributions — a "
-        "fixed £250 and £100 every row, whatever was really paid. Both are in the ledger: a "
-        "contribution is a transfer in, and a valuation change is the credit or debit "
-        "commented 'Investment return'. So"
+        "What the investments have actually returned, net of what was paid into them. Both "
+        "sides come from the ledger rather than being assumed: a contribution is a transfer "
+        "in, and a valuation change is the credit or debit commented 'Investment return'. So"
     )
     st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;`closing = opening + contributions + gain`")
 
@@ -533,7 +534,7 @@ with tab_return:
             months = int(summary["months"].max())
             st.caption(
                 f"**Net** is the current balance less everything paid in, and **Return %** "
-                f"is that against the starting balance — the tracker's L3:N10. Measured to "
+                f"is that against the starting balance. Measured to "
                 f"the end of **{closed_to}**, the last month to have closed: a month still "
                 f"running has no return to report, and annualising a part-month would "
                 f"exaggerate it. So these figures will trail the balances above, which are "
@@ -560,9 +561,9 @@ with tab_interest:
         totals = repo.interest_totals(interest)
         headline = totals.iloc[-1]
         cols = st.columns(3)
-        cols[0].metric(f"Gross — {headline['year']}", ui.money(headline["gross"]))
-        cols[1].metric(f"Net — {headline['year']}", ui.money(headline["net"]))
-        cols[2].metric(f"Total — {headline['year']}", ui.money(headline["total"]))
+        ui.metric(cols[0], f"Gross — {headline['year']}", ui.money(headline["gross"]))
+        ui.metric(cols[1], f"Net — {headline['year']}", ui.money(headline["net"]))
+        ui.metric(cols[2], f"Total — {headline['year']}", ui.money(headline["total"]))
 
         st.markdown("**By tax year**")
         st.dataframe(
@@ -603,9 +604,9 @@ with tab_interest:
         st.plotly_chart(ui.money_axis(fig), width="stretch")
 
         st.caption(
-            "A payment dated 1–5 April belongs to the *previous* tax year, which is why the "
-            "tracker had to split its April rows into 'before 6th' and 'after 6th' and file "
-            "them by hand. Here the date decides."
+            "A payment dated 1–5 April belongs to the *previous* tax year. The date decides "
+            "which year a payment falls in, so an April straddling the changeover needs no "
+            "splitting by hand."
         )
 
 # -------------------------------------------------------------------------- donations
@@ -626,8 +627,9 @@ with tab_donations:
         st.info("Nothing flagged as a donation yet.")
     else:
         cols = st.columns(2)
-        cols[0].metric("Given, all years", ui.money(given["amount"].sum()))
-        cols[1].metric(
+        ui.metric(cols[0], "Given, all years", ui.money(given["amount"].sum()))
+        ui.metric(
+            cols[1],
             f"Given in {by_year.iloc[-1]['year']}", ui.money(by_year.iloc[-1]["amount"])
         )
 

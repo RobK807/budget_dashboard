@@ -41,19 +41,23 @@ if month_postings.empty:
 n_txn = month_postings["txn_id"].nunique()
 
 cols = st.columns(5)
-cols[0].metric("Transactions", f"{n_txn:,}")
-cols[1].metric(
+ui.metric(cols[0], "Transactions", f"{n_txn:,}", sensitive=False)
+ui.metric(
+    cols[1],
     "Paid in", ui.money(balances["paid_in"].sum()), help="Excluding transfers between accounts"
 )
-cols[2].metric(
+ui.metric(
+    cols[2],
     "Paid out", ui.money(balances["paid_out"].sum()), help="Excluding transfers between accounts"
 )
-cols[3].metric(
+ui.metric(
+    cols[3],
     "Transfers",
     ui.money(balances["transfer_out"].sum()),
     help="Moved between your own accounts; nets to zero overall",
 )
-cols[4].metric(
+ui.metric(
+    cols[4],
     "Spend vs budget",
     ui.money(budget["spent"].sum()),
     delta=ui.money(budget["left"].sum()) + " left",

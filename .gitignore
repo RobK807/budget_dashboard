@@ -11,5 +11,13 @@ __pycache__/
 *.xlsm
 *.xlsx
 
+# Bank exports staged for the Import page. These are the raw statements -- account numbers,
+# every transaction, the lot -- and they sit inside the project folder because that is the
+# convenient place to drop them, which makes `git add -A` one keystroke away from putting a
+# year of statements on GitHub irreversibly. The rule above already said financial data must
+# never enter the repo; nothing had implemented it for the one file type that arrives daily.
+imports/
+*.csv
+
 # Windows shortcuts. Taskbar pins are local and hold machine-specific paths.
 *.lnk
