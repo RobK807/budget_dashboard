@@ -380,6 +380,13 @@ the first rather than adding to it, and the money columns lose their pound sign 
 with no error. This is what had un-formatted the Cards page and Settings → Cards.</p>
 <p>Missing values render as <code>—</code>, not <code>£nan</code>: a month with no payslip has no NI, and that is not
 the same as zero.</p>
+<p><strong>Bank identifiers never go in the repository.</strong> Account numbers and sort codes belong in the
+database. A test sample that needs one uses an obviously invented stand-in, and
+<code>tests/test_privacy.py</code> fails on any bare eight-digit run or <code>nn-nn-nn</code> sort code in
+<code>budget/</code>, <code>views/</code>, <code>tests/</code> or the README. This exists because it already happened: the
+first bank-import tests used samples copied out of real exports, and six accounts' details
+were committed and pushed before anyone noticed. Source is the one place they cannot be taken
+back from.</p>
 <p><strong>Privacy is a switch on Summary, and every page has to opt in.</strong> It hides the headline
 figures on every page and every amount on <strong>Salary</strong>, for reading the dashboard where
 someone else can see the screen. Nothing is changed on disk, and the sidebar says so while
@@ -421,6 +428,71 @@ the second, every point is one hover away from being read off.</p>
 the figure straight back on screen, so Salary withholds its five entry forms outright and
 says so where each one was. Anything new that displays a stored amount in an input needs the
 same treatment.</p>
+<p><strong>Importing a bank's own CSV never writes to the ledger.</strong> <strong>Import → Bank files</strong> takes the
+exports as the banks give them, fills in what a statement actually knows, and puts the result
+in the grid on <strong>Paste / edit</strong> for review. Committing is still a separate, deliberate click.</p>
+<p>Adding a bank means adding a <code>BankFormat</code> to <code>budget/bank_formats.py</code> — where the header is,
+which column is which, and which way is out. Four things there are load-bearing:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>out_is_negative</code></td>
+<td>Amex counts a purchase as <strong>positive</strong>; everyone else counts it negative. Get this wrong and every card transaction inverts, with plausible totals.</td>
+</tr>
+<tr>
+<td><code>out_column</code> / <code>in_column</code></td>
+<td>Read by <strong>name</strong>, never by position. Virgin Money's pair is (out, in) and Coventry's is (in, out) — the same two headings reversed.</td>
+</tr>
+<tr>
+<td>The blank line</td>
+<td>Ends the data. Virgin prints an address and six paragraphs of small print after it, and an address parses far enough to become a transaction.</td>
+</tr>
+<tr>
+<td><code>headerless</code></td>
+<td>HSBC exports no header row at all, so it is the fallback and identifies no account: three accounts share that shape.</td>
+</tr>
+</tbody>
+</table>
+<p><code>budget/bank_import.py</code> then decides what the rows mean, in four passes: type from direction,
+drop what the ledger already holds, pair transfers, then apply the rules. Two of those need
+care.</p>
+<p><em>Duplicates</em> are matched on account, direction, amount and a date within a few days — a card
+posts on a different day from the one you wrote down. Matching <strong>consumes</strong>: two identical
+purchases on one day need two ledger entries to be dropped. The index is built from
+<code>repo.load_postings</code>, not from transactions, so a stored Transfer counts against <strong>both</strong> of
+its accounts; otherwise the second bank's file brings the same money in again.</p>
+<p><em>Transfers</em> are found by pairing opposite movements of equal amount across two accounts in
+the same batch. That is why importing several files together beats one at a time, and why it
+beats reading the description: 'AMERICAN EXPRESS DD' cannot say which card it paid, and both
+of them appear. The rules under <strong>Settings → General → Transfer rules</strong> are the fallback for
+a counterpart that is not in the batch.</p>
+<p><strong>Wording is never treated as evidence of a transfer.</strong> A movement with no counterpart on
+another of your accounts and no rule is recorded as the plain debit or credit its bank called
+it. It is tempting to mark the ones that <em>read</em> like transfers — 'withdrawal to', 'payment
+received' — but the description cannot settle it: money leaving a joint account for the other
+holder's own account is worded identically to an internal transfer and is an ordinary debit.
+A marker on those is raised every month and can never be resolved, so it stops being read.
+The matching movement is the evidence; where there is none, the direction the bank gave the
+row stands.</p>
+<p>Banks export further back than the ledger goes for a quiet account, so anything <strong>more than a
+week before</strong> that account's last recorded movement is held back by default. Without it, an
+ordinary import backfills months on the strength of an upload; without the week's grace it
+would also swallow genuine gaps, since an account is not written up in strict date order and
+its last entry is a rough edge rather than a watermark. Whatever the grace lets through still
+faces the duplicate check — that runs first, so a row that is both old and already recorded is
+reported as recorded, which stays true however the window is set.</p>
+<p><strong>Every exclusion is reversible.</strong> Each left-out row is itemised with its reason and a tick
+box, and ticking one re-runs the whole decision with that row spared rather than patching the
+result — because reversing an exclusion has consequences beyond the row itself. Sparing half
+of a paired transfer has to un-pair the other half, or the same money is counted twice. A
+spared row bypasses every test and arrives as a plain movement; <code>SourceRow.key</code> (<code>file#line</code>)
+is what survives the rerun, since a position in a list changes as rows are reinstated.</p>
 <p><strong>The dashboard explains itself, not its predecessor.</strong> Screen text says how the tool works;
 it does not compare itself to the spreadsheet this replaced, and it never cites a cell
 reference — <code>the tracker's L3:N10</code> means nothing to a reader who has never opened that file,
@@ -457,7 +529,7 @@ views<span style="color: #666">/</span>
   month<span style="color: #666">.</span>py              Month <span style="color: #666">--</span> balances, budget, daily spend, cards outstanding
   transactions<span style="color: #666">.</span>py       Transactions <span style="color: #666">--</span> filtered ledger, remove <span style="color: #007020; font-weight: bold">and</span> restore
   add<span style="color: #666">.</span>py                Add a single transaction
-  import_page<span style="color: #666">.</span>py        Bulk <span style="color: #007020; font-weight: bold">import</span><span style="color: #BBB"> </span><span style="color: #0E84B5; font-weight: bold">with</span> validation, preview <span style="color: #007020; font-weight: bold">and</span> undo
+  import_page<span style="color: #666">.</span>py        Bank files, bulk <span style="color: #007020; font-weight: bold">import</span><span style="color: #BBB"> </span><span style="color: #0E84B5; font-weight: bold">with</span> validation, preview <span style="color: #007020; font-weight: bold">and</span> undo
   cycling_record<span style="color: #666">.</span>py     Record a ride <span style="color: #007020; font-weight: bold">or</span> a running cost
   settings_page<span style="color: #666">.</span>py      Reference data <span style="color: #007020; font-weight: bold">and</span> every periodic parameter
   sync_page<span style="color: #666">.</span>py          Push, pull, offline checkout, reconciliation
@@ -472,6 +544,8 @@ budget<span style="color: #666">/</span>
   service<span style="color: #666">.</span>py            write operations
   reference<span style="color: #666">.</span>py          CRUD <span style="color: #007020; font-weight: bold">for</span> reference data <span style="color: #007020; font-weight: bold">and</span> periodic parameters
   importer<span style="color: #666">.</span>py           parsing pasted <span style="color: #007020; font-weight: bold">or</span> uploaded tables
+  bank_formats<span style="color: #666">.</span>py       one declaration per bank<span style="color: #4070A0">&#39;s own CSV export</span>
+  bank_import<span style="color: #666">.</span>py        dedupe against the ledger, pair transfers, fill the grid
   sync<span style="color: #666">.</span>py               cross<span style="color: #666">-</span>machine sync
   tax<span style="color: #666">.</span>py                UK PAYE <span style="color: #007020; font-weight: bold">and</span> NI
   cards<span style="color: #666">.</span>py              card amortisation
@@ -489,7 +563,7 @@ budget<span style="color: #666">/</span>
   ui<span style="color: #666">.</span>py                 shared Streamlit helpers
 tests<span style="color: #666">/</span>
 </code></pre></div>
-<p class="generated">Generated from <code>README.md</code> on 11 August 2026
+<p class="generated">Generated from <code>README.md</code> on 12 August 2026
  — <code>python -m budget.render_docs</code> to refresh.</p>
 </body>
 </html>

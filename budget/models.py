@@ -591,6 +591,44 @@ class SavingsAdjustment(Base):
     account: Mapped[Account] = relationship()
 
 
+class ImportRule(Base):
+    """A description a bank uses for a movement between two of your own accounts.
+
+    A bank export describes only its own side: HSBC records paying the Amex bill as
+    'AMERICAN EXPRESS DD' and a debit, and says nothing about which card received it. When
+    both files are imported together the two halves can be matched on date and amount, which
+    needs no configuration and is the stronger signal. This is for the rest -- an account
+    that is not being imported, or a movement whose other half falls outside the window.
+
+    `pattern` is matched as a case-insensitive substring of the description, so 'HSBC CARD
+    PYMT' catches the reference numbers that follow it. Deliberately not a regular
+    expression: these are typed in by hand, and a bad regex fails at import time on a page
+    that is otherwise about money.
+
+    A rule only ever *proposes*, and only ever names an account of your own. A movement whose
+    far side belongs to somebody else needs no rule: with nothing to match it against it is
+    recorded as the plain debit or credit the bank called it.
+
+    Everything a rule fills in lands in the import grid for review, and nothing here can
+    write to the ledger.
+    """
+
+    __tablename__ = "import_rule"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pattern: Mapped[str] = mapped_column(String(120), nullable=False)
+    # The account on the other side. Which of the two is 'from' comes from the direction of
+    # the row being matched, not from here.
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    account: Mapped[Account] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("pattern", name="uq_import_rule_pattern"),
+    )
+
+
 class Setting(Base):
     """Replaces the Control tab. DeveloperParameters is not carried over -- it only ever
     described sheet geometry."""

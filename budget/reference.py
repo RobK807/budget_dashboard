@@ -37,6 +37,7 @@ from budget.models import (
     CyclingDay,
     CyclingOutgoing,
     CyclingRate,
+    ImportRule,
     Payslip,
     Projection,
     SalaryAssumption,
@@ -947,6 +948,53 @@ def add_savings_adjustment(
     session.flush()
     bump_revision(session)
     return row, Outcome(True, f"One-off saved against {period}.")
+
+
+def set_import_rule(
+    session: Session, pattern: str, account_id: int, note: str | None = None,
+    rule_id: int | None = None,
+) -> Outcome:
+    """Add or amend a transfer pattern. Matching is by substring, so keep them distinctive.
+
+    A pattern that matches everything would turn every row of a file into a transfer, so the
+    obviously destructive ones are refused here rather than discovered in the grid.
+    """
+    text = (pattern or "").strip()
+    if len(text) < 3:
+        return Outcome(False, "A pattern needs at least three characters")
+    if session.get(Account, account_id) is None:
+        return Outcome(False, "Unknown account")
+
+    clash = session.scalars(
+        select(ImportRule).where(func.lower(ImportRule.pattern) == text.lower())
+    ).first()
+    if clash is not None and clash.id != rule_id:
+        return Outcome(False, f"A rule for {text!r} already exists")
+
+    rule = session.get(ImportRule, rule_id) if rule_id else None
+    if rule is None:
+        rule = ImportRule(pattern=text, account_id=account_id, note=note or None)
+        session.add(rule)
+        verb = "added"
+    else:
+        rule.pattern = text
+        rule.account_id = account_id
+        rule.note = note or None
+        verb = "updated"
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Transfer rule {text!r} {verb}.")
+
+
+def remove_import_rule(session: Session, rule_id: int) -> Outcome:
+    rule = session.get(ImportRule, rule_id)
+    if rule is None:
+        return Outcome(False, "Rule not found")
+    pattern = rule.pattern
+    session.delete(rule)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Transfer rule {pattern!r} removed.")
 
 
 def remove_savings_adjustment(session: Session, adjustment_id: int) -> Outcome:

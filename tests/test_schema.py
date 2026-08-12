@@ -6,7 +6,9 @@ properties that matter are: values convert, everything else survives, and runnin
 changes nothing.
 """
 
+import datetime as dt
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,8 @@ from budget.schema import (
     apply_migrations,
     stored_version,
 )
+
+APRIL = dt.date(2026, 4, 1)
 
 OLD_CLASSIFICATION = """
 CREATE TABLE classification (
@@ -333,3 +337,123 @@ class TestMinimumPaymentsBecomePercentages:
 
         assert value == 100  # not 10000
         assert not any("minimum payment" in line for line in applied)
+
+
+class TestTheImportRuleTable:
+    """v11 adds a whole table rather than a column, which needs no migration step of its own.
+
+    That is only true because create_all runs on every start and builds whatever is missing.
+    Pinned because the failure mode is quiet and one-sided: the code that reads the table
+    would raise on a database that predates it, and only on the machine that had not been
+    started since the update.
+    """
+
+    def existing(self, tmp_path, version: str) -> Path:
+        """A database built by this code, then stamped back to an earlier version with the
+        new table dropped -- which is what one written by v10 code looks like."""
+        path = tmp_path / "v10.db"
+        engine = make_engine(path)
+        create_all(engine)
+        engine.dispose()
+
+        connection = sqlite3.connect(path)
+        connection.execute("DROP TABLE import_rule")
+        connection.execute("UPDATE setting SET value=? WHERE key='schema_version'", (version,))
+        connection.commit()
+        connection.close()
+        return path
+
+    def tables(self, path) -> set[str]:
+        connection = sqlite3.connect(path)
+        names = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        connection.close()
+        return names
+
+    def test_an_older_database_gains_the_table_on_the_next_start(self, tmp_path):
+        path = self.existing(tmp_path, "10")
+        assert "import_rule" not in self.tables(path)
+
+        engine = make_engine(path)
+        create_all(engine)
+        engine.dispose()
+
+        assert "import_rule" in self.tables(path)
+
+    def test_and_is_stamped_forward(self, tmp_path):
+        path = self.existing(tmp_path, "10")
+        engine = make_engine(path)
+        create_all(engine)
+        engine.dispose()
+
+        connection = sqlite3.connect(path)
+        stored = connection.execute(
+            "SELECT value FROM setting WHERE key='schema_version'"
+        ).fetchone()[0]
+        connection.close()
+        assert stored == str(SCHEMA_VERSION)
+
+    def test_a_rule_survives_a_round_trip(self, tmp_path):
+        """The loader sorts longest-first, so a specific pattern beats a general one that
+        contains it. That ordering is the table's whole contract with the importer."""
+        from budget import reference, repo
+        from budget.db import make_session_factory
+        from budget.models import Account
+
+        engine = make_engine(tmp_path / "rules.db")
+        create_all(engine)
+        factory = make_session_factory(engine)
+        with factory() as session, session.begin():
+            session.add(Account(name="Mastercard", short_code="MSC", type="credit_card",
+                                valid_from=APRIL))
+            session.add(Account(name="BA Amex", short_code="BAAM", type="credit_card",
+                                valid_from=APRIL))
+        with factory() as session, session.begin():
+            ids = {a.name: a.id for a in session.query(Account).all()}
+            reference.set_import_rule(session, "CARD", ids["BA Amex"])
+            reference.set_import_rule(session, "HSBC CARD PYMT", ids["Mastercard"])
+        with factory() as session:
+            rules = repo.load_import_rules(session)
+        engine.dispose()
+
+        assert list(rules["pattern"]) == ["HSBC CARD PYMT", "CARD"]
+        assert rules.iloc[0]["account"] == "Mastercard"
+
+    def test_the_same_pattern_is_not_stored_twice(self, tmp_path):
+        from budget import reference
+        from budget.db import make_session_factory
+        from budget.models import Account
+
+        engine = make_engine(tmp_path / "dupe.db")
+        create_all(engine)
+        factory = make_session_factory(engine)
+        with factory() as session, session.begin():
+            session.add(Account(name="HSBC", short_code="HSB", type="bank", valid_from=APRIL))
+        with factory() as session, session.begin():
+            account = session.query(Account).one()
+            first = reference.set_import_rule(session, "CARD PYMT", account.id)
+            second = reference.set_import_rule(session, "card pymt", account.id)
+        engine.dispose()
+
+        assert first.ok
+        assert not second.ok and "already exists" in second.message
+
+    def test_a_pattern_short_enough_to_match_anything_is_refused(self, tmp_path):
+        """A two-character pattern turns most of a file into transfers."""
+        from budget import reference
+        from budget.db import make_session_factory
+        from budget.models import Account
+
+        engine = make_engine(tmp_path / "short.db")
+        create_all(engine)
+        factory = make_session_factory(engine)
+        with factory() as session, session.begin():
+            session.add(Account(name="HSBC", short_code="HSB", type="bank", valid_from=APRIL))
+        with factory() as session, session.begin():
+            account = session.query(Account).one()
+            outcome = reference.set_import_rule(session, "DD", account.id)
+        engine.dispose()
+
+        assert not outcome.ok

@@ -262,3 +262,47 @@ def test_the_switch_is_created_in_exactly_one_place():
         if "ui.privacy_switch()" in path.read_text(encoding="utf-8")
     ]
     assert creators == ["views/summary.py"]
+
+
+ACCOUNT_NUMBER = re.compile(
+    # A bare 8-digit run, or a UK sort code. Both are what a bank export is full of and
+    # neither has any business in source: an example needs to be recognisable as invented.
+    r"(?<!\d)\d{8}(?!\d)|(?<!\d)\d{2}-\d{2}-\d{2}(?!\d)"
+)
+
+# Invented stand-ins used in the bank-import samples. Each is either all-zero after a short
+# prefix or an obvious counter, so none of them can be mistaken for a real one.
+INVENTED = {
+    "12345678", "10000001", "20000002", "30000003", "40000004",
+    "00-00-00", "20260805", "20260731",
+}
+
+SOURCE_FILES = sorted(
+    [p for p in (ROOT / "budget").glob("*.py")]
+    + [p for p in (ROOT / "views").glob("*.py")]
+    + [p for p in (ROOT / "tests").glob("*.py")]
+    + [ROOT / "README.md"]
+)
+
+
+def test_no_real_account_number_is_written_into_the_repository():
+    """Bank identifiers belong in the database, never in source, tests or documentation.
+
+    This is here because it already happened: the first version of the bank-import tests
+    used samples copied out of real exports, so account numbers and sort codes for six
+    accounts went into the repository and were pushed. Source is the one place they cannot
+    be taken back from, which is precisely why nothing should put them there.
+
+    Dates in `YYYYMMDD` form are exempt -- one export writes them that way, and the sample
+    has to show it.
+    """
+    offenders = []
+    for path in SOURCE_FILES:
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            for hit in ACCOUNT_NUMBER.findall(line):
+                if hit in INVENTED:
+                    continue
+                offenders.append(f"{path.relative_to(ROOT)}:{number}: {hit}")
+    assert offenders == []

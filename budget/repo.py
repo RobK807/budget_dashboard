@@ -35,6 +35,7 @@ from budget.models import (
     CyclingDay,
     CyclingOutgoing,
     CyclingRate,
+    ImportRule,
     OpeningBalance,
     Payslip,
     Projection,
@@ -1300,6 +1301,27 @@ def load_savings_adjustments(session: Session) -> pd.DataFrame:
     return pd.DataFrame(
         rows, columns=["id", "period", "account_id", "account", "amount", "note"]
     )
+
+
+def load_import_rules(session: Session) -> pd.DataFrame:
+    """The description patterns that name the other side of a transfer.
+
+    Longest pattern first, so a specific rule beats a general one that contains it --
+    'HSBC CARD PYMT' must win over a bare 'HSBC'.
+    """
+    accounts = {a.id: a.name for a in session.scalars(select(Account))}
+    rows = [
+        {
+            "id": r.id,
+            "pattern": r.pattern,
+            "account_id": r.account_id,
+            "account": accounts.get(r.account_id),
+            "note": r.note,
+        }
+        for r in session.scalars(select(ImportRule))
+    ]
+    rows.sort(key=lambda r: (-len(r["pattern"] or ""), (r["pattern"] or "").lower()))
+    return pd.DataFrame(rows, columns=["id", "pattern", "account_id", "account", "note"])
 
 
 def account_kinds(accounts: pd.DataFrame) -> dict[str, str]:

@@ -1455,6 +1455,80 @@ with tab_general:
             )
         show_outcome(outcome)
 
+    st.divider()
+
+    # ---- transfer rules for the bank import -----------------------------------------
+    #
+    # Only ever a fallback. When both banks' files are imported together the two halves of a
+    # movement are matched on amount and date, which needs nothing configured here and cannot
+    # be confused by wording. These are for the other case: an account not being imported, or
+    # a movement whose other half falls outside the window.
+    st.subheader("Transfer rules")
+    st.caption(
+        "How **Import → Bank files** recognises a movement between two of your own accounts. "
+        "A bank describes only its own side, so 'HSBC CARD PYMT DD' says money left HSBC and "
+        "nothing about where it went. Each rule names the account on the other side. "
+        "Matching is a case-insensitive **substring** of the description, so keep patterns "
+        "distinctive — and note that a rule cannot tell two cards apart if the bank words "
+        "both payments identically, which is why importing both files together is better. "
+        "Anything with no rule and no matching movement elsewhere is recorded as the plain "
+        "debit or credit the bank called it."
+    )
+
+    with ui.session() as session:
+        import_rules = repo.load_import_rules(session)
+
+    if import_rules.empty:
+        st.info(
+            "No rules yet. Transfers between accounts you import together are still matched "
+            "on amount and date — these are only needed for the ones you do not."
+        )
+    else:
+        st.dataframe(
+            import_rules[["pattern", "account", "note"]].rename(
+                columns={"pattern": "If the description contains",
+                         "account": "Other account", "note": "Note"}
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.form("import_rule"):
+        rule_row = st.columns([2, 2, 2])
+        rule_pattern = rule_row[0].text_input(
+            "If the description contains", placeholder="e.g. HSBC CARD PYMT",
+            help="Matched anywhere in the description, ignoring case.",
+        )
+        rule_account = rule_row[1].selectbox(
+            "Other account", options=ui.alphabetical(data["accounts"]["name"]),
+            key="import_rule_account",
+            help="One of your own accounts. A movement whose far side belongs to somebody "
+                 "else needs no rule — it is recorded as a plain debit or credit.",
+        )
+        rule_note = rule_row[2].text_input("Note", placeholder="optional")
+        if st.form_submit_button("Save rule", type="primary", disabled=READ_ONLY):
+            lookup = dict(zip(data["accounts"]["name"], data["accounts"]["id"]))
+            with ui.session() as session, session.begin():
+                outcome = reference.set_import_rule(
+                    session, rule_pattern, int(lookup[rule_account]), rule_note or None
+                )
+            show_outcome(outcome)
+
+    if not import_rules.empty:
+        by_id = import_rules.set_index("id")
+        drop_rule = st.selectbox(
+            "Remove a rule",
+            options=list(import_rules["id"]),
+            format_func=lambda i: (
+                f"{by_id.loc[i, 'pattern']} → {by_id.loc[i, 'account']}"
+            ),
+            key="remove_import_rule",
+        )
+        if st.button("Remove rule", disabled=READ_ONLY, key="do_remove_import_rule"):
+            with ui.session() as session, session.begin():
+                outcome = reference.remove_import_rule(session, int(drop_rule))
+            show_outcome(outcome)
+
 st.divider()
 st.caption(
     "Adding or closing anything here never rewrites a month. An account is identified by "
