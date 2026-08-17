@@ -300,6 +300,16 @@ with no error. This is what had un-formatted the Cards page and Settings → Car
 Missing values render as `—`, not `£nan`: a month with no payslip has no NI, and that is not
 the same as zero.
 
+**A savings projection is two lines with the same slope.** `repo.savings_projection` carries
+the balance forward from the latest actuals and the cumulative target forward from the same
+month, both gaining each future month's target. The gap between them is `required` as it
+stands, and it stays exactly that wide across the whole projection — saving to plan from here
+keeps pace with the target rather than catching up on it. That is the finding, not a defect
+of the model, and a chart whose lines quietly converged would assert the opposite. The
+per-account view (`repo.savings_by_account`) sums to the overview exactly on balances and on
+`required`; a test pins that, because two tables on one page disagreeing about the same money
+is worse than either being absent.
+
 **Bank identifiers never go in the repository.** Account numbers and sort codes belong in the
 database. A test sample that needs one uses an obviously invented stand-in, and
 `tests/test_privacy.py` fails on any bare eight-digit run or `nn-nn-nn` sort code in

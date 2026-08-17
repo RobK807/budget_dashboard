@@ -907,3 +907,287 @@ class TestSavingsTargetSeed:
             TestSavingsSeries.TARGETS, ["2026-04"], today=dt.date(2026, 6, 1),
         )
         assert rows.iloc[0]["savings_target_eom"] == Decimal("300")
+
+
+# ------------------------------------------------------- projecting the savings forward
+
+
+class TestSavingsProjection:
+    """Two lines per bucket, same slope, different starting point.
+
+    The gap between them is what is already behind or ahead, and it has to stay exactly that
+    wide for the whole projection: saving the planned amount from here keeps pace with the
+    target, it does not catch up on it. Lines that quietly converged would say otherwise.
+    """
+
+    ACCOUNTS = pd.DataFrame(
+        [
+            {"id": 1, "name": "Marcus", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": Decimal("0")},
+            {"id": 2, "name": "Wedding", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": True,
+             "savings_seed": Decimal("0")},
+            {"id": 3, "name": "Stocks", "type": "bank", "is_savings": False,
+             "is_investment": True, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": Decimal("0")},
+        ]
+    )
+    PLAN = pd.DataFrame(
+        [
+            {"account": "Marcus", "amount": Decimal("100"),
+             "effective_from": dt.date(2026, 4, 1)},
+            {"account": "Wedding", "amount": Decimal("50"),
+             "effective_from": dt.date(2026, 4, 1)},
+            {"account": "Stocks", "amount": Decimal("25"),
+             "effective_from": dt.date(2026, 4, 1)},
+        ]
+    )
+
+    def series(self):
+        """The anchor: one row, standing in for the last month of the real series."""
+        return pd.DataFrame(
+            [
+                {
+                    "period": "2026-04",
+                    "month": "April 2026",
+                    "available_eom": Decimal("1000"),
+                    "reserved_eom": Decimal("500"),
+                    "savings_eom": Decimal("1500"),
+                    "investments_eom": Decimal("2000"),
+                    "combined": Decimal("3500"),
+                    "available_target_eom": Decimal("800"),
+                    "reserved_target_eom": Decimal("600"),
+                    "total_target_eom": Decimal("1400"),
+                    "investments_target_eom": Decimal("2500"),
+                }
+            ]
+        )
+
+    def projection(self, months: int = 3):
+        return repo.savings_projection(
+            self.series(), self.PLAN, self.ACCOUNTS, None, months
+        )
+
+    def test_the_first_row_is_the_anchor_itself(self):
+        """Both lines start from the same month, or the reader cannot see which begins
+        higher."""
+        first = self.projection().iloc[0]
+        assert first["period"] == "2026-04"
+        assert first["available_actual"] == Decimal("1000")
+        assert first["available_target"] == Decimal("800")
+
+    def test_it_runs_for_the_months_asked_for_plus_the_anchor(self):
+        assert len(self.projection(months=6)) == 7
+        assert list(self.projection(months=2)["period"]) == [
+            "2026-04", "2026-05", "2026-06"
+        ]
+
+    def test_each_month_adds_that_buckets_target(self):
+        rows = self.projection()
+        assert rows.iloc[1]["available_actual"] == Decimal("1100")
+        assert rows.iloc[2]["available_actual"] == Decimal("1200")
+        assert rows.iloc[1]["reserved_actual"] == Decimal("550")
+        assert rows.iloc[1]["investments_actual"] == Decimal("2025")
+
+    def test_savings_is_the_two_halves_and_combined_is_the_lot(self):
+        row = self.projection().iloc[1]
+        assert row["savings_actual"] == row["available_actual"] + row["reserved_actual"]
+        assert row["combined_actual"] == row["savings_actual"] + row["investments_actual"]
+
+    def test_the_combined_target_sums_the_two_stored_cumulatives(self):
+        """There is no stored cumulative for 'combined', so it is built rather than read."""
+        first = self.projection().iloc[0]
+        assert first["combined_target"] == Decimal("3900")
+
+    def test_the_gap_never_closes(self):
+        """The point of the chart. Both lines gain the same amount every month, so a
+        shortfall that already exists is carried rather than recovered."""
+        rows = self.projection(months=12)
+        for bucket in repo.PROJECTION_BUCKETS:
+            gaps = {
+                row[f"{bucket}_target"] - row[f"{bucket}_actual"]
+                for _, row in rows.iterrows()
+            }
+            assert len(gaps) == 1, f"{bucket} gap moved: {gaps}"
+
+    def test_ahead_and_behind_are_both_expressible(self):
+        first = self.projection().iloc[0]
+        assert first["available_actual"] > first["available_target"]
+        assert first["investments_actual"] < first["investments_target"]
+
+    def test_no_plan_means_both_lines_run_flat(self):
+        """Honest rather than empty: nothing is being put aside, so nothing accumulates."""
+        rows = repo.savings_projection(
+            self.series(),
+            pd.DataFrame(columns=["account", "amount", "effective_from"]),
+            self.ACCOUNTS, None, 3,
+        )
+        assert len(rows) == 4
+        assert set(rows["available_actual"]) == {Decimal("1000")}
+
+    def test_an_empty_series_projects_nothing(self):
+        assert repo.savings_projection(
+            pd.DataFrame(), self.PLAN, self.ACCOUNTS, None, 6
+        ).empty
+
+    def test_zero_months_projects_nothing(self):
+        assert repo.savings_projection(
+            self.series(), self.PLAN, self.ACCOUNTS, None, 0
+        ).empty
+
+    def test_a_one_off_in_a_future_month_is_carried(self):
+        """A one-off is part of the plan for the month it lands in, so a lump sum already
+        entered against a future month belongs in the projection."""
+        adjustments = pd.DataFrame(
+            [{"period": "2026-06", "account": "Marcus", "amount": Decimal("1000"),
+              "note": "bonus"}]
+        )
+        rows = repo.savings_projection(
+            self.series(), self.PLAN, self.ACCOUNTS, adjustments, 3
+        )
+        assert rows.iloc[1]["available_actual"] == Decimal("1100")
+        assert rows.iloc[2]["available_actual"] == Decimal("2200")
+
+
+# ------------------------------------------------------------ the overview, per account
+
+
+class TestSavingsByAccount:
+    """The same six figures as the overview, one row per pot.
+
+    The tables at the top of the page say the savings are behind; this says which account is
+    behind. It has to add up to the overview exactly, or the page contradicts itself.
+    """
+
+    ACCOUNTS = pd.DataFrame(
+        [
+            {"id": 1, "name": "Marcus", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": Decimal("5000")},
+            {"id": 2, "name": "Wedding", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": True,
+             "savings_seed": None},
+            {"id": 3, "name": "Stocks", "type": "bank", "is_savings": False,
+             "is_investment": True, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": None},
+            {"id": 4, "name": "HSBC", "type": "bank", "is_savings": False,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": None},
+        ]
+    )
+    OPENINGS = pd.DataFrame(
+        [
+            {"account": "Marcus", "period": "2026-04", "opening": Decimal("1000")},
+            {"account": "Wedding", "period": "2026-04", "opening": Decimal("500")},
+            {"account": "Stocks", "period": "2026-04", "opening": Decimal("2000")},
+            {"account": "HSBC", "period": "2026-04", "opening": Decimal("50")},
+            {"account": "Marcus", "period": "2026-05", "opening": Decimal("1200")},
+            {"account": "Wedding", "period": "2026-05", "opening": Decimal("500")},
+            {"account": "Stocks", "period": "2026-05", "opening": Decimal("2000")},
+            {"account": "HSBC", "period": "2026-05", "opening": Decimal("50")},
+        ]
+    )
+    POSTINGS = pd.DataFrame(
+        [
+            {"period": "2026-04", "account": "Marcus", "type": "Credit",
+             "column": "credit", "amount": Decimal("200"), "signed": Decimal("200")},
+            {"period": "2026-05", "account": "Stocks", "type": "Credit",
+             "column": "credit", "amount": Decimal("150"), "signed": Decimal("150")},
+        ]
+    )
+    PLAN_DETAIL = pd.DataFrame(
+        [
+            {"period": "2026-04", "account": "Marcus", "kind": "Savings",
+             "amount": Decimal("100")},
+            {"period": "2026-05", "account": "Marcus", "kind": "Savings",
+             "amount": Decimal("100")},
+            {"period": "2026-04", "account": "Stocks", "kind": "Investments",
+             "amount": Decimal("25")},
+            {"period": "2026-05", "account": "Stocks", "kind": "Investments",
+             "amount": Decimal("25")},
+        ]
+    )
+    PERIODS = ["2026-04", "2026-05"]
+
+    def frame(self, period: str = "2026-05"):
+        return repo.savings_by_account(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, self.PLAN_DETAIL,
+            period, self.PERIODS,
+        )
+
+    def row(self, name: str, period: str = "2026-05"):
+        frame = self.frame(period)
+        return frame[frame["account"] == name].iloc[0]
+
+    def test_only_savings_and_investment_accounts_appear(self):
+        assert set(self.frame()["account"]) == {"Marcus", "Wedding", "Stocks"}
+
+    def test_a_month_carries_its_own_opening_and_closing(self):
+        marcus = self.row("Marcus")
+        assert marcus["bom"] == Decimal("1200")
+        assert marcus["eom"] == Decimal("1200")
+
+    def test_added_is_the_change_within_the_month(self):
+        assert self.row("Marcus", "2026-04")["added"] == Decimal("200")
+        assert self.row("Stocks")["added"] == Decimal("150")
+
+    def test_the_monthly_target_is_that_month_alone(self):
+        assert self.row("Marcus")["target"] == Decimal("100")
+
+    def test_the_cumulative_target_starts_from_the_seed(self):
+        """These pots held money before any of it was recorded here. A running total that
+        starts at nothing, measured against a balance that starts at thousands, reports
+        every month as wildly ahead."""
+        assert self.row("Marcus")["target_eom"] == Decimal("5200")
+        assert self.row("Stocks")["target_eom"] == Decimal("50")
+
+    def test_the_cumulative_target_stops_at_the_month_asked_for(self):
+        """A target set for a later month is not one this month was asked to meet."""
+        assert self.row("Marcus", "2026-04")["target_eom"] == Decimal("5100")
+
+    def test_required_is_the_cumulative_target_less_the_balance(self):
+        marcus = self.row("Marcus")
+        assert marcus["required"] == marcus["target_eom"] - marcus["eom"]
+        assert marcus["required"] == Decimal("4000")
+
+    def test_an_account_with_no_plan_shows_nothing_in_the_target_columns(self):
+        wedding = self.row("Wedding")
+        assert wedding["target"] == Decimal("0")
+        assert wedding["target_eom"] == Decimal("0")
+
+    def test_the_earmarked_flag_is_carried(self):
+        assert bool(self.row("Wedding")["earmarked"]) is True
+        assert bool(self.row("Marcus")["earmarked"]) is False
+
+    def test_kinds_match_the_plan_vocabulary(self):
+        assert self.row("Stocks")["kind"] == "Investments"
+        assert self.row("Marcus")["kind"] == "Savings"
+
+    def test_it_sums_to_the_overview(self):
+        """The page would contradict itself otherwise -- the tables at the top and this one
+        are the same money counted two ways."""
+        targets = pd.DataFrame(
+            [
+                {"period": "2026-04", "savings": Decimal("100"),
+                 "investments": Decimal("25")},
+                {"period": "2026-05", "savings": Decimal("100"),
+                 "investments": Decimal("25")},
+            ]
+        )
+        overview = repo.savings_series(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, targets, self.PERIODS,
+            today=dt.date(2026, 6, 1),
+        ).iloc[-1]
+        mine = self.frame()
+        savings = mine[mine["kind"] == "Savings"]
+        investments = mine[mine["kind"] == "Investments"]
+
+        assert savings["eom"].sum() == overview["savings_eom"]
+        assert investments["eom"].sum() == overview["investments_eom"]
+        assert savings["required"].sum() == overview["total_required"]
+        assert investments["required"].sum() == overview["investments_required"]
+
+    def test_it_is_sorted_by_kind_then_account(self):
+        assert list(self.frame()["kind"]) == ["Investments", "Savings", "Savings"]
+        assert list(self.frame()["account"]) == ["Stocks", "Marcus", "Wedding"]

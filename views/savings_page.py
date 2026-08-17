@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -311,6 +312,87 @@ st.caption(
 
 st.divider()
 
+# --------------------------------------------------------------------- projection
+
+st.subheader("Where this ends up")
+
+# Two lines per bucket with the same slope and different starting points. The gap between
+# them is `required` as it stands today, and it stays exactly that wide the whole way across
+# -- which is the point rather than a shortcoming of the model. Saving the planned amount
+# from here does not close a gap that has already opened; a chart whose lines quietly
+# converged would say that it does.
+look_forward = st.slider(
+    "Project forward (months)",
+    min_value=1,
+    max_value=36,
+    value=max(1, int(data["look_forward"])),
+    key="savings_look_forward",
+    help="Months beyond the latest actual figures. Set the default under "
+         "**Settings → General**.",
+)
+
+projection = repo.savings_projection(
+    series, data["savings_plan"], accounts, data["savings_adjustments"], look_forward
+)
+
+if projection.empty:
+    st.info("Nothing to project from yet.")
+else:
+    PROJECTED = {
+        "available": ("Savings (available)", ui.ACCENT),
+        "reserved": ("Savings (reserved)", "#8C9EC4"),
+        "savings": ("Savings (total)", "#72B7B2"),
+        "investments": ("Investments", ui.POSITIVE),
+        "combined": ("Combined", "#B279A2"),
+    }
+
+    plot = ui.to_float(
+        projection,
+        [f"{b}_{side}" for b in PROJECTED for side in ("actual", "target")],
+    )
+
+    fig = go.Figure()
+    for bucket, (label, colour) in PROJECTED.items():
+        # One legend entry per bucket, not two. Both lines share a legendgroup, so a click
+        # hides the pair -- which is what 'I do not care about investments right now' means.
+        # Ten separate entries for five things is a legend you read rather than use.
+        fig.add_trace(
+            go.Scatter(
+                x=plot["month"], y=plot[f"{bucket}_actual"], name=label,
+                legendgroup=bucket, mode="lines+markers",
+                line=dict(color=colour, width=2),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=plot["month"], y=plot[f"{bucket}_target"], name=f"{label} — on target",
+                legendgroup=bucket, showlegend=False, mode="lines",
+                line=dict(color=colour, width=2, dash="dot"),
+            )
+        )
+
+    fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
+    st.plotly_chart(ui.money_axis(fig, label="Balance (£)"), width="stretch")
+
+    anchor = projection.iloc[0]["month"]
+    st.caption(
+        f"Both lines start from **{anchor}**, the latest actual figures, and add each future "
+        "month's target. The **solid** line carries the balance forward as it actually "
+        "stands; the **dotted** line carries the cumulative target forward instead. A solid "
+        "line above its dotted twin is a pot that is ahead of plan, below it one that is "
+        "behind — and the distance between them does not change, because saving to plan from "
+        "here keeps pace with the target rather than catching up on it. Click a name in the "
+        "legend to hide both of its lines."
+    )
+
+    if data["savings_plan"].empty:
+        st.info(
+            "No savings plan is set, so every future month adds nothing and both lines run "
+            "flat. Set one under **Settings → Savings targets**."
+        )
+
+st.divider()
+
 # ------------------------------------------------------------------- account detail
 
 st.subheader("Accounts at end of the month")
@@ -326,6 +408,50 @@ detail_period = ui.month_select(
     key="accounts_month",
     label_visibility="collapsed",
 )
+
+# ---- against target, per account -------------------------------------------------
+#
+# The same six figures the overview carries, one row per pot. The tables at the top say the
+# savings are behind; this says which account is behind, which is the question that follows.
+st.markdown("**Against target**")
+
+by_account = repo.savings_by_account(
+    postings, data["openings"], accounts, data["plan_detail"], detail_period, periods
+)
+
+if by_account.empty:
+    st.info("No savings or investment accounts to show for this month.")
+else:
+    # A total, so the row ties back to the tables at the top of the page. It spans both
+    # kinds, so it matches savings and investments added together rather than either alone.
+    totals = {c: by_account[c].sum() for c in COLUMNS}
+    shown = pd.concat(
+        [
+            by_account,
+            pd.DataFrame([{"account": "Total", "kind": "", "earmarked": None, **totals}]),
+        ],
+        ignore_index=True,
+    )
+    st.dataframe(
+        ui.money_table(
+            shown[["account", "kind", "earmarked"] + COLUMNS],
+            COLUMNS,
+            labels={"account": "Account", "kind": "Type", "earmarked": "Earmarked",
+                    **LABELS},
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "**Cumulative target** starts from each account's seed — what the pot already held "
+        "before any of this was recorded — plus every monthly target set for it up to and "
+        "including this month. **Required** is that less the closing balance, so a positive "
+        "figure is money still to find in that pot. An account with no target of its own "
+        "shows nothing in the two target columns, which is not the same as a target of zero. "
+        "Seeds are set under **Settings → Savings targets**."
+    )
+
+st.markdown("**How the money moved**")
 
 balances = repo.account_balances(
     postings, data["openings"], detail_period, accounts

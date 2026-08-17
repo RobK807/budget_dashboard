@@ -2092,6 +2092,191 @@ def savings_series(
     return pd.DataFrame(rows)
 
 
+# The five things the page draws, and where each one's two starting points come from. Keyed
+# in the order they are read: the two halves of savings, their total, investments, the lot.
+PROJECTION_BUCKETS: dict[str, tuple[str, str]] = {
+    "available": ("available_eom", "available_target_eom"),
+    "reserved": ("reserved_eom", "reserved_target_eom"),
+    "savings": ("savings_eom", "total_target_eom"),
+    "investments": ("investments_eom", "investments_target_eom"),
+    "combined": ("combined", ""),  # combined has no stored cumulative; summed below
+}
+
+
+def savings_projection(
+    series: pd.DataFrame,
+    plan: pd.DataFrame,
+    accounts: pd.DataFrame,
+    adjustments: pd.DataFrame | None = None,
+    months: int = 12,
+) -> pd.DataFrame:
+    """Where the balances land if every month from here on hits its target.
+
+    Two lines per bucket, same slope, different starting point:
+
+        <bucket>_actual   the balance as it stands, plus each future month's target
+        <bucket>_target   the cumulative target as it stands, plus the same
+
+    The gap between them is `required` at the anchor month -- what is already behind or
+    ahead -- and it stays exactly that wide for the whole projection, because both lines gain
+    the same amount every month. That is the useful part rather than a defect of the model:
+    saving the planned amount from here does not close a gap that has already opened, and a
+    chart that quietly converged would say it does.
+
+    The first row is the anchor itself, so both lines start from the same month and the
+    reader can see which one begins higher. Future targets come from the plan in force,
+    which is what the latest revision says to do from here, including any one-off already
+    entered against a future month.
+    """
+    columns = ["period", "month", "date"] + [
+        f"{bucket}_{side}" for bucket in PROJECTION_BUCKETS for side in ("actual", "target")
+    ]
+    if series.empty or months <= 0:
+        return pd.DataFrame(columns=columns)
+
+    anchor = series.iloc[-1]
+    running: dict[str, dict[str, Decimal]] = {}
+    for bucket, (actual_column, target_column) in PROJECTION_BUCKETS.items():
+        if bucket == "combined":
+            started_target = Decimal(
+                anchor["total_target_eom"]
+            ) + Decimal(anchor["investments_target_eom"])
+        else:
+            started_target = Decimal(anchor[target_column])
+        running[bucket] = {
+            "actual": Decimal(anchor[actual_column]),
+            "target": started_target,
+        }
+
+    def snapshot(period: str) -> dict:
+        row = {
+            "period": period,
+            "month": period_label(period),
+            "date": month_end(period),
+        }
+        for bucket, sides in running.items():
+            row[f"{bucket}_actual"] = sides["actual"]
+            row[f"{bucket}_target"] = sides["target"]
+        return row
+
+    rows = [snapshot(anchor["period"])]
+
+    ahead = [month_add(anchor["period"], step) for step in range(1, months + 1)]
+    monthly = targets_by_bucket(plan, accounts, ahead, adjustments)
+    by_period = monthly.set_index("period") if not monthly.empty else None
+
+    def target_at(period: str, column: str) -> Decimal:
+        if by_period is None or period not in by_period.index:
+            return Decimal("0")
+        value = by_period.loc[period, column]
+        return Decimal("0") if pd.isna(value) else Decimal(value)
+
+    for period in ahead:
+        available = target_at(period, "available")
+        reserved = target_at(period, "reserved")
+        investments = target_at(period, "investments")
+        step = {
+            "available": available,
+            "reserved": reserved,
+            "savings": available + reserved,
+            "investments": investments,
+            "combined": available + reserved + investments,
+        }
+        for bucket, amount in step.items():
+            running[bucket]["actual"] += amount
+            running[bucket]["target"] += amount
+        rows.append(snapshot(period))
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def savings_by_account(
+    postings: pd.DataFrame,
+    openings: pd.DataFrame,
+    accounts: pd.DataFrame,
+    plan_detail: pd.DataFrame,
+    period: str,
+    periods: list[str],
+) -> pd.DataFrame:
+    """One month of the overview, per account rather than per bucket.
+
+    The same six figures the tables above carry -- BoM, Added, EoM, the month's target, the
+    cumulative target and what is still Required -- for every savings and investment account.
+    The overview says the savings are behind; this says which pot is behind.
+
+    `periods` is the full run from the start, not just the month asked for: the cumulative
+    target is every target this account has been set up to and including `period`, so it
+    cannot be worked out from one month in isolation. It starts from the account's own
+    `savings_seed` for the same reason the overview does -- these pots held money before any
+    of it was recorded here, and a running total starting at nothing measured against a
+    balance starting at thousands reports every month as wildly ahead.
+    """
+    columns = [
+        "account", "kind", "earmarked", "bom", "added", "eom",
+        "target", "target_eom", "required",
+    ]
+    balances = account_balances(postings, openings, period, accounts)
+    if balances.empty:
+        return pd.DataFrame(columns=columns)
+
+    mine = balances[balances["is_savings"] | balances["is_investment"]].copy()
+    if mine.empty:
+        return pd.DataFrame(columns=columns)
+
+    earmarked = set()
+    if "exclude_from_savings" in accounts.columns:
+        flag = accounts["exclude_from_savings"].fillna(False).astype(bool)
+        earmarked = set(accounts.loc[flag, "name"])
+
+    seeds: dict[str, Decimal] = {}
+    if "savings_seed" in accounts.columns:
+        for _, row in accounts.iterrows():
+            value = row["savings_seed"]
+            if value is not None and not pd.isna(value):
+                seeds[row["name"]] = Decimal(value)
+
+    # Everything up to and including the month asked for. A target set for a later month is
+    # not one this month was asked to meet.
+    upto = [p for p in periods if p <= period]
+    plan = (
+        plan_detail[plan_detail["period"].isin(upto)]
+        if plan_detail is not None and not plan_detail.empty
+        else pd.DataFrame(columns=["period", "account", "amount"])
+    )
+
+    def planned(account: str, only_this_month: bool) -> Decimal:
+        if plan.empty:
+            return Decimal("0")
+        rows = plan[plan["account"] == account]
+        if only_this_month:
+            rows = rows[rows["period"] == period]
+        total = rows["amount"].sum()
+        return Decimal("0") if total == 0 else Decimal(total)
+
+    built = []
+    for _, row in mine.iterrows():
+        name = row["account"]
+        bom = Decimal(row["opening"])
+        eom = Decimal(row["closing"])
+        target_eom = seeds.get(name, Decimal("0")) + planned(name, only_this_month=False)
+        built.append(
+            {
+                "account": name,
+                "kind": "Investments" if row["is_investment"] else "Savings",
+                "earmarked": name in earmarked,
+                "bom": bom,
+                "added": eom - bom,
+                "eom": eom,
+                "target": planned(name, only_this_month=True),
+                "target_eom": target_eom,
+                "required": target_eom - eom,
+            }
+        )
+
+    frame = pd.DataFrame(built, columns=columns)
+    return sort_human(frame, by=["kind", "account"]).reset_index(drop=True)
+
+
 # ------------------------------------------------------------------- investment return
 #
 # The tracker's 'Investment Return' tab. Its balances were typed in month by month and its
