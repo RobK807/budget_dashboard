@@ -287,9 +287,13 @@ dashboard that had moved on considerably.</p>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pytest<span style="color: #BBB"> </span>tests<span style="color: #BBB"> </span>-q<span style="color: #BBB">       </span><span style="color: #60A0B0; font-style: italic"># unit tests</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase4<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># reload projections, salary, cards, cycling</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase5<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># seed salary profile, rates, targets, card billing</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.seed_pension<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># bring the pension history in, once per machine</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.migrate_xlsm<span style="color: #BBB"> </span>--force<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># rebuild the database from scratch</span>
 </code></pre></div>
 
+<p><code>seed_pension</code> is safe to run twice — valuations are keyed by pot and date, and ledger
+entries are reconciled by count, so a second run reports everything already present and
+writes nothing. <code>--report</code> prints the same summary and changes nothing at all.</p>
 <p><code>reconcile</code> is worth re-running after any change to the query layer: it checks 264
 account-months, ~2,700 daily classification cells, ~490 category figures and the Summary
 position against the workbook, and exits non-zero if anything moved unexpectedly.</p>
@@ -297,7 +301,7 @@ position against the workbook, and exits non-zero if anything moved unexpectedly
 against <code>Budget 26-27.xlsm</code>, so April-to-March is what it should cover. Everywhere else the
 month lists run from the first month anything is recorded against to the current one, plus
 the look-forward set under <strong>Settings → General</strong>.</p>
-<p>The test suite includes <code>tests/test_pages_render.py</code>, which opens all fourteen pages through
+<p>The test suite includes <code>tests/test_pages_render.py</code>, which opens all fifteen pages through
 Streamlit's <code>AppTest</code> and fails on any uncaught exception — pages are scripts, so a typo in
 one would otherwise only surface when someone opened it. It runs against a copy of the
 database, never the real one.</p>
@@ -413,6 +417,46 @@ still carries a seed or a target, flagged <code>Closed</code>, and omitted once 
 walks the <strong>whole</strong> run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.</p>
+<p><strong>A pension rises for two different reasons, and one formula separates them.</strong> Everywhere
+else a balance goes up because money came in and down because it was spent. A pension does
+both at once: a pot being paid into is indistinguishable from a pot that is growing, and
+dividing this valuation by the last one reports every contribution as a gain. So a pension is
+stored as two things that are never mixed — <code>pension_valuation</code>, what a statement said on a
+day, and <code>pension_contribution</code>, the money that moved — and every figure on the page is:</p>
+<div class="codehilite" style="background: #f0f0f0"><pre style="line-height: 125%;"><span></span><code><span style="color: #007020; font-weight: bold">return</span><span style="color: #BBB"> </span><span style="color: #666">=</span><span style="color: #BBB"> </span><span style="color: #BB60D5">value</span><span style="color: #BBB"> </span><span style="color: #BB60D5">at</span><span style="color: #BBB"> </span><span style="color: #BB60D5">the</span><span style="color: #BBB"> </span><span style="color: #007020; font-weight: bold">end</span><span style="color: #BBB"> </span><span style="color: #666">/</span><span style="color: #BBB"> </span><span style="color: #517918">(</span><span style="color: #BB60D5">value</span><span style="color: #BBB"> </span><span style="color: #BB60D5">at</span><span style="color: #BBB"> </span><span style="color: #BB60D5">the</span><span style="color: #BBB"> </span><span style="color: #BB60D5">start</span><span style="color: #BBB"> </span><span style="color: #666">+</span><span style="color: #BBB"> </span><span style="color: #BB60D5">net</span><span style="color: #BBB"> </span><span style="color: #BB60D5">money</span><span style="color: #BBB"> </span><span style="color: #BB60D5">in</span><span style="color: #517918">)</span><span style="color: #BBB"> </span><span style="color: #666">-</span><span style="color: #BBB"> </span><span style="color: #40A070">1</span>
+</code></pre></div>
+
+<p>Over the gap between two valuations that is the period return; from the first valuation to
+now it is the return to date. A pot closed to contributions has no middle term, so the same
+expression collapses to end over start — which is why there is no separate case for the
+frozen pots, and why the three can be read across each other at all.</p>
+<p>Three details in <code>repo.pension_history</code> carry weight:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Carry forward, never drop</td>
+<td>Three providers do not publish on the same day. A pot with no figure of its own on a date keeps its last one and is named in <code>carried</code>; omitting it instead shows the total pension <em>falling</em> by the size of that pot.</td>
+</tr>
+<tr>
+<td><code>arrived</code></td>
+<td>A pot's first value is neither growth nor a contribution, but it must still go into the total's denominator — otherwise the date a pot joins reports the whole of it as a gain.</td>
+</tr>
+<tr>
+<td>Ratio of sums, not mean of ratios</td>
+<td>The combined return is worked out from the pounds. A weighted average of three percentages answers "what did the average pound do", which is a different question and differs by most of a point.</td>
+</tr>
+</tbody>
+</table>
+<p>The two annualised measures divide by 365.25 and assume the money was there throughout, so
+the whole-life one <strong>understates a pot still being paid into</strong>. That is stated on the page
+rather than corrected, because correcting it properly means a money-weighted rate and that is
+a different measure, not a better version of this one.</p>
 <p><strong>Bank identifiers never go in the repository.</strong> Account numbers and sort codes belong in the
 database. A test sample that needs one uses an obviously invented stand-in, and
 <code>tests/test_privacy.py</code> fails on any bare eight-digit run or <code>nn-nn-nn</code> sort code in
@@ -570,6 +614,7 @@ views<span style="color: #666">/</span>
   projections_page<span style="color: #666">.</span>py   Projected against actual spend, <span style="color: #007020; font-weight: bold">and</span> planning a month
   savings_page<span style="color: #666">.</span>py       Savings <span style="color: #007020; font-weight: bold">and</span> investments against target
   salary_page<span style="color: #666">.</span>py        Payslips, the PAYE<span style="color: #666">/</span>NI model, the tax year to date, what <span style="color: #007020; font-weight: bold">is</span> left
+  pension_page<span style="color: #666">.</span>py       Pension pots, growth against what was paid <span style="color: #007020; font-weight: bold">in</span>, <span style="color: #007020; font-weight: bold">and</span> entry
   cards_page<span style="color: #666">.</span>py         Balance<span style="color: #666">-</span>transfer amortisation
   cycling_page<span style="color: #666">.</span>py       Fares saved against running costs
 budget<span style="color: #666">/</span>
@@ -585,6 +630,7 @@ budget<span style="color: #666">/</span>
   schema<span style="color: #666">.</span>py             <span style="color: #007020; font-weight: bold">in</span><span style="color: #666">-</span>place schema migrations
   import_phase4<span style="color: #666">.</span>py      projections, salary, cards, cycling
   import_phase5<span style="color: #666">.</span>py      salary profile, rates, targets, card billing
+  seed_pension<span style="color: #666">.</span>py       one<span style="color: #666">-</span>off <span style="color: #007020; font-weight: bold">import</span><span style="color: #BBB"> </span><span style="color: #0E84B5; font-weight: bold">of</span> the pension history
   config<span style="color: #666">.</span>py             <span style="color: #007020">all</span> filesystem paths
   models<span style="color: #666">.</span>py             SQLAlchemy schema
   db<span style="color: #666">.</span>py                 engine <span style="color: #007020; font-weight: bold">and</span> session

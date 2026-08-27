@@ -28,6 +28,7 @@ PAGES = [
     "projections_page.py",
     "savings_page.py",
     "salary_page.py",
+    "pension_page.py",
     "cards_page.py",
     "cycling_page.py",
     "add.py",
@@ -109,6 +110,81 @@ def test_privacy_actually_reaches_the_salary_page():
 
     withheld = sum("Held back while privacy is on" in c.value for c in app.caption)
     assert withheld >= 5, f"only {withheld} form(s) withheld"
+
+
+def test_the_pension_page_draws_once_it_has_something_to_draw(database_copy):
+    """The sweep above only proves the empty page renders.
+
+    Every chart, pivot and return on that page is inside the branch taken when there *are*
+    valuations, so without this the whole of it is only ever executed by whoever has data.
+    Two dates and a payment is the smallest case that exercises all of it: a carried-forward
+    pot, a period return with a contribution deducted, and a total across two pots.
+    """
+    import datetime as dt
+    from decimal import Decimal
+
+    from budget.db import make_engine, make_session_factory
+    from budget.models import PensionContribution, PensionPot, PensionValuation
+
+    engine = make_engine(database_copy)
+    try:
+        with make_session_factory(engine)() as session, session.begin():
+            if session.query(PensionPot).count() == 0:
+                start, later = dt.date(2024, 1, 1), dt.date(2024, 7, 1)
+                frozen = PensionPot(name="Pot one", valid_from=start, display_order=1)
+                active = PensionPot(name="Pot two", valid_from=start, display_order=2)
+                session.add_all([frozen, active])
+                session.flush()
+                session.add_all(
+                    [
+                        PensionValuation(
+                            pot_id=frozen.id, on_date=start, value=Decimal("1000")
+                        ),
+                        PensionValuation(
+                            pot_id=active.id, on_date=start, value=Decimal("500")
+                        ),
+                        # Only one pot is valued on the second date, so the page has to
+                        # carry the other forward and say that it did.
+                        PensionValuation(
+                            pot_id=active.id, on_date=later, value=Decimal("700")
+                        ),
+                        PensionContribution(
+                            pot_id=active.id, on_date=dt.date(2024, 4, 1),
+                            amount=Decimal("100"), kind="contribution",
+                        ),
+                        PensionContribution(
+                            pot_id=active.id, on_date=dt.date(2024, 5, 1),
+                            amount=Decimal("-2"), kind="charge",
+                        ),
+                    ]
+                )
+    finally:
+        engine.dispose()
+
+    from budget import ui
+
+    ui.load_all.clear()
+    app = AppTest.from_file(str(ROOT / "views" / "pension_page.py"), default_timeout=90)
+    app.run()
+    assert not app.exception, "; ".join(
+        f"{e.type}: {e.message}" for e in app.exception
+    )
+
+    figures = {m.label: m.value for m in app.metric}
+    assert figures["Total value"] == "£1,700.00"
+    assert figures["Paid in"] == "£1,598.00"
+    assert figures["Growth"] == "£102.00"
+
+    # And the same page with the switch on: the amounts go, the percentage stays.
+    app = AppTest.from_file(str(ROOT / "views" / "pension_page.py"), default_timeout=90)
+    app.session_state[ui.PRIVACY_KEY] = True
+    app.run()
+    assert not app.exception
+    masked = {m.label: m.value for m in app.metric}
+    assert masked["Total value"] == ui.MASK
+    assert masked["Growth"] == ui.MASK
+    assert ui.MASK not in masked["Return to date"]
+    ui.load_all.clear()
 
 
 def test_no_page_uses_the_retired_width_flag():

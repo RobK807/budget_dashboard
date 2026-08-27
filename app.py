@@ -96,6 +96,7 @@ navigation = st.navigation(
         "Track": [
             st.Page("views/savings_page.py", title="Savings and investments", icon="🏦"),
             st.Page("views/salary_page.py", title="Salary", icon="💼"),
+            st.Page("views/pension_page.py", title="Pension", icon="🪙"),
             st.Page("views/cards_page.py", title="Cards", icon="💳"),
             st.Page("views/cycling_page.py", title="Cycling", icon="🚲"),
         ],

@@ -38,6 +38,9 @@ from budget.models import (
     ImportRule,
     OpeningBalance,
     Payslip,
+    PensionContribution,
+    PensionPot,
+    PensionValuation,
     Projection,
     SalaryAssumption,
     SalaryProfile,
@@ -2858,3 +2861,367 @@ def reconcile_monthly_annual(
         return Decimal(str(0 if blank(monthly) else monthly))
     return None
 
+
+# ------------------------------------------------------------------------------ pensions
+#
+# A pension is measured differently from every other balance in this application. Elsewhere
+# the question is "how much is there"; here it is "how much of the rise was growth and how
+# much was money paid in", and the two are only separable if the payments are recorded.
+#
+# Everything below is therefore one formula applied over two windows:
+#
+#     return = value at the end / (value at the start + net money in) - 1
+#
+# Over the gap between two valuations that is the period return; over the whole life of the
+# pot -- start being its first valuation -- it is the return to date. A pot nothing is paid
+# into has no flows, so the same expression collapses to end / start - 1, which is why there
+# is no separate case for the ones that are closed to contributions.
+
+PENSION_KINDS = ("contribution", "charge", "interest", "other")
+
+# Returns are held as percentages -- 5.52, not 0.0552 -- as every other rate in this
+# database is. See models.SalaryAssumption for why: a fraction in a two-decimal column can
+# only ever express whole percentage points.
+_DAYS_IN_YEAR = 365.25
+
+
+def load_pension_pots(session: Session) -> pd.DataFrame:
+    columns = ["id", "name", "display_order", "valid_from", "valid_to", "note"]
+    rows = [
+        {c: getattr(p, c) for c in columns}
+        for p in session.scalars(select(PensionPot).order_by(PensionPot.display_order))
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def load_pension_valuations(session: Session) -> pd.DataFrame:
+    columns = ["pot_id", "on_date", "value"]
+    rows = [
+        {c: getattr(v, c) for c in columns}
+        for v in session.scalars(
+            select(PensionValuation).order_by(
+                PensionValuation.on_date, PensionValuation.pot_id
+            )
+        )
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def load_pension_contributions(session: Session) -> pd.DataFrame:
+    columns = ["id", "pot_id", "on_date", "amount", "kind", "note"]
+    rows = [
+        {c: getattr(m, c) for c in columns}
+        for m in session.scalars(
+            select(PensionContribution).order_by(
+                PensionContribution.on_date, PensionContribution.id
+            )
+        )
+    ]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _pension_rate(end, base):
+    """`end / base - 1` as a percentage, or None when there is nothing to measure against.
+
+    A base of zero or less is not a return of infinity, it is an unanswerable question: a pot
+    whose contributions have netted to nothing has no denominator, and reporting anything at
+    all there would be inventing a figure.
+    """
+    if end is None or base is None:
+        return None
+    base = Decimal(str(base))
+    if base <= 0:
+        return None
+    return float((Decimal(str(end)) / base - 1) * 100)
+
+
+def _pension_annualised(rate, days):
+    """A percentage return over `days`, restated as a yearly rate.
+
+    None when the period is empty or the pot lost everything: a total loss makes the growth
+    factor zero or negative, and a negative number raised to a fractional power is not real.
+    """
+    if rate is None or not days or days <= 0:
+        return None
+    growth = 1 + float(rate) / 100
+    if growth <= 0:
+        return None
+    return (growth ** (_DAYS_IN_YEAR / days) - 1) * 100
+
+
+def as_date(value):
+    """A plain `date` from a frame cell that may hold a Timestamp, a date, a string or NaT.
+
+    pandas hands back whichever of those suits the column it read, and a `date_input` wants
+    exactly one of them -- so the conversion has to happen somewhere, and doing it at each
+    call site is how a page ends up working for a populated column and raising for an empty
+    one. None passes through, because an absent date is a legitimate answer.
+    """
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    return pd.to_datetime(value).date()
+
+
+def pension_history(
+    pots: pd.DataFrame, valuations: pd.DataFrame, contributions: pd.DataFrame
+) -> pd.DataFrame:
+    """One row per pot per valuation date, with what the pot did between them.
+
+    The dates are the union of every pot's valuations, because the providers do not publish
+    together. A pot with no figure of its own on one of those dates carries its most recent
+    one forward and says so in `stated`, rather than dropping out of the total for that date
+    -- a pot missing from a sum reads as a fall in the total pension, which is the one
+    reading that must never be accidental.
+
+    Columns beyond the obvious:
+
+    | `stated`   | the figure was read on this date rather than carried forward |
+    | `opening`  | the pot's value at the previous date; zero on its first row |
+    | `arrived`  | the pot's first value, on its first row only, and zero after |
+    | `flows`    | net money in since the previous date -- contributions less charges |
+    | `base`     | first value plus every net flow since: what the growth is measured from |
+    | `growth`   | value less base -- the money the pot has made, in pounds |
+
+    `arrived` is what keeps the total honest when a pot joins part way through. Its first
+    value is not growth and it is not a contribution either, but it does have to go into the
+    denominator, or the month a pot appears reports the whole of it as a gain.
+    """
+    columns = [
+        "date", "pot", "pot_id", "value", "stated", "as_at", "opening", "arrived",
+        "flows", "paid_in", "charges", "days", "base", "growth",
+        "period_return", "period_annualised", "total_return", "total_annualised",
+        "inception",
+    ]
+    if pots.empty or valuations.empty:
+        return pd.DataFrame(columns=columns)
+
+    dates = sorted({as_date(d) for d in valuations["on_date"]} - {None})
+    if not dates:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict] = []
+    for _, pot in pots.iterrows():
+        pot_id = pot["id"]
+        mine = valuations[valuations["pot_id"] == pot_id]
+        if mine.empty:
+            continue
+        stated_values = {
+            as_date(r["on_date"]): Decimal(str(r["value"]))
+            for _, r in mine.iterrows()
+        }
+        inception = min(stated_values)
+        first_value = stated_values[inception]
+
+        moves = (
+            contributions[contributions["pot_id"] == pot_id]
+            if not contributions.empty
+            else contributions
+        )
+        movements = [
+            (as_date(r["on_date"]), Decimal(str(r["amount"])), r.get("kind"))
+            for _, r in moves.iterrows()
+        ] if not moves.empty else []
+
+        def flows_between(after, until):
+            """Net movement in `(after, until]` -- the same half-open window everywhere."""
+            net = paid = charged = Decimal("0")
+            for when, amount, kind in movements:
+                if when is None or when <= after or when > until:
+                    continue
+                net += amount
+                if amount >= 0:
+                    paid += amount
+                else:
+                    charged += amount
+            return net, paid, charged
+
+        opened = as_date(pot.get("valid_from"))
+        closed = as_date(pot.get("valid_to"))
+
+        previous_date = None
+        previous_value = None
+        for on in dates:
+            if on < inception or (opened is not None and on < opened):
+                continue
+            if closed is not None and on > closed:
+                continue
+
+            as_at = max(d for d in stated_values if d <= on)
+            value = stated_values[as_at]
+            first_row = previous_date is None
+
+            net, paid, charged = flows_between(
+                inception if first_row else previous_date, on
+            )
+            since_start, _, _ = flows_between(inception, on)
+            base = first_value + since_start
+            days = None if first_row else (on - previous_date).days
+
+            opening = Decimal("0") if first_row else previous_value
+            arrived = first_value if first_row else Decimal("0")
+            period = (
+                None if first_row else _pension_rate(value, opening + net)
+            )
+            total = _pension_rate(value, base)
+
+            rows.append(
+                {
+                    "date": on,
+                    "pot": pot["name"],
+                    "pot_id": pot_id,
+                    "value": value,
+                    "stated": as_at == on,
+                    "as_at": as_at,
+                    "opening": opening,
+                    "arrived": arrived,
+                    "flows": Decimal("0") if first_row else net,
+                    "paid_in": Decimal("0") if first_row else paid,
+                    "charges": Decimal("0") if first_row else charged,
+                    "days": days,
+                    "base": base,
+                    "growth": value - base,
+                    "period_return": period,
+                    "period_annualised": _pension_annualised(period, days),
+                    "total_return": total,
+                    "total_annualised": _pension_annualised(total, (on - inception).days),
+                    "inception": inception,
+                }
+            )
+            previous_date, previous_value = on, value
+
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        ["date", "pot"], ignore_index=True
+    )
+
+
+def pension_totals(history: pd.DataFrame) -> pd.DataFrame:
+    """Every pot added together, per valuation date.
+
+    The returns are recomputed from the summed pounds rather than averaged across the pots.
+    A weighted mean of three ratios is not the ratio of the three sums, and it is the second
+    one that answers 'what did my pension do' -- the first answers 'what did the average
+    pound in it do', which is a different question and differs by most of a percentage point.
+    """
+    columns = [
+        "date", "value", "opening", "flows", "paid_in", "charges", "days",
+        "base", "growth", "period_return", "period_annualised",
+        "total_return", "total_annualised", "pots", "carried",
+    ]
+    if history.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for on, block in history.groupby("date", sort=True):
+        value = block["value"].sum()
+        opening = block["opening"].sum()
+        arrived = block["arrived"].sum()
+        flows = block["flows"].sum()
+        base = block["base"].sum()
+        days = block["days"].dropna()
+        # The longest gap, which is only ever a choice when a pot joined part way through:
+        # every pot valued on the same run of dates has the same span, and a pot on its first
+        # row contributes no span at all. Empty means every pot here is on its first row --
+        # the very first date, which has no previous period to have returned anything over.
+        span = int(days.max()) if not days.empty else None
+        started = min(block["inception"])
+
+        period = (
+            None if span is None else _pension_rate(value, opening + arrived + flows)
+        )
+        total = _pension_rate(value, base)
+        rows.append(
+            {
+                "date": on,
+                "value": value,
+                "opening": opening,
+                "flows": flows,
+                "paid_in": block["paid_in"].sum(),
+                "charges": block["charges"].sum(),
+                "days": span,
+                "base": base,
+                "growth": value - base,
+                "period_return": period,
+                "period_annualised": _pension_annualised(period, span),
+                "total_return": total,
+                "total_annualised": _pension_annualised(total, (on - started).days),
+                "pots": int(len(block)),
+                "carried": [r["pot"] for _, r in block.iterrows() if not r["stated"]],
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def pension_ledger(
+    contributions: pd.DataFrame, pots: pd.DataFrame, pot_id: int | None = None
+) -> pd.DataFrame:
+    """The contribution ledger with its running total, newest last.
+
+    The running total is what a valuation is measured against, so it is derived here rather
+    than stored: a row inserted out of order rewrites every total after it, and a stored one
+    would have to be recalculated on every edit or quietly go wrong.
+    """
+    columns = ["id", "date", "pot", "amount", "kind", "note", "running"]
+    if contributions.empty:
+        return pd.DataFrame(columns=columns)
+
+    names = pots.set_index("id")["name"].to_dict() if not pots.empty else {}
+    frame = contributions.copy()
+    if pot_id is not None:
+        frame = frame[frame["pot_id"] == pot_id]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+
+    frame["date"] = [as_date(d) for d in frame["on_date"]]
+    frame = frame.sort_values(["pot_id", "date", "id"], kind="stable")
+    frame["pot"] = frame["pot_id"].map(names)
+
+    # Accumulated by hand rather than with groupby().cumsum(), which cannot run over a
+    # column of Decimals -- pandas takes it as object dtype and refuses. Converting to float
+    # to satisfy it is exactly the trade this application does not make: the running total is
+    # what a valuation is measured against, so it has to be exact to the penny.
+    running: list[Decimal] = []
+    carried: dict[int, Decimal] = {}
+    for _, row in frame.iterrows():
+        total = carried.get(row["pot_id"], Decimal("0")) + Decimal(str(row["amount"]))
+        carried[row["pot_id"]] = total
+        running.append(total)
+    frame["running"] = running
+    return frame[columns].reset_index(drop=True)
+
+
+def pension_contribution_summary(
+    contributions: pd.DataFrame, pots: pd.DataFrame
+) -> pd.DataFrame:
+    """Money in, charges out and the net, per pot -- what the ledger is kept for.
+
+    Charges are the reason the split is worth having. They are single pence a month at the
+    start and over ten pounds by the end, which is invisible inside a net figure and is the
+    kind of thing a pension is worth watching.
+    """
+    columns = ["pot", "paid_in", "charges", "net", "entries", "first", "last"]
+    if contributions.empty or pots.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for _, pot in pots.iterrows():
+        mine = contributions[contributions["pot_id"] == pot["id"]]
+        if mine.empty:
+            continue
+        amounts = [Decimal(str(a)) for a in mine["amount"]]
+        when = sorted(d for d in (as_date(x) for x in mine["on_date"]) if d)
+        rows.append(
+            {
+                "pot": pot["name"],
+                "paid_in": sum((a for a in amounts if a > 0), Decimal("0")),
+                "charges": sum((a for a in amounts if a < 0), Decimal("0")),
+                "net": sum(amounts, Decimal("0")),
+                "entries": len(mine),
+                "first": when[0] if when else None,
+                "last": when[-1] if when else None,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)

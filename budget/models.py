@@ -629,6 +629,82 @@ class ImportRule(Base):
     )
 
 
+class PensionPot(Base):
+    """One pension arrangement -- a provider holding a pot.
+
+    Effective-dated like `account`, and for the same two reasons: a pot joined part way
+    through (Aegon opened with nothing in it in November 2023) and a pot can be transferred
+    out. `valid_to` stops the last known value being carried forward for ever, which is what
+    would otherwise happen -- a valuation is a point in time, and nothing in the data says a
+    pot has stopped existing except the absence of new ones, which is indistinguishable from
+    not having got round to it.
+    """
+
+    __tablename__ = "pension_pot"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = _uid_column()
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    display_order: Mapped[int | None] = mapped_column(Integer)
+    valid_from: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[dt.date | None] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<PensionPot {self.name!r}>"
+
+
+class PensionValuation(Base):
+    """What a pot was worth on a day the statement was read.
+
+    One row per pot per date rather than one row per date holding every pot, because the
+    providers do not publish on the same day and a row that demands all three forces either a
+    stale figure or a gap. The reader carries the most recent figure forward per pot and says
+    where it did so -- see repo.pension_history.
+    """
+
+    __tablename__ = "pension_valuation"
+
+    pot_id: Mapped[int] = mapped_column(ForeignKey("pension_pot.id"), primary_key=True)
+    on_date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    value: Mapped[Decimal] = mapped_column(Money, nullable=False)
+
+    pot: Mapped[PensionPot] = relationship()
+
+
+class PensionContribution(Base):
+    """A movement of cash into or out of a pot, apart from investment growth.
+
+    This is what makes a return calculable. Without it a pot being paid into cannot be told
+    apart from one that grew: the balance rises either way, and dividing this month's value by
+    last month's reports every contribution as a gain. Held signed -- money in is positive, a
+    charge is negative -- rather than as a credit column and a debit column, because every
+    calculation wants the net and the pair only ever produced one of the two.
+
+    `kind` is for reporting, never for arithmetic: 'what have the charges cost' is a question
+    the ledger can answer and the return maths does not care about, which sees only the net.
+    """
+
+    __tablename__ = "pension_contribution"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = _uid_column()
+    pot_id: Mapped[int] = mapped_column(ForeignKey("pension_pot.id"), nullable=False, index=True)
+    on_date: Mapped[dt.date] = mapped_column(Date, nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="contribution")
+    note: Mapped[str | None] = mapped_column(Text)
+
+    pot: Mapped[PensionPot] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('contribution','charge','interest','other')",
+            name="ck_pension_contribution_kind",
+        ),
+    )
+
+
 class Setting(Base):
     """Replaces the Control tab. DeveloperParameters is not carried over -- it only ever
     described sheet geometry."""

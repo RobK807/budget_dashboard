@@ -121,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
                 "savings_target",
                 "account",
                 "payslip",
+                "pension_valuation",
+                "pension_contribution",
             ):
                 try:
                     rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]

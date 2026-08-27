@@ -23,6 +23,14 @@ WORKBOOK_PATH = Path(
     os.environ.get("BUDGET_WORKBOOK_PATH", r"K:\Private\Finance\Budget 26-27.xlsm")
 )
 
+# The pension tracker, read once by budget.seed_pension to bring the history across. Nothing
+# else reads it: from then on the pension lives in the database like everything else.
+PENSION_PATH = Path(
+    os.environ.get(
+        "BUDGET_PENSION_PATH", r"K:\Private\Finance\Pension\Pension Tracker.xlsx"
+    )
+)
+
 # Master copy on the NAS, alongside the workbook (DESIGN.md 6.3).
 NAS_DIR = Path(os.environ.get("BUDGET_NAS_DIR", r"K:\Private\Finance\budget_db"))
 

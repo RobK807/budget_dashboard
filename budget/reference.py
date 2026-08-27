@@ -39,6 +39,9 @@ from budget.models import (
     CyclingRate,
     ImportRule,
     Payslip,
+    PensionContribution,
+    PensionPot,
+    PensionValuation,
     Projection,
     SalaryAssumption,
     SalaryProfile,
@@ -821,6 +824,155 @@ def remove_cycling_outgoing(session: Session, outgoing_id: int) -> Outcome:
     session.flush()
     bump_revision(session)
     return Outcome(True, "Outgoing removed.")
+
+
+# ---------------------------------------------------------------------------- pensions
+
+
+PENSION_KINDS = ("contribution", "charge", "interest", "other")
+
+
+def add_pension_pot(
+    session: Session, name: str, valid_from: dt.date, note: str | None = None
+) -> tuple[PensionPot | None, Outcome]:
+    name = (name or "").strip()
+    if not name:
+        return None, Outcome(False, "A pension needs a name.")
+    if _name_taken(session, PensionPot, name):
+        return None, Outcome(False, f"A pension named {name!r} already exists.")
+
+    highest = session.scalar(select(func.max(PensionPot.display_order)))
+    pot = PensionPot(
+        name=name,
+        valid_from=valid_from,
+        display_order=(highest or 0) + 1,
+        note=(note or "").strip() or None,
+    )
+    session.add(pot)
+    session.flush()
+    bump_revision(session)
+    return pot, Outcome(True, f"Added {name}, tracked from {valid_from:%d %b %Y}.")
+
+
+def update_pension_pot(session: Session, pot_id: int, **fields) -> Outcome:
+    pot = session.get(PensionPot, pot_id)
+    if pot is None:
+        return Outcome(False, "Pension not found.")
+
+    if "name" in fields:
+        name = (fields["name"] or "").strip()
+        if not name:
+            return Outcome(False, "A pension needs a name.")
+        if _name_taken(session, PensionPot, name, exclude_id=pot_id):
+            return Outcome(False, f"A pension named {name!r} already exists.")
+        pot.name = name
+
+    for key in ("valid_from", "valid_to", "display_order"):
+        if key in fields:
+            setattr(pot, key, fields[key])
+    if "note" in fields:
+        pot.note = (fields["note"] or "").strip() or None
+
+    if pot.valid_to is not None and pot.valid_to < pot.valid_from:
+        return Outcome(False, "A pension cannot close before it opened.")
+
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"Updated {pot.name}.")
+
+
+def set_pension_valuation(
+    session: Session, pot_id: int, on_date: dt.date, value: Decimal | None
+) -> Outcome:
+    """What a pot was worth on a day. Restating a date replaces the figure.
+
+    A blank clears it, which is the only way to undo a valuation typed against the wrong
+    date -- and a wrong date is the mistake with consequences here, since every return
+    either side of it is measured from the figure it displaced.
+    """
+    pot = session.get(PensionPot, pot_id)
+    if pot is None:
+        return Outcome(False, "Pension not found.")
+
+    existing = session.get(PensionValuation, (pot_id, on_date))
+    if value is None:
+        if existing is None:
+            return Outcome(False, f"No {pot.name} valuation on {on_date:%d %b %Y}.")
+        session.delete(existing)
+        session.flush()
+        bump_revision(session)
+        return Outcome(True, f"Removed the {pot.name} valuation for {on_date:%d %b %Y}.")
+
+    if Decimal(value) < 0:
+        return Outcome(False, "A valuation cannot be negative.")
+    if on_date < pot.valid_from:
+        return Outcome(
+            False,
+            f"{pot.name} is only tracked from {pot.valid_from:%d %b %Y}. Move that date "
+            "back first if the pot really does go further.",
+        )
+
+    if existing:
+        existing.value = Decimal(value)
+    else:
+        session.add(
+            PensionValuation(pot_id=pot_id, on_date=on_date, value=Decimal(value))
+        )
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"{pot.name} at {on_date:%d %b %Y} saved.")
+
+
+def add_pension_contribution(
+    session: Session,
+    pot_id: int,
+    on_date: dt.date,
+    amount: Decimal,
+    kind: str = "contribution",
+    note: str | None = None,
+) -> Outcome:
+    """A movement into or out of a pot. Signed: money in is positive, a charge negative.
+
+    Several on one day are expected rather than tolerated -- the employer's share and your
+    own arrive as two payments on the same date, and adding them together loses the split
+    the payslip actually shows.
+    """
+    pot = session.get(PensionPot, pot_id)
+    if pot is None:
+        return Outcome(False, "Pension not found.")
+    if kind not in PENSION_KINDS:
+        return Outcome(False, f"Unknown kind {kind!r}.")
+    if Decimal(amount) == 0:
+        return Outcome(False, "A movement of nothing changes nothing.")
+    if on_date < pot.valid_from:
+        return Outcome(
+            False, f"{pot.name} is only tracked from {pot.valid_from:%d %b %Y}."
+        )
+
+    session.add(
+        PensionContribution(
+            pot_id=pot_id,
+            on_date=on_date,
+            amount=Decimal(amount),
+            kind=kind,
+            note=(note or "").strip() or None,
+        )
+    )
+    session.flush()
+    bump_revision(session)
+    return Outcome(
+        True, f"Recorded {Decimal(amount):,.2f} against {pot.name} on {on_date:%d %b %Y}."
+    )
+
+
+def remove_pension_contribution(session: Session, contribution_id: int) -> Outcome:
+    row = session.get(PensionContribution, contribution_id)
+    if row is None:
+        return Outcome(False, "No such entry.")
+    session.delete(row)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, "Entry removed.")
 
 
 # --------------------------------------------------------------- periodic parameters

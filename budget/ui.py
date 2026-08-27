@@ -230,6 +230,9 @@ def _load_all(fingerprint: tuple) -> dict:
             "account_targets": repo.load_account_targets(session),
             "savings_plan": repo.load_savings_plan(session),
             "savings_adjustments": repo.load_savings_adjustments(session),
+            "pension_pots": repo.load_pension_pots(session),
+            "pension_valuations": repo.load_pension_valuations(session),
+            "pension_contributions": repo.load_pension_contributions(session),
             # The pre-split record, kept so the old figures can still be seen. The live
             # targets are derived from the plan below.
             "stored_savings_targets": repo.load_savings_targets(session),
@@ -305,7 +308,10 @@ EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
     "accounts": ("exclude_from_savings", "interest_net"),
     "transactions": ("is_donation",),
 }
-EXPECTED_KEYS = ("savings_plan", "plan_detail", "savings_targets")
+EXPECTED_KEYS = (
+    "savings_plan", "plan_detail", "savings_targets", "pension_pots",
+    "pension_valuations", "pension_contributions",
+)
 
 
 def _stale_build(data: dict) -> list[str]:

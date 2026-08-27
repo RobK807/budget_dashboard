@@ -695,13 +695,21 @@ class TestStaleBuildGuard:
     and the page dies with a KeyError naming a column but not the cause."""
 
     def loaded(self, **overrides):
-        data = {
-            "savings_plan": pd.DataFrame(),
-            "plan_detail": pd.DataFrame(),
-            "savings_targets": pd.DataFrame(),
-            "accounts": pd.DataFrame(columns=["exclude_from_savings", "interest_net"]),
-            "transactions": pd.DataFrame(columns=["is_donation"]),
-        }
+        """A payload that satisfies the guard, built from what the guard asks for.
+
+        Listing the keys here instead would mean this fixture had to be edited every time
+        the loader gained one -- and the failure would look like the guard misfiring rather
+        than like a test that had not been updated, which is the more confusing of the two.
+        """
+        from budget import ui
+
+        data = {key: pd.DataFrame() for key in ui.EXPECTED_KEYS}
+        data.update(
+            {
+                name: pd.DataFrame(columns=list(columns))
+                for name, columns in ui.EXPECTED_COLUMNS.items()
+            }
+        )
         data.update(overrides)
         return data
 

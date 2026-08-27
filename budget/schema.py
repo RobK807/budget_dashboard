@@ -30,10 +30,11 @@ from pathlib import Path
 
 from sqlalchemy.engine import Engine
 
-# v11 adds `import_rule`. A whole new table needs no migration step of its own -- create_all
-# builds anything missing -- but the version still moves, so a machine running v10 code
-# cannot be handed a database that has it and quietly ignore a table it knows nothing about.
-SCHEMA_VERSION = 11
+# v11 adds `import_rule`, v12 the three pension tables. A whole new table needs no migration
+# step of its own -- create_all builds anything missing -- but the version still moves, so a
+# machine running v11 code cannot be handed a database that has them and quietly ignore
+# tables it knows nothing about.
+SCHEMA_VERSION = 12
 
 
 class SchemaTooNew(RuntimeError):

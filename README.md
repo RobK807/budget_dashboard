@@ -227,8 +227,13 @@ python -m budget.reconcile      # check every figure against the workbook
 python -m pytest tests -q       # unit tests
 python -m budget.import_phase4  # reload projections, salary, cards, cycling
 python -m budget.import_phase5  # seed salary profile, rates, targets, card billing
+python -m budget.seed_pension   # bring the pension history in, once per machine
 python -m budget.migrate_xlsm --force   # rebuild the database from scratch
 ```
+
+`seed_pension` is safe to run twice — valuations are keyed by pot and date, and ledger
+entries are reconciled by count, so a second run reports everything already present and
+writes nothing. `--report` prints the same summary and changes nothing at all.
 
 `reconcile` is worth re-running after any change to the query layer: it checks 264
 account-months, ~2,700 daily classification cells, ~490 category figures and the Summary
@@ -239,7 +244,7 @@ against `Budget 26-27.xlsm`, so April-to-March is what it should cover. Everywhe
 month lists run from the first month anything is recorded against to the current one, plus
 the look-forward set under **Settings → General**.
 
-The test suite includes `tests/test_pages_render.py`, which opens all fourteen pages through
+The test suite includes `tests/test_pages_render.py`, which opens all fifteen pages through
 Streamlit's `AppTest` and fails on any uncaught exception — pages are scripts, so a typo in
 one would otherwise only surface when someone opened it. It runs against a copy of the
 database, never the real one.
@@ -337,6 +342,35 @@ still carries a seed or a target, flagged `Closed`, and omitted once it carries 
 walks the **whole** run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.
+
+**A pension rises for two different reasons, and one formula separates them.** Everywhere
+else a balance goes up because money came in and down because it was spent. A pension does
+both at once: a pot being paid into is indistinguishable from a pot that is growing, and
+dividing this valuation by the last one reports every contribution as a gain. So a pension is
+stored as two things that are never mixed — `pension_valuation`, what a statement said on a
+day, and `pension_contribution`, the money that moved — and every figure on the page is:
+
+```
+return = value at the end / (value at the start + net money in) - 1
+```
+
+Over the gap between two valuations that is the period return; from the first valuation to
+now it is the return to date. A pot closed to contributions has no middle term, so the same
+expression collapses to end over start — which is why there is no separate case for the
+frozen pots, and why the three can be read across each other at all.
+
+Three details in `repo.pension_history` carry weight:
+
+| | |
+|---|---|
+| Carry forward, never drop | Three providers do not publish on the same day. A pot with no figure of its own on a date keeps its last one and is named in `carried`; omitting it instead shows the total pension *falling* by the size of that pot. |
+| `arrived` | A pot's first value is neither growth nor a contribution, but it must still go into the total's denominator — otherwise the date a pot joins reports the whole of it as a gain. |
+| Ratio of sums, not mean of ratios | The combined return is worked out from the pounds. A weighted average of three percentages answers "what did the average pound do", which is a different question and differs by most of a point. |
+
+The two annualised measures divide by 365.25 and assume the money was there throughout, so
+the whole-life one **understates a pot still being paid into**. That is stated on the page
+rather than corrected, because correcting it properly means a money-weighted rate and that is
+a different measure, not a better version of this one.
 
 **Bank identifiers never go in the repository.** Account numbers and sort codes belong in the
 database. A test sample that needs one uses an obviously invented stand-in, and
@@ -462,6 +496,7 @@ views/
   projections_page.py   Projected against actual spend, and planning a month
   savings_page.py       Savings and investments against target
   salary_page.py        Payslips, the PAYE/NI model, the tax year to date, what is left
+  pension_page.py       Pension pots, growth against what was paid in, and entry
   cards_page.py         Balance-transfer amortisation
   cycling_page.py       Fares saved against running costs
 budget/
@@ -477,6 +512,7 @@ budget/
   schema.py             in-place schema migrations
   import_phase4.py      projections, salary, cards, cycling
   import_phase5.py      salary profile, rates, targets, card billing
+  seed_pension.py       one-off import of the pension history
   config.py             all filesystem paths
   models.py             SQLAlchemy schema
   db.py                 engine and session
