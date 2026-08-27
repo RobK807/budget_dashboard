@@ -228,6 +228,7 @@ def _load_all(fingerprint: tuple) -> dict:
             "cycling_rates": repo.load_cycling_rates(session),
             "card_statements": repo.load_card_statements(session),
             "account_targets": repo.load_account_targets(session),
+            "account_commitments": repo.load_account_commitments(session),
             "savings_plan": repo.load_savings_plan(session),
             "savings_adjustments": repo.load_savings_adjustments(session),
             "pension_pots": repo.load_pension_pots(session),

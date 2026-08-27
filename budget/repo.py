@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from budget.models import (
     Account,
+    AccountCommitment,
     AccountTarget,
     Bonus,
     Budget,
@@ -71,7 +72,8 @@ def load_reference(session: Session) -> dict[str, pd.DataFrame]:
         session.scalars(select(Account).order_by(func.lower(Account.name))),
         ["id", "name", "short_code", "type", "is_savings", "is_investment", "is_isa",
          "exclude_from_savings", "interest_net", "statement_day", "payment_day",
-         "display_order", "valid_from", "valid_to", "savings_seed"],
+         "commitment_start_day", "display_order", "valid_from", "valid_to",
+         "savings_seed"],
     )
     # Grouping then name: the workbook's display_order was roughly grouped already, but only
     # by convention -- a category added later landed wherever the row was inserted.
@@ -1306,6 +1308,30 @@ def load_savings_adjustments(session: Session) -> pd.DataFrame:
     )
 
 
+def load_account_commitments(session: Session) -> pd.DataFrame:
+    """The standing payments each account has to cover, earliest day first."""
+    accounts = {a.id: a.name for a in session.scalars(select(Account))}
+    rows = [
+        {
+            "id": r.id,
+            "account_id": r.account_id,
+            "account": accounts.get(r.account_id),
+            "name": r.name,
+            "amount": r.amount,
+            "day": int(r.day),
+        }
+        for r in session.scalars(select(AccountCommitment))
+    ]
+    frame = pd.DataFrame(
+        rows, columns=["id", "account_id", "account", "name", "amount", "day"]
+    )
+    if frame.empty:
+        return frame
+    # One sort on both columns rather than two passes: sort_values is not stable by default,
+    # so sorting by day and then by account would lose the day ordering again.
+    return sort_human(frame, by=["account", "day"]).reset_index(drop=True)
+
+
 def load_import_rules(session: Session) -> pd.DataFrame:
     """The description patterns that name the other side of a transfer.
 
@@ -2005,6 +2031,160 @@ def account_target_table(
             }
         )
     return sort_human(pd.DataFrame(rows), by="account")
+
+
+DEFAULT_COMMITMENT_START_DAY = 1
+
+
+def commitment_start_day(account: pd.Series | None) -> int:
+    """The day an account's funding cycle begins. Null, blank or absent means the 1st."""
+    if account is None:
+        return DEFAULT_COMMITMENT_START_DAY
+    day = account.get("commitment_start_day")
+    if day is None or pd.isna(day):
+        return DEFAULT_COMMITMENT_START_DAY
+    return int(day)
+
+
+def commitment_cycle(period: str, start_day: int) -> tuple[dt.date, dt.date]:
+    """The window an account's balance has to cover: start_day to the day before the next.
+
+    For an account funded on the 19th this is the 19th to the 18th of the following month,
+    not a calendar month -- which is the whole point. A start day of 1 gives the calendar
+    month back.
+    """
+    year, month = (int(p) for p in period.split("-"))
+    opens = _clamp_day(year, month, start_day)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    closes = _clamp_day(next_year, next_month, start_day) - dt.timedelta(days=1)
+    return opens, closes
+
+
+def commitment_due_date(period: str, start_day: int, day: int) -> dt.date:
+    """When a day-of-month falls within an account's cycle.
+
+    Compared on the raw day numbers rather than the clamped dates: a cycle starting on the
+    31st clamps to the 28th in February, and comparing against that would pull the 29th and
+    30th back into a cycle they do not belong to.
+    """
+    year, month = (int(p) for p in period.split("-"))
+    if day >= start_day:
+        return _clamp_day(year, month, day)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return _clamp_day(next_year, next_month, day)
+
+
+def account_commitment_table(
+    commitments: pd.DataFrame, period: str, accounts: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """The standing payments due in a cycle, counting down what is still to go.
+
+    `still_needed` is the total of the payments *after* this one, so it falls to zero on the
+    last. It answers the question a single monthly target cannot: not 'what does this account
+    need this month' but 'the mortgage has gone -- how much more does it still have to
+    cover'. It restarts per account because the accounts are funded separately.
+
+    Each account runs on its own cycle from `commitment_start_day`, so a payment on the 4th
+    belongs to *next* month for an account funded on the 19th. That is why `due` carries a
+    real date rather than a day number, and why the rows are ordered by it.
+
+    Rows are dropped for an account that was not open in the month, on the same rule as the
+    savings targets: a commitment cannot fall due on an account that does not exist yet.
+    """
+    columns = ["account", "name", "day", "due", "amount", "still_needed"]
+    if commitments.empty:
+        return pd.DataFrame(columns=columns)
+
+    starts: dict[str, int] = {}
+    live = commitments
+    if accounts is not None and not accounts.empty:
+        open_now = set()
+        for _, account in accounts.iterrows():
+            starts[account["name"]] = commitment_start_day(account)
+            if _live_in(account, period):
+                open_now.add(account["name"])
+        live = commitments[commitments["account"].isin(open_now)]
+    if live.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for _, row in live.iterrows():
+        account = row["account"]
+        rows.append(
+            {
+                "account": account,
+                "name": row["name"],
+                "day": int(row["day"]),
+                "due": commitment_due_date(
+                    period,
+                    starts.get(account, DEFAULT_COMMITMENT_START_DAY),
+                    int(row["day"]),
+                ),
+                "amount": Decimal(str(row["amount"])),
+                "still_needed": Decimal("0"),
+            }
+        )
+
+    frame = sort_human(
+        pd.DataFrame(rows, columns=columns), by=["account", "due", "name"]
+    ).reset_index(drop=True)
+
+    # Counted backwards through each account: what is left after this payment is the sum of
+    # the ones below it.
+    for account in frame["account"].unique():
+        mine = frame.index[frame["account"] == account]
+        remaining = Decimal("0")
+        for position in reversed(list(mine)):
+            frame.at[position, "still_needed"] = remaining
+            remaining += frame.at[position, "amount"]
+    return frame
+
+
+def commitments_against_targets(
+    commitments: pd.DataFrame, targets: pd.DataFrame, accounts: pd.DataFrame, period: str
+) -> pd.DataFrame:
+    """What each account's itemised payments come to, against the target set for the month.
+
+    The two are stored separately and neither derives from the other, so they can disagree --
+    and a disagreement is worth seeing rather than reconciling silently. A target below its
+    items is the one that matters: it means the account is being asked to hold less than the
+    payments leaving it.
+    """
+    columns = ["account", "items", "itemised", "target", "difference"]
+    listed = account_commitment_table(commitments, period, accounts)
+    mine = targets[targets["period"] == period] if not targets.empty else pd.DataFrame()
+
+    by_id = accounts.set_index("id")["name"].to_dict() if not accounts.empty else {}
+    target_by_account = {
+        by_id.get(row["account_id"]): Decimal(str(row["amount"]))
+        for _, row in mine.iterrows()
+        if by_id.get(row["account_id"]) is not None
+    }
+    if listed.empty and not target_by_account:
+        return pd.DataFrame(columns=columns)
+
+    names = set(listed["account"]) | set(target_by_account)
+    rows = []
+    for name in names:
+        theirs = listed[listed["account"] == name] if not listed.empty else listed
+        itemised = (
+            Decimal(str(theirs["amount"].sum())) if not theirs.empty else Decimal("0")
+        )
+        target = target_by_account.get(name)
+        rows.append(
+            {
+                "account": name,
+                "items": int(len(theirs)),
+                "itemised": itemised,
+                "target": target,
+                "difference": (
+                    None if target is None else target - itemised
+                ),
+            }
+        )
+    return sort_human(pd.DataFrame(rows, columns=columns), by="account").reset_index(
+        drop=True
+    )
 
 
 # ------------------------------------------------------- savings and investments series

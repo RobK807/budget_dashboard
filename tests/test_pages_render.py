@@ -234,3 +234,74 @@ def test_every_sync_action_reports_through_finish():
         before_finish = following[: following.index("finish(result")]
         assert "st.rerun()" not in before_finish, f"sync.{verb} reruns before reporting"
         assert "st.success(" not in before_finish, f"sync.{verb} writes a message it discards"
+
+
+def test_the_summary_renders_the_commitments_it_is_given(database_copy):
+    """The itemised commitments, against a database that actually has some.
+
+    The sweep above proves the Summary page does not raise, but the database it runs on has
+    no commitments in it -- so the branch it takes is the 'none listed' one, and the table,
+    the running total and the two warnings are never executed by any test. This seeds a few
+    into the copy and looks for them on the page.
+
+    The rows are deliberately awkward: a 31st, so the clamp runs on whatever month the page
+    opens on, and a zero amount, so the 'no amount yet' warning fires.
+    """
+    import datetime as dt
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from budget import reference
+    from budget.db import create_all, make_engine, make_session_factory
+    from budget.models import Account
+
+    engine = make_engine(database_copy)
+    create_all(engine)
+    factory = make_session_factory(engine)
+    try:
+        with factory() as session, session.begin():
+            account = session.scalars(
+                select(Account).where(Account.type == "bank").order_by(Account.id)
+            ).first()
+            assert account is not None, "no bank account to hang a commitment on"
+            opened = account.valid_from or dt.date(2020, 1, 1)
+            for name, amount, day in (
+                ("Rent for the test", "1234.56", 31),
+                ("Amount not set", "0", 4),
+            ):
+                reference.set_account_commitment(
+                    session, account.id, name, Decimal(amount), day
+                )
+    finally:
+        engine.dispose()
+
+    app = AppTest.from_file(str(ROOT / "views" / "summary.py"), default_timeout=90)
+    app.run()
+    assert not app.exception, "; ".join(
+        f"{e.type}: {e.message}" for e in app.exception
+    )
+
+    # The page opens on the latest month with transactions, which is after the account was
+    # opened in any real database -- so the table is expected, not merely tolerated.
+    selected = app.session_state["summary_period"]
+    assert selected >= f"{opened:%Y-%m}", (
+        f"the page opened on {selected}, before the account existed -- this test needs a "
+        "commitment on an account that is live in the month the page shows"
+    )
+
+    listed = [
+        frame.value for frame in app.dataframe
+        if {"Item", "Still needed"} <= set(getattr(frame.value, "columns", []))
+    ]
+    assert len(listed) == 1, "the itemised commitments table did not render"
+    table = listed[0]
+    assert "Rent for the test" in set(table["Item"])
+
+    # The running total must reach the row: the clamp on a 31st is only exercised if the
+    # row survives as far as the table.
+    rent = table[table["Item"] == "Rent for the test"].iloc[0]
+    assert float(rent["Amount"]) == pytest.approx(1234.56)
+
+    warnings = " ".join(str(getattr(element, "value", "")) for element in app.warning)
+    assert "Amount not set" in warnings, "the zero-amount warning did not fire"

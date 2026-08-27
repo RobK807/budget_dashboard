@@ -110,6 +110,13 @@ class Account(Base):
     statement_day: Mapped[int | None] = mapped_column(Integer)
     payment_day: Mapped[int | None] = mapped_column(Integer)
 
+    # The day the account's funding cycle begins -- payday for the account that receives the
+    # salary, the 1st for one topped up at the start of the month. Commitments are ordered
+    # and counted down from it, so an account funded on the 19th shows the 19th to the 18th
+    # rather than a calendar month, which is the window its balance actually has to cover.
+    # Null means the 1st.
+    commitment_start_day: Mapped[int | None] = mapped_column(Integer)
+
     display_order: Mapped[int | None] = mapped_column(Integer)
     # Effective dating replaces the twelve per-month offset columns in Selections!Z:AK and
     # removes the need for update_months entirely (DESIGN.md 3.2).
@@ -520,6 +527,45 @@ class AccountTarget(Base):
     period: Mapped[str] = mapped_column(String(7), primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), primary_key=True)
     amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
+
+
+class AccountCommitment(Base):
+    """One payment an account has to cover, and the day of the month it goes.
+
+    An AccountTarget is a single number for the month, which cannot say *when* the money is
+    needed -- and that is usually the question. £2,642.85 of a First Direct target leaves on
+    the 1st, so a balance that would comfortably cover the month is still short on the day
+    that matters. These are the parts that make the total up, each with its own day.
+
+    Deliberately not effective-dated, unlike SavingsPlan or the tax bands. Those are read
+    against a month that has already happened, so an old figure still has to be recoverable.
+    This list describes what is due *now*: nothing derived from it is stored, no historical
+    figure moves when it changes, and amending a row is the intended way to record that the
+    gym went up. Keeping revisions would be a history with no reader.
+
+    `day` is a day of the month rather than a date, since these repeat. A 31 lands on the
+    30th in April and the 28th in February -- see repo._clamp_day.
+
+    An amount of zero means 'due, amount not known yet' rather than 'nothing is due': the row
+    is worth keeping for its date alone, and the Summary page flags it rather than showing a
+    confident £0.00.
+    """
+
+    __tablename__ = "account_commitment"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Money, nullable=False)
+    day: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    account: Mapped[Account] = relationship()
+
+    # Per account, not globally: 'Lottery' is a real commitment on two different accounts,
+    # and so is a transfer named after the account it goes to.
+    __table_args__ = (
+        UniqueConstraint("account_id", "name", name="uq_account_commitment_name"),
+    )
 
 
 class SavingsTarget(Base):

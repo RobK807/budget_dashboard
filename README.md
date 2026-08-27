@@ -228,12 +228,18 @@ python -m pytest tests -q       # unit tests
 python -m budget.import_phase4  # reload projections, salary, cards, cycling
 python -m budget.import_phase5  # seed salary profile, rates, targets, card billing
 python -m budget.seed_pension   # bring the pension history in, once per machine
+python -m budget.seed_commitments  # load the standing payments behind each account target
 python -m budget.migrate_xlsm --force   # rebuild the database from scratch
 ```
 
 `seed_pension` is safe to run twice — valuations are keyed by pot and date, and ledger
 entries are reconciled by count, so a second run reports everything already present and
 writes nothing. `--report` prints the same summary and changes nothing at all.
+
+`seed_commitments` is the same shape, keyed by account and item name. It will not overwrite
+a figure that differs from its own: the Settings grid is where these are maintained, and a
+seed script that quietly put a hand-edited amount back would undo real work. It reports the
+difference instead, and `--update` is the way to say you meant it.
 
 `reconcile` is worth re-running after any change to the query layer: it checks 264
 account-months, ~2,700 daily classification cells, ~490 category figures and the Summary
@@ -342,6 +348,38 @@ still carries a seed or a target, flagged `Closed`, and omitted once it carries 
 walks the **whole** run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.
+
+**An account target says how much, and cannot say when.** £2,642.85 of a First Direct target
+leaves on the 1st, so a balance that covers the month comfortably can still be short on the
+day that matters. `AccountCommitment` holds the parts a target is made of — an item, an
+amount and a day — and `repo.account_commitment_table` counts down what is *still* to go
+after each payment, reaching zero on the last. It restarts per account because the accounts
+are funded separately; a figure running across all four would describe nothing anybody has
+to do.
+
+**A month is the wrong window for an account funded on payday.** `account.commitment_start_day`
+says which day an account is topped up, and the cycle runs from there to the day before the
+next one — the 19th to the 18th, not the 1st to the 30th. So a payment on the 4th belongs to
+the cycle that began the month before, which is why `due` carries a real date rather than a
+day number and why the rows are ordered by it rather than by the day. Null means the 1st, so
+every account keeps the calendar month until it is told otherwise.
+
+`commitment_due_date` compares the raw day numbers, not the clamped dates. A cycle starting
+on the 31st opens on the 28th in February, and comparing against *that* would say the 29th
+falls inside it — pulling two days into a cycle the account has not been funded for yet.
+
+Alone among the reference tables these are **not** effective-dated. The tax bands and the
+savings plan are read against months that have already happened, so an old figure has to stay
+recoverable. This list describes what is due *now*: nothing derived from it is stored, no
+historical figure moves when it changes, and amending a row is the intended way to record
+that the gym went up. Revisions would be a history with no reader.
+
+The target and its items are stored separately and neither derives from the other, so they
+can disagree — and the disagreement is worth showing rather than reconciling away. A target
+*above* its items is an ordinary buffer. A target *below* them means the account is being
+asked to hold less than the payments leaving it, which the Summary page says out loud. An
+amount of zero is a third state: 'due, amount not known yet', listed for its date and flagged
+rather than shown as a confident £0.00.
 
 **A pension rises for two different reasons, and one formula separates them.** Everywhere
 else a balance goes up because money came in and down because it was spent. A pension does
@@ -513,6 +551,7 @@ budget/
   import_phase4.py      projections, salary, cards, cycling
   import_phase5.py      salary profile, rates, targets, card billing
   seed_pension.py       one-off import of the pension history
+  seed_commitments.py   one-off load of the standing account commitments
   config.py             all filesystem paths
   models.py             SQLAlchemy schema
   db.py                 engine and session

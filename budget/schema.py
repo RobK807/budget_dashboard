@@ -30,11 +30,12 @@ from pathlib import Path
 
 from sqlalchemy.engine import Engine
 
-# v11 adds `import_rule`, v12 the three pension tables. A whole new table needs no migration
-# step of its own -- create_all builds anything missing -- but the version still moves, so a
-# machine running v11 code cannot be handed a database that has them and quietly ignore
-# tables it knows nothing about.
-SCHEMA_VERSION = 12
+# v11 adds `import_rule`, v12 the three pension tables, v13 `account_commitment`. A whole new
+# table needs no migration step of its own -- create_all builds anything missing -- but the
+# version still moves, so a machine running v11 code cannot be handed a database that has
+# them and quietly ignore tables it knows nothing about. v14 adds a column to `account`,
+# which does need the ALTER below.
+SCHEMA_VERSION = 14
 
 
 class SchemaTooNew(RuntimeError):
@@ -81,6 +82,10 @@ ADDED_COLUMNS: list[tuple[str, str, str]] = [
     # v10 ----------------------------------------------------------------------------
     # The payslip's car allowance, recorded apart from gross. See models.Payslip.
     ("payslip", "car_allowance", "INTEGER"),
+    # v14 ----------------------------------------------------------------------------
+    # The day an account's funding cycle starts. Null means the 1st, so every existing row
+    # keeps the calendar month it already had. See models.Account.
+    ("account", "commitment_start_day", "INTEGER"),
     # v6 -----------------------------------------------------------------------------
     # Whether an account's interest arrives already taxed. Default gross, because every
     # account bar Halifax is -- the flag names the exception.

@@ -1488,6 +1488,181 @@ with tab_general:
 
     st.divider()
 
+    # ---- the payments behind each target --------------------------------------------
+    #
+    # Edited as a grid rather than a form: this is a list people scan and adjust a figure in,
+    # and a form would mean retyping a row to change one number. The id column travels with
+    # each row so a deletion or a reorder still maps to the right record -- st.data_editor
+    # keys its edits by *position*, which is only safe if position is not what identifies the
+    # row to us.
+    st.subheader("Account commitments")
+    st.caption(
+        "The standing payments each account has to cover, and the day of the month each "
+        "one goes. These are shown on the Summary page under the account targets, with a "
+        "running total so a balance can be read against the day it is needed rather than "
+        "the month. A day of 31 lands on the last day of a shorter month."
+    )
+
+    with ui.session() as session:
+        commitments = repo.load_account_commitments(session)
+
+    # ---- when each account's cycle starts --------------------------------------------
+    st.markdown("**Cycle start day**")
+    st.caption(
+        "The day each account is funded. Commitments are ordered and counted down from "
+        "it, so an account funded on the 19th covers the 19th to the 18th rather than a "
+        "calendar month — a payment on the 4th belongs to the cycle that began the month "
+        "before. Blank means the 1st."
+    )
+
+    cycle_frame = repo.sort_human(
+        pd.DataFrame(
+            [
+                {
+                    "id": int(row["id"]),
+                    "account": row["name"],
+                    "start": (
+                        int(row["commitment_start_day"])
+                        if pd.notna(row.get("commitment_start_day"))
+                        else repo.DEFAULT_COMMITMENT_START_DAY
+                    ),
+                }
+                for _, row in data["accounts"][
+                    data["accounts"]["type"] == "bank"
+                ].iterrows()
+            ]
+        ),
+        by="account",
+    )
+
+    edited_cycles = st.data_editor(
+        cycle_frame,
+        width="stretch",
+        hide_index=True,
+        disabled=["id", "account"] if not READ_ONLY else True,
+        column_order=["account", "start"],
+        column_config={
+            "account": "Account",
+            "start": st.column_config.NumberColumn(
+                "Starts on the", min_value=1, max_value=31, step=1, format="%d",
+                help="Day of the month the account is funded.",
+            ),
+        },
+        key="commitment_cycle_editor",
+    )
+
+    if st.button("Save cycle days", disabled=READ_ONLY, key="save_cycle_days"):
+        # Checked before anything is written: a bad row part way down would otherwise
+        # commit the accounts above it and report a failure for the lot.
+        wanted = {
+            int(row["id"]): (
+                int(row["start"]) if pd.notna(row["start"])
+                else repo.DEFAULT_COMMITMENT_START_DAY
+            )
+            for _, row in edited_cycles.iterrows()
+        }
+        outside = [
+            name for name, day in (
+                (edited_cycles.set_index("id").loc[i, "account"], d)
+                for i, d in wanted.items()
+            )
+            if not 1 <= day <= 31
+        ]
+        if outside:
+            outcome = reference.Outcome(
+                False, "Nothing saved — a day between 1 and 31 is needed for: "
+                + ", ".join(outside)
+            )
+        else:
+            with ui.session() as session, session.begin():
+                for account_id, day in wanted.items():
+                    reference.update_account(
+                        session, account_id, commitment_start_day=day
+                    )
+            outcome = reference.Outcome(True, "Cycle start days saved.")
+        show_outcome(outcome)
+
+    commitment_accounts = ui.alphabetical(data["accounts"]["name"])
+    account_ids = dict(zip(data["accounts"]["name"], data["accounts"]["id"]))
+
+    commitment_frame = pd.DataFrame(
+        [
+            {
+                "id": int(row["id"]),
+                "account": row["account"],
+                "name": row["name"],
+                "amount": float(row["amount"]),
+                "day": int(row["day"]),
+            }
+            for _, row in commitments.iterrows()
+        ],
+        columns=["id", "account", "name", "amount", "day"],
+    )
+
+    edited_commitments = st.data_editor(
+        commitment_frame,
+        width="stretch",
+        hide_index=True,
+        num_rows="fixed" if READ_ONLY else "dynamic",
+        disabled=["id"] if not READ_ONLY else True,
+        column_order=["account", "name", "amount", "day"],
+        column_config={
+            "account": st.column_config.SelectboxColumn(
+                "Account", options=commitment_accounts, required=True
+            ),
+            "name": st.column_config.TextColumn("Item", required=True),
+            "amount": ui.editable_money("Amount"),
+            "day": st.column_config.NumberColumn(
+                "Day", min_value=1, max_value=31, step=1, format="%d",
+                help="Day of the month. 31 falls back to the last day of a shorter month.",
+            ),
+        },
+        key="account_commitment_editor",
+        height=420,
+    )
+
+    if st.button(
+        "Save commitments", disabled=READ_ONLY, key="save_account_commitments"
+    ):
+        # The grid speaks in account *names*; everything below the page speaks in ids. That
+        # translation is all this does -- the checking and the add/amend/remove reconcile
+        # belong together in one place, and that place is reference.
+        rows = []
+        unknown = []
+        for _, row in edited_commitments.iterrows():
+            account = row.get("account")
+            if account is None or pd.isna(account) or account not in account_ids:
+                unknown.append(str(row.get("name") or "a row"))
+                continue
+            day = row.get("day")
+            rows.append(
+                {
+                    "id": int(row["id"]) if pd.notna(row.get("id")) else None,
+                    "account_id": int(account_ids[account]),
+                    "name": row.get("name"),
+                    "amount": Decimal(str(row.get("amount") or 0)),
+                    "day": int(day) if pd.notna(day) else None,
+                }
+            )
+
+        if unknown:
+            outcome = reference.Outcome(
+                False, "Nothing saved — pick an account for: " + ", ".join(unknown)
+            )
+        else:
+            with ui.session() as session, session.begin():
+                outcome = reference.replace_account_commitments(session, rows)
+        show_outcome(outcome)
+
+    if not commitments.empty:
+        total = commitments["amount"].sum()
+        st.caption(
+            f"{len(commitments)} commitment(s) across "
+            f"{commitments['account'].nunique()} account(s), {ui.money(total)} a month."
+        )
+
+    st.divider()
+
     # ---- transfer rules for the bank import -----------------------------------------
     #
     # Only ever a fallback. When both banks' files are imported together the two halves of a

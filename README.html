@@ -288,12 +288,17 @@ python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>pyte
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase4<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># reload projections, salary, cards, cycling</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase5<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># seed salary profile, rates, targets, card billing</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.seed_pension<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># bring the pension history in, once per machine</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.seed_commitments<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># load the standing payments behind each account target</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.migrate_xlsm<span style="color: #BBB"> </span>--force<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># rebuild the database from scratch</span>
 </code></pre></div>
 
 <p><code>seed_pension</code> is safe to run twice — valuations are keyed by pot and date, and ledger
 entries are reconciled by count, so a second run reports everything already present and
 writes nothing. <code>--report</code> prints the same summary and changes nothing at all.</p>
+<p><code>seed_commitments</code> is the same shape, keyed by account and item name. It will not overwrite
+a figure that differs from its own: the Settings grid is where these are maintained, and a
+seed script that quietly put a hand-edited amount back would undo real work. It reports the
+difference instead, and <code>--update</code> is the way to say you meant it.</p>
 <p><code>reconcile</code> is worth re-running after any change to the query layer: it checks 264
 account-months, ~2,700 daily classification cells, ~490 category figures and the Summary
 position against the workbook, and exits non-zero if anything moved unexpectedly.</p>
@@ -417,6 +422,33 @@ still carries a seed or a target, flagged <code>Closed</code>, and omitted once 
 walks the <strong>whole</strong> run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.</p>
+<p><strong>An account target says how much, and cannot say when.</strong> £2,642.85 of a First Direct target
+leaves on the 1st, so a balance that covers the month comfortably can still be short on the
+day that matters. <code>AccountCommitment</code> holds the parts a target is made of — an item, an
+amount and a day — and <code>repo.account_commitment_table</code> counts down what is <em>still</em> to go
+after each payment, reaching zero on the last. It restarts per account because the accounts
+are funded separately; a figure running across all four would describe nothing anybody has
+to do.</p>
+<p><strong>A month is the wrong window for an account funded on payday.</strong> <code>account.commitment_start_day</code>
+says which day an account is topped up, and the cycle runs from there to the day before the
+next one — the 19th to the 18th, not the 1st to the 30th. So a payment on the 4th belongs to
+the cycle that began the month before, which is why <code>due</code> carries a real date rather than a
+day number and why the rows are ordered by it rather than by the day. Null means the 1st, so
+every account keeps the calendar month until it is told otherwise.</p>
+<p><code>commitment_due_date</code> compares the raw day numbers, not the clamped dates. A cycle starting
+on the 31st opens on the 28th in February, and comparing against <em>that</em> would say the 29th
+falls inside it — pulling two days into a cycle the account has not been funded for yet.</p>
+<p>Alone among the reference tables these are <strong>not</strong> effective-dated. The tax bands and the
+savings plan are read against months that have already happened, so an old figure has to stay
+recoverable. This list describes what is due <em>now</em>: nothing derived from it is stored, no
+historical figure moves when it changes, and amending a row is the intended way to record
+that the gym went up. Revisions would be a history with no reader.</p>
+<p>The target and its items are stored separately and neither derives from the other, so they
+can disagree — and the disagreement is worth showing rather than reconciling away. A target
+<em>above</em> its items is an ordinary buffer. A target <em>below</em> them means the account is being
+asked to hold less than the payments leaving it, which the Summary page says out loud. An
+amount of zero is a third state: 'due, amount not known yet', listed for its date and flagged
+rather than shown as a confident £0.00.</p>
 <p><strong>A pension rises for two different reasons, and one formula separates them.</strong> Everywhere
 else a balance goes up because money came in and down because it was spent. A pension does
 both at once: a pot being paid into is indistinguishable from a pot that is growing, and
@@ -631,6 +663,7 @@ budget<span style="color: #666">/</span>
   import_phase4<span style="color: #666">.</span>py      projections, salary, cards, cycling
   import_phase5<span style="color: #666">.</span>py      salary profile, rates, targets, card billing
   seed_pension<span style="color: #666">.</span>py       one<span style="color: #666">-</span>off <span style="color: #007020; font-weight: bold">import</span><span style="color: #BBB"> </span><span style="color: #0E84B5; font-weight: bold">of</span> the pension history
+  seed_commitments<span style="color: #666">.</span>py   one<span style="color: #666">-</span>off load of the standing account commitments
   config<span style="color: #666">.</span>py             <span style="color: #007020">all</span> filesystem paths
   models<span style="color: #666">.</span>py             SQLAlchemy schema
   db<span style="color: #666">.</span>py                 engine <span style="color: #007020; font-weight: bold">and</span> session

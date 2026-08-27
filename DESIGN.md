@@ -936,6 +936,8 @@ for the parameters, so that nothing the model reads is a literal any more.
 | `card_statement` | Month-tab row 46, twelve times | — |
 | `account.statement_day` / `payment_day` | Month-tab rows 48 and 50, twelve times | They never varied by month, but changing one meant editing twelve |
 | `account_target` | Summary `C23:C26`, one set for whichever month was showing | — |
+| `account_commitment` | The standing payments summed inside `=500+550+350+250*3+100+50+200+300` | The formula was the only record of what a target was made of, and it could not say which day any of it left |
+| `account.commitment_start_day` | The assumption that a budget month is a calendar month | An account funded on the 19th has to cover the 19th to the 18th; on a calendar month its payments appear in two different months and neither adds up |
 | `savings_target` | Summary columns G and M | — |
 | `account.exclude_from_savings` | The hand-typed subtraction behind 'Less SC & Wed' | The figure silently came to include Tembo while the label did not — see PHASE5_NOTES.md |
 

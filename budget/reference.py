@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from budget.models import (
     Account,
+    AccountCommitment,
     AccountTarget,
     Bonus,
     Budget,
@@ -224,9 +225,15 @@ def update_account(session: Session, account_id: int, **fields) -> Outcome:
     if fields.get("is_savings") and fields.get("is_investment"):
         return Outcome(False, "An account cannot be both savings and investment")
 
+    if "commitment_start_day" in fields:
+        start = fields["commitment_start_day"]
+        if start is not None and not 1 <= int(start) <= 31:
+            return Outcome(False, "The cycle start day must be between 1 and 31")
+
     for key in ("type", "is_savings", "is_investment", "is_isa", "savings_limit",
                 "investment_limit", "valid_from", "exclude_from_savings", "interest_net",
-                "statement_day", "payment_day", "savings_seed"):
+                "statement_day", "payment_day", "savings_seed",
+                "commitment_start_day"):
         if key in fields:
             setattr(account, key, fields[key])
 
@@ -1136,6 +1143,137 @@ def set_import_rule(
     session.flush()
     bump_revision(session)
     return Outcome(True, f"Transfer rule {text!r} {verb}.")
+
+
+def set_account_commitment(
+    session: Session, account_id: int, name: str, amount: Decimal | None, day: int,
+    commitment_id: int | None = None,
+) -> Outcome:
+    """Add or amend one payment an account has to cover.
+
+    Zero is allowed and means 'due, amount not known yet' -- the date alone is worth
+    recording. Negative is not: a commitment is money leaving, and a negative one would
+    quietly reduce the balance the account is asked to hold.
+    """
+    text = (name or "").strip()
+    if not text:
+        return Outcome(False, "A commitment needs a name")
+    if session.get(Account, account_id) is None:
+        return Outcome(False, "Unknown account")
+    try:
+        which_day = int(day)
+    except (TypeError, ValueError):
+        return Outcome(False, "The day must be a number")
+    if not 1 <= which_day <= 31:
+        return Outcome(False, "The day must be between 1 and 31")
+
+    due = Decimal(str(amount or 0))
+    if due < 0:
+        return Outcome(False, "A commitment cannot be negative")
+
+    clash = session.scalars(
+        select(AccountCommitment).where(
+            AccountCommitment.account_id == account_id,
+            func.lower(AccountCommitment.name) == text.lower(),
+        )
+    ).first()
+    if clash is not None and clash.id != commitment_id:
+        return Outcome(False, f"{text!r} is already listed on this account")
+
+    row = session.get(AccountCommitment, commitment_id) if commitment_id else None
+    if row is None:
+        row = AccountCommitment(
+            account_id=account_id, name=text, amount=due, day=which_day
+        )
+        session.add(row)
+        verb = "added"
+    else:
+        row.account_id = account_id
+        row.name = text
+        row.amount = due
+        row.day = which_day
+        verb = "updated"
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"{text!r} {verb}.")
+
+
+def replace_account_commitments(session: Session, rows: list[dict]) -> Outcome:
+    """Make the stored list match `rows` exactly -- amending, adding and removing in one go.
+
+    Each row is {"id": int | None, "account_id": int, "name": str, "amount": Decimal,
+    "day": int}; an id of None is a new one, and anything stored whose id is absent from
+    `rows` is deleted. This is the shape an editable grid hands back, and the grid is how
+    these are maintained.
+
+    Everything is checked before anything is written, so one bad row cannot leave half the
+    list applied and the grid on screen disagreeing with what is stored. Rolling back part
+    way is not the alternative it looks like: the caller's `session.begin()` block still
+    tries to commit on the way out.
+    """
+    problems: list[str] = []
+    seen: set[tuple[int, str]] = set()
+    for position, row in enumerate(rows, start=1):
+        name = str(row.get("name") or "").strip()
+        label = name or f"row {position}"
+        account_id = row.get("account_id")
+        if account_id is None or session.get(Account, int(account_id)) is None:
+            problems.append(f"{label}: unknown account")
+            continue
+        if not name:
+            problems.append(f"{label}: needs a name")
+            continue
+        day = row.get("day")
+        if day is None or not 1 <= int(day) <= 31:
+            problems.append(f"{label}: the day must be between 1 and 31")
+            continue
+        if Decimal(str(row.get("amount") or 0)) < 0:
+            problems.append(f"{label}: cannot be negative")
+            continue
+        here = (int(account_id), name.casefold())
+        if here in seen:
+            problems.append(f"{label}: listed twice on the same account")
+            continue
+        seen.add(here)
+
+    if problems:
+        return Outcome(False, "Nothing saved — " + "; ".join(problems))
+
+    keep = {int(row["id"]) for row in rows if row.get("id") is not None}
+    removed = 0
+    # Deletions first: a row dropped from the grid and another added with the same name
+    # would otherwise collide with the record on its way out.
+    for stored in list(session.scalars(select(AccountCommitment))):
+        if stored.id not in keep:
+            session.delete(stored)
+            removed += 1
+    session.flush()
+
+    for row in rows:
+        set_account_commitment(
+            session,
+            int(row["account_id"]),
+            str(row["name"]).strip(),
+            Decimal(str(row.get("amount") or 0)),
+            int(row["day"]),
+            commitment_id=row.get("id"),
+        )
+
+    parts = [f"{len(rows)} commitment(s) saved"]
+    if removed:
+        parts.append(f"{removed} removed")
+    return Outcome(True, ", ".join(parts) + ".")
+
+
+def remove_account_commitment(session: Session, commitment_id: int) -> Outcome:
+    row = session.get(AccountCommitment, commitment_id)
+    if row is None:
+        return Outcome(False, "Commitment not found")
+    name = row.name
+    session.delete(row)
+    session.flush()
+    bump_revision(session)
+    return Outcome(True, f"{name!r} removed.")
 
 
 def remove_import_rule(session: Session, rule_id: int) -> Outcome:

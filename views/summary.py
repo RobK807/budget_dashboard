@@ -242,3 +242,88 @@ else:
         st.warning(
             f"{len(short)} account(s) short by {ui.money(short['required'].sum())} in total."
         )
+
+# ---- what those targets are made of ------------------------------------------------
+
+st.markdown("##### What is due, and when")
+st.caption(
+    "The standing payments behind each target. 'Still needed' counts down what has yet to "
+    "go out of that account after each payment, reaching zero on the last. Each account "
+    "runs from its own funding day, so one paid on the 19th covers the 19th to the 18th "
+    "rather than a calendar month. Both are set under "
+    "**Settings → General → Account commitments**."
+)
+
+commitments = repo.account_commitment_table(
+    data["account_commitments"], selected, accounts
+)
+if commitments.empty:
+    st.info(
+        "No commitments listed. Add them under "
+        "**Settings → General → Account commitments**."
+    )
+else:
+    shown = commitments.drop(columns=["day"])
+    shown["due"] = [d.strftime("%a %d %b") for d in shown["due"]]
+    st.dataframe(
+        ui.money_table(
+            shown, ["amount", "still_needed"],
+            labels={"account": "Account", "name": "Item", "due": "Due",
+                    "amount": "Amount", "still_needed": "Still needed"},
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
+    # The dates now run across two calendar months for anything not funded on the 1st, so
+    # say which window each account is being shown on rather than leaving it to be inferred.
+    windows = []
+    for account in commitments["account"].unique():
+        row = accounts[accounts["name"] == account]
+        start = repo.commitment_start_day(row.iloc[0] if not row.empty else None)
+        opens, closes = repo.commitment_cycle(selected, start)
+        windows.append(f"{account} {opens:%d %b} – {closes:%d %b}")
+    st.caption("Cycles: " + " · ".join(windows))
+
+    blank = commitments[commitments["amount"] == 0]
+    if not blank.empty:
+        st.warning(
+            f"{len(blank)} item(s) have no amount yet: "
+            + ", ".join(f"{r['account']} — {r['name']}" for _, r in blank.iterrows())
+            + ". They are listed for their date; set the amount under Settings."
+        )
+
+    # The two are stored separately and neither derives from the other, so say so when they
+    # disagree. A target *below* its items is the one that matters.
+    against = repo.commitments_against_targets(
+        data["account_commitments"], data["account_targets"], accounts, selected
+    )
+    under = against[
+        against["difference"].notna() & (against["difference"] < 0)
+    ]
+    if not under.empty:
+        st.warning(
+            "Target set below what is due out of it: "
+            + "; ".join(
+                f"{r['account']} — {ui.money(r['itemised'])} due against a "
+                f"{ui.money(r['target'])} target"
+                for _, r in under.iterrows()
+            )
+        )
+
+    with st.expander("Itemised totals against each target"):
+        st.dataframe(
+            ui.money_table(
+                against, ["itemised", "target", "difference"],
+                labels={"account": "Account", "items": "Items",
+                        "itemised": "Itemised", "target": "Target",
+                        "difference": "Target less items"},
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "The target is a figure in its own right, not a total of the list — it can "
+            "hold a buffer above the payments, or lag behind a commitment that has just "
+            "changed. Neither number is derived from the other."
+        )
