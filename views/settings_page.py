@@ -232,6 +232,37 @@ with tab_accounts:
 
         st.divider()
 
+        # The date an account opened decides which months its targets and its seed count in
+        # -- a target dated before it is ignored, because a pot cannot be asked to save
+        # anything in a month it did not exist in. Editable because the two are entered
+        # separately and can disagree by a month: a one-off recorded against the month the
+        # money was expected, on an account opened the month it actually arrived.
+        st.markdown("**Available from**")
+        st.caption(
+            "The month this account opened. Targets and the seed count only from here, so "
+            "moving it earlier brings an out-of-range target back into the reckoning. It "
+            "cannot be set later than the account's first transaction."
+        )
+        with st.form("account_valid_from"):
+            from_cols = st.columns([1, 1, 2])
+            opened = from_cols[0].date_input(
+                "Available from",
+                value=pd.to_datetime(record["valid_from"]).date()
+                if pd.notna(record["valid_from"])
+                else dt.date.today(),
+                format="DD/MM/YYYY",
+                key="account_opened",
+            )
+            from_cols[1].write("")
+            if from_cols[1].form_submit_button("Save date", disabled=READ_ONLY):
+                with ui.session() as session, session.begin():
+                    outcome = reference.update_account(
+                        session, int(record["id"]), valid_from=opened
+                    )
+                show_outcome(outcome)
+
+        st.divider()
+
         left, right = st.columns(2)
         with left:
             st.markdown("**Close from a date**")

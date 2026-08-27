@@ -173,6 +173,31 @@ st.caption(
 plan_detail = data["plan_detail"]
 plan_detail = plan_detail[plan_detail["period"].isin(series["period"])]
 
+# A target dated outside its own account's open period does not count, which is right and
+# also silent: the amounts are lump sums, so one mis-dated month moves the cumulative target
+# by thousands with nothing on the page to say why.
+stranded = repo.targets_outside_account_life(
+    data["savings_plan"], accounts, data["all_periods"], data["savings_adjustments"]
+)
+if not stranded.empty:
+    st.warning(
+        f"**{len(stranded)} target(s) fall outside their account's open period and are not "
+        "being counted.** A pot cannot be asked to save anything in a month it did not "
+        "exist in, so these are ignored — but that is usually a date that is out rather "
+        "than a deliberate choice. Fix it by moving the target's month, or the account's "
+        "**Available from** date under **Settings → Accounts**."
+    )
+    st.dataframe(
+        ui.money_table(
+            stranded[["account", "month", "source", "amount", "opened", "closed"]],
+            ["amount"],
+            labels={"account": "Account", "month": "Month", "source": "From",
+                    "amount": "Amount", "opened": "Opened", "closed": "Closed"},
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+
 if plan_detail.empty:
     # Distinguish 'nothing has been entered' from 'entered, but this dashboard did not read
     # it'. The two look identical here, and only one of them is fixed by typing it in again.
@@ -561,10 +586,10 @@ else:
     )
     st.dataframe(
         ui.money_table(
-            shown[["account", "kind", "earmarked"] + COLUMNS],
+            shown[["account", "kind", "earmarked", "closed"] + COLUMNS],
             COLUMNS,
             labels={"account": "Account", "kind": "Type", "earmarked": "Earmarked",
-                    **LABELS},
+                    "closed": "Closed", **LABELS},
         ),
         width="stretch",
         hide_index=True,
@@ -577,6 +602,16 @@ else:
         "shows nothing in the two target columns, which is not the same as a target of zero. "
         "Seeds are set under **Settings → Savings targets**."
     )
+    shut = shown[shown["closed"].fillna(False).astype(bool)]
+    if not shut.empty:
+        st.caption(
+            "**Closed** accounts are still listed where they carry a seed or a target, "
+            f"because the overview above still counts it — {', '.join(shut['account'])} "
+            f"between them account for {ui.money(shut['required'].sum())} of the shortfall. "
+            "A pot that was emptied back into a current account is genuinely money no longer "
+            "saved; if instead it was moved into another pot, the receiving balance has "
+            "already risen and the two net out across the total."
+        )
 
 st.markdown("**How the money moved**")
 

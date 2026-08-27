@@ -1074,6 +1074,15 @@ class TestSavingsByAccount:
             {"id": 4, "name": "HSBC", "type": "bank", "is_savings": False,
              "is_investment": False, "is_isa": False, "exclude_from_savings": False,
              "savings_seed": None},
+            # Closed, emptied, and still carrying a seed. This is the case that broke the
+            # page: account_balances rightly drops a shut account with nothing to show, so
+            # the per-account table lost the row while the overview went on counting its
+            # seed -- and the two disagreed by exactly that amount with nothing on screen
+            # to explain the difference.
+            {"id": 5, "name": "Old Pot", "type": "bank", "is_savings": True,
+             "is_investment": False, "is_isa": False, "exclude_from_savings": False,
+             "savings_seed": Decimal("2000"),
+             "valid_from": dt.date(2026, 1, 1), "valid_to": dt.date(2026, 3, 31)},
         ]
     )
     OPENINGS = pd.DataFrame(
@@ -1121,7 +1130,42 @@ class TestSavingsByAccount:
         return frame[frame["account"] == name].iloc[0]
 
     def test_only_savings_and_investment_accounts_appear(self):
-        assert set(self.frame()["account"]) == {"Marcus", "Wedding", "Stocks"}
+        assert "HSBC" not in set(self.frame()["account"])
+        assert {"Marcus", "Wedding", "Stocks"} <= set(self.frame()["account"])
+
+    def test_a_closed_pot_contributes_no_target(self):
+        """A seed is what a pot already held, so it belongs to the months that pot existed
+        in. Carried past its closure it reported a shortfall against an account that had
+        been shut for a year -- and against a balance that had long since left the totals."""
+        assert "Old Pot" not in set(self.frame()["account"])
+
+    def test_a_closed_pot_is_gone_from_the_overview_too(self):
+        """The two have to agree. Zeroing it in one place and not the other is how the page
+        came to disagree with itself by exactly the seeds of the shut pots."""
+        targets = repo.targets_from_plan(
+            pd.DataFrame(columns=["account", "amount", "effective_from"]),
+            self.ACCOUNTS, self.PERIODS,
+        )
+        overview = repo.savings_series(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, targets, self.PERIODS,
+            today=dt.date(2026, 6, 1),
+        ).iloc[-1]
+        # 2,000 of seed on a pot shut in March is no part of May's target.
+        assert overview["total_target_eom"] == Decimal("5000")
+
+    def test_a_closed_pot_with_nothing_left_to_say_is_not_listed(self):
+        """The other half of the rule: a shut account with no seed and no target is
+        genuinely nothing to report, and listing it would be noise in every month."""
+        accounts = self.ACCOUNTS.copy()
+        accounts.loc[accounts["name"] == "Old Pot", "savings_seed"] = None
+        frame = repo.savings_by_account(
+            self.POSTINGS, self.OPENINGS, accounts, self.PLAN_DETAIL,
+            "2026-05", self.PERIODS,
+        )
+        assert "Old Pot" not in set(frame["account"])
+
+    def test_a_live_account_is_not_marked_closed(self):
+        assert bool(self.row("Marcus")["closed"]) is False
 
     def test_a_month_carries_its_own_opening_and_closing(self):
         marcus = self.row("Marcus")
@@ -1268,7 +1312,19 @@ class TestSavingsAccountHistory:
         assert set(rows["target_eom"]) == {Decimal("0")}
 
     def test_an_unknown_account_gives_an_empty_frame(self):
+        """Not a run of zeros, which would read as a real pot holding nothing."""
         assert self.history("Nowhere").empty
+
+    def test_a_closed_pot_keeps_its_line_but_carries_no_target(self):
+        """The months after closure are zeros rather than absent -- skipping them broke the
+        line where the account shut, which reads as 'no data' instead of 'emptied'. The
+        target reads zero across them, because a pot that no longer exists is not being
+        asked to hold anything."""
+        rows = self.history("Old Pot")
+        assert list(rows["period"]) == ["2026-04", "2026-05"]
+        assert set(rows["eom"]) == {Decimal("0")}
+        assert set(rows["target_eom"]) == {Decimal("0")}
+        assert set(rows["required"]) == {Decimal("0")}
 
     def test_the_columns_are_the_ones_the_chart_reads(self):
         assert list(self.history().columns) == [

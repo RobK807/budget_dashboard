@@ -1357,11 +1357,14 @@ def plan_by_period(
     """
     columns = ["period", "month", "account", "kind", "source", "amount"]
     kinds = account_kinds(accounts)
+    live = _live_months(accounts, periods)
     rows = []
 
     if not plan.empty:
         for period in periods:
             for _, row in plan_in_force(plan, period_start(period)).iterrows():
+                if period not in live.get(row["account"], set()):
+                    continue
                 rows.append(
                     {
                         "period": period,
@@ -1378,6 +1381,8 @@ def plan_by_period(
         for _, row in adjustments.iterrows():
             if row["period"] not in wanted:
                 continue
+            if row["period"] not in live.get(row["account"], set()):
+                continue
             rows.append(
                 {
                     "period": row["period"],
@@ -1388,6 +1393,72 @@ def plan_by_period(
                     "amount": row["amount"],
                 }
             )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _live_months(accounts: pd.DataFrame, periods: list[str]) -> dict[str, set[str]]:
+    """Which months each account was actually open in.
+
+    A pot cannot be asked to save anything in a month it did not exist in, so a target dated
+    outside an account's life does not count. That rule has to be applied once, here, rather
+    than at each of the half-dozen places that read a target: the overview, the two
+    per-account views and the projection all derive from this, and any of them applying it
+    alone would disagree with the rest.
+
+    A target stranded outside an account's life is dropped rather than moved, which makes a
+    mis-dated one-off silently disappear -- `targets_outside_account_life` exists so the page
+    can say so instead.
+    """
+    live: dict[str, set[str]] = {}
+    for _, account in accounts.iterrows():
+        live[account["name"]] = {p for p in periods if _live_in(account, p)}
+    return live
+
+
+def targets_outside_account_life(
+    plan: pd.DataFrame,
+    accounts: pd.DataFrame,
+    periods: list[str],
+    adjustments: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Targets that fall outside their own account's open period, and are therefore ignored.
+
+    Almost always a date that is out rather than a deliberate choice: a one-off entered
+    against the month the money was expected, when the account was opened the month it
+    actually arrived. The amounts involved are lump sums, so losing one quietly moves the
+    cumulative target by thousands and nothing on the page says why.
+    """
+    columns = ["account", "period", "month", "source", "amount", "opened", "closed"]
+    live = _live_months(accounts, periods)
+    dates = accounts.set_index("name") if not accounts.empty else None
+    wanted = set(periods)
+    rows = []
+
+    def note(account: str, period: str, source: str, amount) -> None:
+        if account in live and period in live[account]:
+            return
+        opened = closed = None
+        if dates is not None and account in dates.index:
+            opened = dates.loc[account].get("valid_from")
+            closed = dates.loc[account].get("valid_to")
+        rows.append(
+            {
+                "account": account, "period": period, "month": period_label(period),
+                "source": source, "amount": amount, "opened": opened, "closed": closed,
+            }
+        )
+
+    if not plan.empty:
+        for period in periods:
+            for _, row in plan_in_force(plan, period_start(period)).iterrows():
+                if row["amount"]:
+                    note(row["account"], period, "Plan", row["amount"])
+
+    if adjustments is not None and not adjustments.empty:
+        for _, row in adjustments.iterrows():
+            if row["period"] in wanted and row["amount"]:
+                note(row["account"], row["period"], "One-off", row["amount"])
 
     return pd.DataFrame(rows, columns=columns)
 
@@ -1977,12 +2048,20 @@ def savings_series(
         return Decimal(values.sum()) if len(values) else Decimal("0")
 
     is_savings = accounts["is_savings"].fillna(False).astype(bool)
+    is_investment = accounts["is_investment"].fillna(False).astype(bool)
     earmarked_mask = accounts["name"].isin(excluded_names)
-    savings_seed = seed_total(is_savings)
-    # Split the same way the balances are, so a basis compares like with like.
-    available_seed = seed_total(is_savings & ~earmarked_mask)
-    reserved_seed = seed_total(is_savings & earmarked_mask)
-    investments_seed = seed_total(accounts["is_investment"].fillna(False).astype(bool))
+
+    # A seed is what a pot already held, so it belongs to the months that pot existed in and
+    # to no others. Computed per month rather than once up front: three accounts closed in
+    # 2025 were still contributing 6,000 of seed to every month of 2026, which nothing on the
+    # page could account for, and their balances had long since left the totals.
+    live_by_period = _live_months(accounts, periods)
+
+    def live_mask(period: str) -> pd.Series:
+        open_now = {
+            name for name, months in live_by_period.items() if period in months
+        }
+        return accounts["name"].isin(open_now)
 
     lookup = targets.set_index("period") if not targets.empty else None
     buckets = (
@@ -2008,8 +2087,9 @@ def savings_series(
         return _at(buckets, period, column)
 
     rows: list[dict] = []
-    savings_to_date, investments_to_date = savings_seed, investments_seed
-    available_to_date, reserved_to_date = available_seed, reserved_seed
+    # Targets accumulate; seeds are added back per month from whichever pots are open then.
+    savings_to_date = investments_to_date = Decimal("0")
+    available_to_date = reserved_to_date = Decimal("0")
 
     for period in periods:
         balances = account_balances(postings, openings, period, accounts)
@@ -2047,6 +2127,18 @@ def savings_series(
         available_to_date += available_target
         reserved_to_date += reserved_target
 
+        open_now = live_mask(period)
+        savings_target_eom = seed_total(is_savings & open_now) + savings_to_date
+        available_target_eom = (
+            seed_total(is_savings & open_now & ~earmarked_mask) + available_to_date
+        )
+        reserved_target_eom = (
+            seed_total(is_savings & open_now & earmarked_mask) + reserved_to_date
+        )
+        investments_target_eom = (
+            seed_total(is_investment & open_now) + investments_to_date
+        )
+
         rows.append(
             {
                 "period": period,
@@ -2063,8 +2155,8 @@ def savings_series(
                 "available_eom": available_eom,
                 "reserved_eom": reserved_eom,
                 "savings_target": savings_target,
-                "savings_target_eom": savings_to_date,
-                "savings_required": available_to_date - available_eom,
+                "savings_target_eom": savings_target_eom,
+                "savings_required": available_target_eom - available_eom,
                 # Each basis carries its own target as well as its own balance. They were one
                 # figure covering all three, on the reasoning that what changed was which pot
                 # had to meet it -- but an earmarked pot's target is not the available
@@ -2072,18 +2164,18 @@ def savings_series(
                 "total_target": savings_target,
                 "available_target": available_target,
                 "reserved_target": reserved_target,
-                "total_target_eom": savings_to_date,
-                "available_target_eom": available_to_date,
-                "reserved_target_eom": reserved_to_date,
-                "total_required": savings_to_date - savings_eom,
-                "available_required": available_to_date - available_eom,
-                "reserved_required": reserved_to_date - reserved_eom,
+                "total_target_eom": savings_target_eom,
+                "available_target_eom": available_target_eom,
+                "reserved_target_eom": reserved_target_eom,
+                "total_required": savings_target_eom - savings_eom,
+                "available_required": available_target_eom - available_eom,
+                "reserved_required": reserved_target_eom - reserved_eom,
                 "investments_bom": investments_bom,
                 "investments_added": investments_eom - investments_bom,
                 "investments_eom": investments_eom,
                 "investments_target": investments_target,
-                "investments_target_eom": investments_to_date,
-                "investments_required": investments_to_date - investments_eom,
+                "investments_target_eom": investments_target_eom,
+                "investments_required": investments_target_eom - investments_eom,
                 "combined": savings_eom + investments_eom,
                 "combined_available": available_eom + investments_eom,
             }
@@ -2212,15 +2304,25 @@ def savings_by_account(
     balance starting at thousands reports every month as wildly ahead.
     """
     columns = [
-        "account", "kind", "earmarked", "bom", "added", "eom",
+        "account", "kind", "earmarked", "closed", "bom", "added", "eom",
         "target", "target_eom", "required",
     ]
     balances = account_balances(postings, openings, period, accounts)
-    if balances.empty:
-        return pd.DataFrame(columns=columns)
+    # Driven by the account list rather than by whatever `account_balances` returned. It
+    # drops an account that is closed and has nothing to show for the month, which is right
+    # for a balance table and wrong here: the account's seed still counts towards the
+    # overview's cumulative target, so leaving the row out made the two tables on this page
+    # disagree by exactly the seeds of the pots that had been closed. Three closed accounts
+    # carrying 2,000 each is a 6,000 gap that nothing on the page explains.
+    with_balances = (
+        balances.set_index("account") if not balances.empty else None
+    )
 
-    mine = balances[balances["is_savings"] | balances["is_investment"]].copy()
-    if mine.empty:
+    pots = accounts[
+        accounts["is_savings"].fillna(False).astype(bool)
+        | accounts["is_investment"].fillna(False).astype(bool)
+    ]
+    if pots.empty:
         return pd.DataFrame(columns=columns)
 
     earmarked = set()
@@ -2254,16 +2356,29 @@ def savings_by_account(
         return Decimal("0") if total == 0 else Decimal(total)
 
     built = []
-    for _, row in mine.iterrows():
-        name = row["account"]
-        bom = Decimal(row["opening"])
-        eom = Decimal(row["closing"])
-        target_eom = seeds.get(name, Decimal("0")) + planned(name, only_this_month=False)
+    for _, row in pots.iterrows():
+        name = row["name"]
+        held = (
+            with_balances.loc[name]
+            if with_balances is not None and name in with_balances.index
+            else None
+        )
+        bom = Decimal(held["opening"]) if held is not None else Decimal("0")
+        eom = Decimal(held["closing"]) if held is not None else Decimal("0")
+        # A seed belongs to the months its pot existed in. Outside them it is not a target
+        # the account was ever asked to meet, and counting it reports a shortfall against
+        # something that had not opened yet or has already been closed.
+        live = _live_in(row, period)
+        seed = seeds.get(name, Decimal("0")) if live else Decimal("0")
+        target_eom = seed + planned(name, only_this_month=False)
+        if held is None and not target_eom and not live:
+            continue
         built.append(
             {
                 "account": name,
                 "kind": "Investments" if row["is_investment"] else "Savings",
                 "earmarked": name in earmarked,
+                "closed": not live,
                 "bom": bom,
                 "added": eom - bom,
                 "eom": eom,
@@ -2303,11 +2418,19 @@ def savings_account_history(
         "period", "month", "date", "bom", "added", "eom",
         "target", "target_eom", "required",
     ]
+    # A month with no balance row is reported as zeros below rather than skipped, so that a
+    # closed pot still shows the gap it left. That is only sensible for an account that
+    # exists: an unknown name would otherwise come back as a full run of zeros, which reads
+    # as a real account holding nothing rather than as a typo.
+    known = accounts[accounts["name"] == account]
+    if known.empty:
+        return pd.DataFrame(columns=columns)
+
     seed = Decimal("0")
     if "savings_seed" in accounts.columns:
-        mine = accounts.loc[accounts["name"] == account, "savings_seed"]
-        if len(mine) and mine.iloc[0] is not None and not pd.isna(mine.iloc[0]):
-            seed = Decimal(mine.iloc[0])
+        value = known["savings_seed"].iloc[0]
+        if value is not None and not pd.isna(value):
+            seed = Decimal(value)
 
     plan = (
         plan_detail[plan_detail["account"] == account]
@@ -2316,19 +2439,27 @@ def savings_account_history(
     )
 
     rows: list[dict] = []
-    to_date = seed
+    # Targets only. The seed is added per month below, from whether the pot was open then.
+    to_date = Decimal("0")
     for period in periods:
         balances = account_balances(postings, openings, period, accounts)
         if balances.empty:
             continue
         here = balances[balances["account"] == account]
-        if here.empty:
-            continue
-        bom = Decimal(here["opening"].iloc[0])
-        eom = Decimal(here["closing"].iloc[0])
+        # A month the account was not open in, or was open in and did nothing, still belongs
+        # on the chart once it has a seed or a target: the balance is zero and the gap
+        # against target is the whole point of drawing it. Skipping the month instead broke
+        # the line where the account closed, which read as 'no data' rather than 'emptied'.
+        bom = Decimal(here["opening"].iloc[0]) if not here.empty else Decimal("0")
+        eom = Decimal(here["closing"].iloc[0]) if not here.empty else Decimal("0")
         month_target = plan.loc[plan["period"] == period, "amount"].sum()
         month_target = Decimal("0") if month_target == 0 else Decimal(month_target)
         to_date += month_target
+        # Same rule as everywhere else: the seed applies only while the pot is open, so the
+        # line reads zero before it existed and after it was closed.
+        target_eom = (
+            (seed + to_date) if _live_in(known.iloc[0], period) else to_date
+        )
         rows.append(
             {
                 "period": period,
@@ -2338,8 +2469,8 @@ def savings_account_history(
                 "added": eom - bom,
                 "eom": eom,
                 "target": month_target,
-                "target_eom": to_date,
-                "required": to_date - eom,
+                "target_eom": target_eom,
+                "required": target_eom - eom,
             }
         )
 
@@ -2726,3 +2857,4 @@ def reconcile_monthly_annual(
     if monthly_changed:
         return Decimal(str(0 if blank(monthly) else monthly))
     return None
+

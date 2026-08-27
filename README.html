@@ -389,6 +389,26 @@ of the model, and a chart whose lines quietly converged would assert the opposit
 per-account view (<code>repo.savings_by_account</code>) sums to the overview exactly on balances and on
 <code>required</code>; a test pins that, because two tables on one page disagreeing about the same money
 is worse than either being absent.</p>
+<p><strong>A target only counts in a month its account was open.</strong> A pot cannot be asked to save
+anything before it existed or after it was closed, so <code>repo._live_months</code> gates both the plan
+and the seed, and it does so in <code>plan_by_period</code> — one place, because the overview, the two
+per-account views and the projection all derive from it and any one of them applying the rule
+alone would disagree with the rest. A seed in particular is <em>what the pot already held</em>, so
+carrying it past closure reported a shortfall against an account shut a year earlier whose
+balance had long since left the totals.</p>
+<p>The rule drops a stranded target rather than moving it, which is silent and the amounts are
+lump sums — one mis-dated month can move the cumulative target by thousands.
+<code>repo.targets_outside_account_life</code> exists so the Savings page can say so, and an account's
+opening date is editable under <strong>Settings → Accounts → Available from</strong> so the fix is a date
+change rather than a re-entry. The case that prompted it: a £18,026 one-off dated to the
+month the money was expected, on an account opened the month it actually arrived.</p>
+<p>Both per-account views are driven by the <strong>account list</strong>, not by what <code>account_balances</code>
+returns. That function rightly drops an account which is closed and has nothing to show for
+the month — but a closed pot's <code>savings_seed</code> still counts towards the overview's cumulative
+target, so taking the rows from it made the two tables disagree by exactly the seeds of the
+pots that had been shut, with nothing on the page to explain the difference. Three closed
+accounts carrying £2,000 each is a £6,000 gap. A closed pot is therefore listed while it
+still carries a seed or a target, flagged <code>Closed</code>, and omitted once it carries neither.</p>
 <p><code>repo.savings_account_history</code> is the transpose of it — one pot across every month — and it
 walks the <strong>whole</strong> run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
