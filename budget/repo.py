@@ -2277,6 +2277,75 @@ def savings_by_account(
     return sort_human(frame, by=["kind", "account"]).reset_index(drop=True)
 
 
+def savings_account_history(
+    postings: pd.DataFrame,
+    openings: pd.DataFrame,
+    accounts: pd.DataFrame,
+    plan_detail: pd.DataFrame,
+    account: str,
+    periods: list[str],
+) -> pd.DataFrame:
+    """One pot, month by month: what it held against what it was meant to hold.
+
+    The other way round from `savings_by_account`, which takes one month across every
+    account. Between them they answer the two questions that follow 'the savings are
+    behind' -- which pot, and since when.
+
+    Both figures accumulate from the same starting point as everywhere else on the page: the
+    account's `savings_seed`, because the cumulative target is measured against a balance and
+    the balance did not start at zero either.
+
+    `periods` is walked in full so the cumulative target is right at every point; the caller
+    trims the window it draws afterwards. Trimming first would restart the running total part
+    way through and quietly report the account as ahead.
+    """
+    columns = [
+        "period", "month", "date", "bom", "added", "eom",
+        "target", "target_eom", "required",
+    ]
+    seed = Decimal("0")
+    if "savings_seed" in accounts.columns:
+        mine = accounts.loc[accounts["name"] == account, "savings_seed"]
+        if len(mine) and mine.iloc[0] is not None and not pd.isna(mine.iloc[0]):
+            seed = Decimal(mine.iloc[0])
+
+    plan = (
+        plan_detail[plan_detail["account"] == account]
+        if plan_detail is not None and not plan_detail.empty
+        else pd.DataFrame(columns=["period", "amount"])
+    )
+
+    rows: list[dict] = []
+    to_date = seed
+    for period in periods:
+        balances = account_balances(postings, openings, period, accounts)
+        if balances.empty:
+            continue
+        here = balances[balances["account"] == account]
+        if here.empty:
+            continue
+        bom = Decimal(here["opening"].iloc[0])
+        eom = Decimal(here["closing"].iloc[0])
+        month_target = plan.loc[plan["period"] == period, "amount"].sum()
+        month_target = Decimal("0") if month_target == 0 else Decimal(month_target)
+        to_date += month_target
+        rows.append(
+            {
+                "period": period,
+                "month": period_label(period),
+                "date": month_end(period),
+                "bom": bom,
+                "added": eom - bom,
+                "eom": eom,
+                "target": month_target,
+                "target_eom": to_date,
+                "required": to_date - eom,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 # ------------------------------------------------------------------- investment return
 #
 # The tracker's 'Investment Return' tab. Its balances were typed in month by month and its

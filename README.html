@@ -389,6 +389,10 @@ of the model, and a chart whose lines quietly converged would assert the opposit
 per-account view (<code>repo.savings_by_account</code>) sums to the overview exactly on balances and on
 <code>required</code>; a test pins that, because two tables on one page disagreeing about the same money
 is worse than either being absent.</p>
+<p><code>repo.savings_account_history</code> is the transpose of it — one pot across every month — and it
+walks the <strong>whole</strong> run of periods however short a window the chart draws. Trimming the walk
+instead restarts the cumulative target part way through, which reports the pot as far further
+ahead than it is and looks entirely plausible on the chart. The caller filters the result.</p>
 <p><strong>Bank identifiers never go in the repository.</strong> Account numbers and sort codes belong in the
 database. A test sample that needs one uses an obviously invented stand-in, and
 <code>tests/test_privacy.py</code> fails on any bare eight-digit run or <code>nn-nn-nn</code> sort code in
@@ -572,7 +576,7 @@ budget<span style="color: #666">/</span>
   ui<span style="color: #666">.</span>py                 shared Streamlit helpers
 tests<span style="color: #666">/</span>
 </code></pre></div>
-<p class="generated">Generated from <code>README.md</code> on 17 August 2026
+<p class="generated">Generated from <code>README.md</code> on 27 August 2026
  — <code>python -m budget.render_docs</code> to refresh.</p>
 </body>
 </html>

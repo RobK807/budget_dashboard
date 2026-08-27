@@ -310,6 +310,11 @@ per-account view (`repo.savings_by_account`) sums to the overview exactly on bal
 `required`; a test pins that, because two tables on one page disagreeing about the same money
 is worse than either being absent.
 
+`repo.savings_account_history` is the transpose of it — one pot across every month — and it
+walks the **whole** run of periods however short a window the chart draws. Trimming the walk
+instead restarts the cumulative target part way through, which reports the pot as far further
+ahead than it is and looks entirely plausible on the chart. The caller filters the result.
+
 **Bank identifiers never go in the repository.** Account numbers and sort codes belong in the
 database. A test sample that needs one uses an obviously invented stand-in, and
 `tests/test_privacy.py` fails on any bare eight-digit run or `nn-nn-nn` sort code in

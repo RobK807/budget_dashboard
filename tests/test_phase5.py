@@ -1191,3 +1191,87 @@ class TestSavingsByAccount:
     def test_it_is_sorted_by_kind_then_account(self):
         assert list(self.frame()["kind"]) == ["Investments", "Savings", "Savings"]
         assert list(self.frame()["account"]) == ["Stocks", "Marcus", "Wedding"]
+
+
+# ------------------------------------------------------------- one account, every month
+
+
+class TestSavingsAccountHistory:
+    """The other cut: one pot across the months, rather than every pot in one month.
+
+    Between them they answer the two questions that follow 'the savings are behind' -- which
+    pot, and since when.
+    """
+
+    ACCOUNTS = TestSavingsByAccount.ACCOUNTS
+    OPENINGS = TestSavingsByAccount.OPENINGS
+    POSTINGS = TestSavingsByAccount.POSTINGS
+    PLAN_DETAIL = TestSavingsByAccount.PLAN_DETAIL
+    PERIODS = TestSavingsByAccount.PERIODS
+
+    def history(self, account: str = "Marcus", periods=None):
+        return repo.savings_account_history(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, self.PLAN_DETAIL,
+            account, periods or self.PERIODS,
+        )
+
+    def test_one_row_per_month(self):
+        assert list(self.history()["period"]) == ["2026-04", "2026-05"]
+
+    def test_each_month_carries_its_own_opening_and_closing(self):
+        rows = self.history()
+        assert rows.iloc[0]["bom"] == Decimal("1000")
+        assert rows.iloc[0]["eom"] == Decimal("1200")
+        assert rows.iloc[1]["bom"] == Decimal("1200")
+
+    def test_added_is_the_change_within_the_month(self):
+        assert self.history().iloc[0]["added"] == Decimal("200")
+        assert self.history().iloc[1]["added"] == Decimal("0")
+
+    def test_the_target_accumulates_from_the_seed(self):
+        rows = self.history()
+        assert rows.iloc[0]["target_eom"] == Decimal("5100")
+        assert rows.iloc[1]["target_eom"] == Decimal("5200")
+
+    def test_required_tracks_the_gap_month_by_month(self):
+        rows = self.history()
+        assert rows.iloc[0]["required"] == Decimal("3900")
+        assert rows.iloc[1]["required"] == Decimal("4000")
+
+    def test_the_last_row_agrees_with_the_per_account_table(self):
+        """Same pot, same month, two functions. They are read side by side on one page."""
+        table = repo.savings_by_account(
+            self.POSTINGS, self.OPENINGS, self.ACCOUNTS, self.PLAN_DETAIL,
+            "2026-05", self.PERIODS,
+        )
+        row = table[table["account"] == "Marcus"].iloc[0]
+        last = self.history().iloc[-1]
+        for column in ("bom", "added", "eom", "target", "target_eom", "required"):
+            assert last[column] == row[column], column
+
+    def test_the_running_total_is_not_restarted_by_a_shorter_window(self):
+        """The caller trims what it draws *after* this walks every month. Trimming first
+        restarts the cumulative target part way through, which reports the pot as far
+        further ahead than it is -- and looks entirely plausible on the chart."""
+        full = self.history()
+        from_may = full[full["period"] >= "2026-05"]
+        assert from_may.iloc[0]["target_eom"] == Decimal("5200")
+
+        # What passing the short window in would have given instead.
+        restarted = self.history(periods=["2026-05"])
+        assert restarted.iloc[0]["target_eom"] == Decimal("5100")
+
+    def test_an_account_with_no_target_still_has_a_history(self):
+        rows = self.history("Wedding")
+        assert len(rows) == 2
+        assert set(rows["target"]) == {Decimal("0")}
+        assert set(rows["target_eom"]) == {Decimal("0")}
+
+    def test_an_unknown_account_gives_an_empty_frame(self):
+        assert self.history("Nowhere").empty
+
+    def test_the_columns_are_the_ones_the_chart_reads(self):
+        assert list(self.history().columns) == [
+            "period", "month", "date", "bom", "added", "eom",
+            "target", "target_eom", "required",
+        ]

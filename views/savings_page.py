@@ -312,6 +312,133 @@ st.caption(
 
 st.divider()
 
+# ----------------------------------------------------------------- one account over time
+
+st.subheader("One account against its target")
+st.caption(
+    "The charts above are per bucket and the table below is per month. This is the other "
+    "cut: one pot, every month it has existed, against what it was meant to be holding. "
+    "History only — the projection is the section after this one."
+)
+
+pot_names = ui.alphabetical(
+    accounts.loc[
+        accounts["is_savings"].fillna(False).astype(bool)
+        | accounts["is_investment"].fillna(False).astype(bool),
+        "name",
+    ]
+)
+
+if not pot_names:
+    st.info("No accounts are flagged as savings or investments.")
+else:
+    CUMULATIVE = "Cumulative"
+    MONTHLY = "Month by month"
+
+    controls = st.columns([2, 2, 2])
+    pot = controls[0].selectbox("Account", options=pot_names, key="pot_chart_account")
+    # Its own control and its own key, deliberately: the window worth looking at for one
+    # pot has nothing to do with the one chosen for the charts above it. `month_from` draws
+    # with a bare st.selectbox, so it needs the column as a context to land in.
+    with controls[1]:
+        pot_from = ui.month_from(
+            periods, key="pot_chart_from", tax_year=data["tax_year"],
+            label="Start month",
+        )
+    pot_view = controls[2].radio(
+        "Show",
+        options=[CUMULATIVE, MONTHLY],
+        horizontal=True,
+        key="pot_chart_view",
+        help="Cumulative compares the balance with the target accumulated to date. Month by "
+             "month compares what went in against that month's target alone.",
+    )
+
+    history = repo.savings_account_history(
+        postings, data["openings"], accounts, data["plan_detail"], pot, periods
+    )
+    # Trimmed here rather than in the walk above: the cumulative target has to accumulate
+    # from the beginning, or a window starting halfway through restarts the running total
+    # and reports the pot as far further ahead than it is.
+    windowed = history[history["period"] >= pot_from] if pot_from else history
+
+    if windowed.empty:
+        st.info(f"Nothing recorded for {pot} in this window.")
+    else:
+        pot_plot = ui.to_float(windowed, ["eom", "target_eom", "added", "target"])
+        fig = go.Figure()
+
+        if pot_view == CUMULATIVE:
+            fig.add_trace(
+                go.Scatter(
+                    x=pot_plot["month"], y=pot_plot["eom"], name="Balance",
+                    mode="lines+markers", line=dict(color=ui.ACCENT, width=2),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=pot_plot["month"], y=pot_plot["target_eom"], name="Cumulative target",
+                    mode="lines", line=dict(color=ui.REFERENCE, width=2, dash="dash"),
+                )
+            )
+            fig.update_yaxes(title_text="Balance (£)")
+        else:
+            # The same hollow-over-solid idiom as 'Added against target' above, so a bar
+            # short of its outline means the same thing in both places.
+            fig.add_trace(
+                go.Bar(
+                    name="Added", x=pot_plot["month"], y=pot_plot["added"],
+                    marker_color=ui.ACCENT, offsetgroup="pot",
+                )
+            )
+            fig.add_trace(
+                go.Bar(
+                    name="Target", x=pot_plot["month"], y=pot_plot["target"],
+                    offsetgroup="pot",
+                    marker=dict(
+                        color="rgba(0,0,0,0)",
+                        line=dict(color=ui.REFERENCE, width=2),
+                        pattern=dict(
+                            shape="/", fgcolor=ui.REFERENCE, fgopacity=0.25, size=6
+                        ),
+                    ),
+                )
+            )
+            fig.update_layout(barmode="group")
+            fig.update_yaxes(title_text="£ in the month")
+
+        fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
+        st.plotly_chart(ui.money_axis(fig), width="stretch")
+
+        closing = windowed.iloc[-1]
+        behind = closing["required"]
+        st.caption(
+            (
+                f"**{pot}** held {ui.money(closing['eom'])} at the end of "
+                f"{closing['month']} against a cumulative target of "
+                f"{ui.money(closing['target_eom'])} — "
+                + (
+                    f"**{ui.money(behind)} still to find**."
+                    if behind > 0
+                    else f"**{ui.money(-behind)} ahead**."
+                )
+            )
+            if pot_view == CUMULATIVE
+            else (
+                "The hollow column is the month's target, drawn over the solid column of "
+                "what actually went in, so a bar short of its outline is a month that fell "
+                "behind. A negative bar is money taken out."
+            )
+        )
+        if (history["target_eom"] == 0).all():
+            st.info(
+                f"No target is set for **{pot}**, so the target line sits at zero. Set one "
+                "under **Settings → Savings targets**, where a seed can also be entered for "
+                "what the pot already held."
+            )
+
+st.divider()
+
 # --------------------------------------------------------------------- projection
 
 st.subheader("Where this ends up")
