@@ -580,16 +580,15 @@ class TestTheSeedScript:
             result = seed_commitments.apply(session, write=False, update=False)
         assert result["missing_accounts"] == []
 
-    def test_the_amounts_are_all_positive_or_a_deliberate_zero(self):
-        zero = [
+    def test_every_amount_is_known_and_positive(self):
+        # Zero is a supported state -- 'due, amount not known yet' -- but nothing in this
+        # list is in it any more: the Stocks & Shares Isa figure was recovered from the
+        # savings plan and from four months of actual transfers. A zero here now would be
+        # a typo rather than a deliberate blank.
+        assert [
             (a, n) for a, n, amount, _ in seed_commitments.COMMITMENTS
-            if Decimal(amount) == 0
-        ]
-        # Exactly one row was given without an amount. A second would mean a typo.
-        assert zero == [("HSBC", "Stocks & Shares Isa")]
-        assert all(
-            Decimal(amount) >= 0 for _, _, amount, _ in seed_commitments.COMMITMENTS
-        )
+            if Decimal(amount) <= 0
+        ] == []
 
     def test_every_day_is_a_day_of_the_month(self):
         assert all(1 <= day <= 31 for *_, day in seed_commitments.COMMITMENTS)
@@ -693,7 +692,9 @@ class TestTheSeedScript:
         assert by_account == {
             "First Direct": Decimal("3880.45"),
             "Halifax": Decimal("32.50"),
-            # 2600 plus the Stocks & Shares Isa, which has no amount yet.
-            "HSBC": Decimal("2600.00"),
+            # 2,600 as given, plus the 250 Stocks & Shares Isa. That puts HSBC 50 above its
+            # 2,800 target, which the Summary page is meant to flag -- see the module
+            # docstring in seed_commitments.
+            "HSBC": Decimal("2850.00"),
             "Nationwide": Decimal("94.00"),
         }

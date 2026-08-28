@@ -8,9 +8,14 @@ everything already there and writes nothing. An existing row whose amount or day
 *left alone* unless --update is passed: the Settings grid is the place these are maintained,
 and a seed script that quietly overwrote a figure edited there would undo real work.
 
-The Stocks & Shares Isa row is deliberately seeded at zero. It was given with a date and no
-amount, and zero here means 'due, amount not known yet' -- the Summary page lists it for its
-date and flags it as missing rather than showing a confident £0.00.
+The Stocks & Shares Isa row arrived with a date and no amount. The 250.00 here is not a
+guess: `savings_plan` has carried a 250 monthly target for that account since August 2025,
+and HSBC has actually sent it 250.00 on the 4th every month (the 6th when the 4th falls on a
+weekend). Both sources agree, so the figure is recorded rather than left at zero.
+
+Note that this takes HSBC's commitments to 2,850.00 against a 2,800.00 target, which the
+Summary page flags. That is the flag doing its job: several of HSBC's figures are round
+stand-ins for variable amounts, so 50.00 is within an ordinary month's noise.
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ COMMITMENTS: list[tuple[str, str, str, int]] = [
     ("HSBC", "Halifax", "350.00", 1),
     ("HSBC", "Lottery", "200.00", 1),
     ("HSBC", "Earnings data", "15.00", 3),
-    ("HSBC", "Stocks & Shares Isa", "0.00", 4),
+    ("HSBC", "Stocks & Shares Isa", "250.00", 4),
     ("HSBC", "Barclaycard", "120.00", 6),
     ("HSBC", "Base", "500.00", 19),
     ("HSBC", "Wedding", "350.00", 20),
