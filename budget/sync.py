@@ -797,12 +797,11 @@ def local_only_frame(session: Session, base_path: Path | None = None):
                 "Category": categories.get(t.category_id),
                 "Purchase type": classifications.get(t.classification_id),
                 "Comment": t.comment,
-                "Category comment": t.category_comment,
             }
             for t in local_only(session, base_path)
         ],
         columns=[
             "Date", "Type", "Amount", "Account From", "Account To",
-            "Category", "Purchase type", "Comment", "Category comment",
+            "Category", "Purchase type", "Comment",
         ],
     )

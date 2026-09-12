@@ -165,7 +165,6 @@ def load_transactions(session: Session, include_deleted: bool = False) -> pd.Dat
             "category": categories.get(t.category_id),
             "classification": classifications.get(t.classification_id),
             "comment": t.comment,
-            "category_comment": t.category_comment,
             "identifier": t.legacy_identifier,
             "is_donation": bool(t.is_donation),
             "deleted": t.deleted_at is not None,
@@ -176,7 +175,7 @@ def load_transactions(session: Session, include_deleted: bool = False) -> pd.Dat
     df = pd.DataFrame(
         rows,
         columns=["id", "date", "period", "type", "amount", "account_from", "account_to",
-                 "category", "classification", "comment", "category_comment", "identifier",
+                 "category", "classification", "comment", "identifier",
                  "is_donation", "deleted", "deleted_reason"],
     )
     if not df.empty:

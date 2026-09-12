@@ -270,7 +270,7 @@ with tab_bank:
             if not prepared.rows.empty:
                 preview = ui.name_blanks(
                     prepared.rows.copy(),
-                    ["Account To", "Category", "Purchase type", "Category comment"],
+                    ["Account To", "Category", "Purchase type"],
                     transfers="Type",
                 )
                 st.dataframe(
@@ -335,7 +335,6 @@ with tab_paste:
                 "Purchase type", options=classifications
             ),
             "Comment": st.column_config.TextColumn("Comment"),
-            "Category comment": st.column_config.TextColumn("Category comment"),
             "Donation": st.column_config.CheckboxColumn(
                 "Donation",
                 help="Charitable giving, counted under Savings and investments. A "
@@ -411,7 +410,7 @@ if candidates:
     # type, so the blank is named rather than left to render as 'nan'.
     preview = ui.name_blanks(
         preview,
-        ["Account To", "Category", "Purchase type", "Comment", "Category comment"],
+        ["Account To", "Category", "Purchase type", "Comment"],
         transfers="Type",
     )
     st.dataframe(

@@ -36,9 +36,10 @@ with st.form("add_transaction", clear_on_submit=False):
     category = row3[0].selectbox("Category", ["—"] + categories)
     classification = row3[1].selectbox("Purchase type", ["—"] + classifications)
 
-    row4 = st.columns(2)
-    comment = row4[0].text_input("Comment")
-    category_comment = row4[1].text_input("Category comment")
+    comment = st.text_input(
+        "Comment",
+        help="What the payment was — searchable from the Transactions page.",
+    )
 
     # Flagged here rather than inferred later, because nothing about the payment identifies
     # one: a donation and the platform's fee leave the account together, on the same day,
@@ -61,7 +62,6 @@ if submitted:
         category=None if category == "—" else category,
         classification=None if classification == "—" else classification,
         comment=comment or None,
-        category_comment=category_comment or None,
         is_donation=is_donation,
     )
 

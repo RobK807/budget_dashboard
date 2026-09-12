@@ -217,6 +217,16 @@ class Txn(Base):
     classification_id: Mapped[int | None] = mapped_column(ForeignKey("classification.id"))
 
     comment: Mapped[str | None] = mapped_column(Text)
+    # A second free-text box that earned its keep nowhere. It was never shown as a column of
+    # its own, never grouped or totalled, and its only distinct behaviours were a rule saying
+    # it needed a category and an auto-fill that copied `comment` into it -- which is what it
+    # held on the overwhelming majority of the rows that had one. Folded into `comment` by
+    # budget/merge_category_comments.py and no longer written.
+    #
+    # Kept rather than dropped, like `savings_target` and `salary_profile.annual_salary`: it
+    # is the record of how these were once entered, the workbook importers still populate it
+    # when a rebuild reads column K, and an ALTER that drops a column cannot be undone from
+    # the sidecar.
     category_comment: Mapped[str | None] = mapped_column(Text)
     # Charitable giving, tracked for its own sake rather than as a spending category: the
     # interest tracker kept a separate sheet for it because the figure wanted is the year's

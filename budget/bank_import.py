@@ -271,7 +271,7 @@ def _rule_for(description: str, rules: pd.DataFrame) -> str | None:
 
 COLUMNS = [
     "Date", "Type", "Amount", "Account From", "Account To", "Category",
-    "Purchase type", "Comment", "Category comment", "Donation",
+    "Purchase type", "Comment", "Donation",
 ]
 
 
@@ -352,7 +352,6 @@ def prepare(
                 # A transfer carries no category, so the description is the only trace of
                 # where it came from. Both sides, since the two banks word it differently.
                 "Comment": _joined(out_row.description, in_row.description),
-                "Category comment": None,
                 "Donation": False,
             }
         )
@@ -376,8 +375,7 @@ def prepare(
                     "Category": None,
                     "Purchase type": None,
                     "Comment": row.description,
-                    "Category comment": None,
-                    "Donation": False,
+                        "Donation": False,
                 }
             )
             continue
@@ -403,7 +401,6 @@ def prepare(
                 "Category": None,
                 "Purchase type": None,
                 "Comment": row.description,
-                "Category comment": None,
                 "Donation": False,
             }
         )

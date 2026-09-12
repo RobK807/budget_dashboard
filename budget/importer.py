@@ -28,15 +28,18 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "category": ("category", "cat"),
     "classification": ("purchasetype", "classification", "class", "purchase"),
     "comment": ("comment", "description", "notes", "note", "reference"),
-    "category_comment": ("categorycomment", "catcomment"),
     "is_donation": ("donation", "isdonation", "charitabledonation", "charity"),
 }
 
-IGNORED = ("month", "item", "id", "errormessages")
+# 'categorycomment' is ignored rather than unknown. The field is no longer used -- it was
+# folded into the comment, see budget/merge_category_comments.py -- but the workbook still
+# has the column and pasting a block straight out of it has to keep working. Reporting it as
+# unrecognised would put a warning on every such paste for a column nobody has to act on.
+IGNORED = ("month", "item", "id", "errormessages", "categorycomment", "catcomment")
 
 TEMPLATE_COLUMNS = [
     "Date", "Type", "Amount", "Account From", "Account To",
-    "Category", "Purchase type", "Comment", "Category comment", "Donation",
+    "Category", "Purchase type", "Comment", "Donation",
 ]
 
 # What counts as a yes in a pasted column. The workbook's own donation sheet used 'Y', and a
@@ -152,28 +155,6 @@ def _title(value) -> str | None:
     )
 
 
-# Categories whose comment column is a restatement of the transaction's own comment. 'Other'
-# is the catch-all: the category says nothing about what the payment was, so the category
-# comment is where the description would otherwise have to be typed a second time.
-INHERIT_COMMENT_FOR = ("other",)
-
-
-def _inherited_category_comment(
-    entered: str | None, category: str | None, comment: str | None
-) -> str | None:
-    """A default, not an override: only fills a blank, and only for the catch-all category.
-
-    Anything typed into the column wins, so this can be corrected on the row rather than
-    fought with -- and a category that does describe the spending is left alone, where
-    copying the comment across would just be the same words twice.
-    """
-    if entered is not None:
-        return entered
-    if category is None or category.strip().lower() not in INHERIT_COMMENT_FOR:
-        return None
-    return comment
-
-
 def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
     """Table -> candidates. Returns (candidates, problems with the table itself)."""
     mapping, unknown = map_columns(df.columns)
@@ -227,9 +208,6 @@ def parse(df: pd.DataFrame) -> tuple[list[Candidate], list[str]]:
                 category=category,
                 classification=_text(get(row, "classification")),
                 comment=comment,
-                category_comment=_inherited_category_comment(
-                    _text(get(row, "category_comment")), category, comment
-                ),
                 is_donation=_flag(get(row, "is_donation")),
                 source_row=offset,
             )
@@ -272,7 +250,6 @@ def template() -> pd.DataFrame:
             "Category": pd.Series(dtype="object"),
             "Purchase type": pd.Series(dtype="object"),
             "Comment": pd.Series(dtype="object"),
-            "Category comment": pd.Series(dtype="object"),
             "Donation": pd.Series(dtype="bool"),
         }
     )
@@ -319,7 +296,6 @@ def to_frame(candidates: list[Candidate]) -> pd.DataFrame:
                 "Category": c.category,
                 "Purchase type": c.classification,
                 "Comment": c.comment,
-                "Category comment": c.category_comment,
                 "Donation": c.is_donation,
             }
             for c in candidates

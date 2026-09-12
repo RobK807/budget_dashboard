@@ -11,7 +11,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from budget import repo
+from budget import merge_category_comments, repo
 
 APRIL = dt.date(2026, 4, 1)
 
@@ -217,3 +217,39 @@ class TestTheBalanceCheckAccountList:
         assert list(empty.columns) == [
             "account", "current", "in", "out", "projected", "last_seen", "affected"
         ]
+
+
+class TestMergingTheCategoryComment:
+    """What `merge_category_comments` keeps. Every case here is one from the real data."""
+
+    @pytest.mark.parametrize(
+        "comment, category_comment",
+        [
+            ("Lunch", "Lunch"),
+            ("Lunch", "  lunch  "),          # spacing and case are not a difference
+            ("Lunch", None),
+            ("Lunch", "   "),
+        ],
+    )
+    def test_nothing_to_keep(self, comment, category_comment):
+        assert merge_category_comments.merged(comment, category_comment) is None
+
+    def test_the_fuller_of_the_two_wins_when_one_contains_the_other(self):
+        assert merge_category_comments.merged("Pub", "Pub (food & drinks)") == (
+            "Pub (food & drinks)"
+        )
+        assert merge_category_comments.merged("Studio hire", "Studio") is None
+
+    def test_genuinely_different_text_is_joined(self):
+        # 'Boots' is where, 'Shaving gel' is what. Both are worth keeping.
+        assert merge_category_comments.merged("Boots", "Shaving gel") == (
+            "Boots - Shaving gel"
+        )
+
+    def test_a_category_comment_with_no_comment_becomes_the_comment(self):
+        assert merge_category_comments.merged(None, "Etsy") == "Etsy"
+        assert merge_category_comments.merged("", "Etsy") == "Etsy"
+
+    def test_merging_twice_changes_nothing_the_second_time(self):
+        once = merge_category_comments.merged("Boots", "Shaving gel")
+        assert merge_category_comments.merged(once, "Shaving gel") is None

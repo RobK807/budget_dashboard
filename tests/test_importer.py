@@ -211,39 +211,33 @@ class TestBulkBlankRows:
         assert len(importer.with_blank_rows(started, 0)) == 2
 
 
-class TestCategoryCommentDefault:
-    """'Other' says nothing about what a payment was, so the description would otherwise be
-    typed twice. Every other category already describes it."""
+class TestTheRetiredCategoryComment:
+    """The column is no longer read, but the workbook still has it.
 
-    def frame(self, category, comment, category_comment=None):
-        return pd.DataFrame(
+    A block pasted straight out of BulkImport carries 'Category comment', so it has to be
+    ignored in silence rather than reported as an unrecognised column -- a warning on every
+    paste, for something nobody can act on, is how people learn to ignore warnings.
+    """
+
+    def test_the_column_is_ignored_not_flagged(self):
+        frame = pd.DataFrame(
             {
                 "Date": ["2026-08-01"], "Type": ["Debit"], "Amount": [1],
-                "Account From": ["HSBC"], "Category": [category],
-                "Comment": [comment], "Category comment": [category_comment],
+                "Account From": ["HSBC"], "Category": ["Other"],
+                "Comment": ["Vet bill"], "Category comment": ["Vet bill"],
             }
         )
+        candidates, problems = importer.parse(frame)
+        assert problems == []
+        assert candidates[0].comment == "Vet bill"
+        assert not hasattr(candidates[0], "category_comment")
 
-    def test_other_inherits_the_comment(self):
-        candidates, _ = importer.parse(self.frame("Other", "Vet bill"))
-        assert candidates[0].category_comment == "Vet bill"
-
-    def test_a_named_category_does_not(self):
-        candidates, _ = importer.parse(self.frame("Food", "Lunch"))
-        assert candidates[0].category_comment is None
-
-    def test_anything_entered_wins(self):
-        """A default, not an override -- otherwise it could not be corrected on the row."""
-        candidates, _ = importer.parse(self.frame("Other", "Gift", "Birthday"))
-        assert candidates[0].category_comment == "Birthday"
-
-    def test_case_and_spacing_do_not_matter(self):
-        candidates, _ = importer.parse(self.frame("  other ", "Vet bill"))
-        assert candidates[0].category_comment == "Vet bill"
-
-    def test_no_comment_to_inherit_leaves_it_blank(self):
-        candidates, _ = importer.parse(self.frame("Other", None))
-        assert candidates[0].category_comment is None
+    def test_a_genuinely_unknown_column_is_still_flagged(self):
+        """The check above must not be passing because nothing is ever reported."""
+        _, unknown = importer.map_columns(
+            ["Date", "Type", "Amount", "Account From", "Category comment", "Sausages"]
+        )
+        assert unknown == ["Sausages"]
 
 
 class TestBlankRowsFromTheEditor:

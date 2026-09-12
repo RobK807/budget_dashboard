@@ -38,7 +38,6 @@ class Candidate:
     category: str | None = None
     classification: str | None = None
     comment: str | None = None
-    category_comment: str | None = None
     # Charitable giving. Carried on the candidate so a donation can be flagged as it is
     # entered or imported, rather than found again afterwards -- which is the only reliable
     # moment, since nothing in the amount, account or category distinguishes one.
@@ -151,8 +150,6 @@ def validate(c: Candidate, ref: Reference) -> Result:
                 r.errors.append(f"{c.category!r} only takes Credits — change the type")
             elif spend_type == DEBIT and c.type == CREDIT:
                 r.errors.append(f"{c.category!r} only takes Debits — change the type")
-    elif c.category_comment:
-        r.errors.append("Category comment given without a category")  # Input!E10
     elif c.type != TRANSFER:
         r.warnings.append("No category: this will not appear in the budget breakdown")
 

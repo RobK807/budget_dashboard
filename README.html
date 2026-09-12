@@ -289,6 +289,7 @@ python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budg
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.import_phase5<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># seed salary profile, rates, targets, card billing</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.seed_pension<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># bring the pension history in, once per machine</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.seed_commitments<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># load the standing payments behind each account target</span>
+python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.merge_category_comments<span style="color: #BBB">  </span><span style="color: #60A0B0; font-style: italic"># fold the category comment into the comment</span>
 python<span style="color: #BBB"> </span>-m<span style="color: #BBB"> </span>budget.migrate_xlsm<span style="color: #BBB"> </span>--force<span style="color: #BBB">   </span><span style="color: #60A0B0; font-style: italic"># rebuild the database from scratch</span>
 </code></pre></div>
 
@@ -430,6 +431,16 @@ April. <code>repo.targets_in_force</code> takes the newest month at or before th
 takes it whole: a month's set replaces its predecessor rather than merging with it, so an
 account dropped from the list stays dropped. Months <em>before</em> the first set stay empty, since
 carrying backwards would invent a target for months already closed.</p>
+<p><strong>Two boxes for one sentence.</strong> <code>txn.category_comment</code> sat beside <code>comment</code> and earned its
+keep nowhere: never shown as a column of its own, never grouped or totalled, and its only
+distinct behaviours were a rule saying it needed a category and an auto-fill that copied the
+comment into it. Of the rows that had one, the overwhelming majority repeated the comment
+word for word and none had a category comment without a comment — so it was never the only
+record of anything. A minority genuinely differed, usually as vendor against item ('Boots',
+'Shaving gel'), and <code>budget/merge_category_comments.py</code> folds those into the comment rather
+than dropping them. The column stays on the table, holding what it held, the same way
+<code>savings_target</code> did: an ALTER that drops a column cannot be undone from the sidecar, and the
+workbook importers still populate it when a rebuild reads column K.</p>
 <p><strong>A payslip either adds up or it does not.</strong> Gross, the car allowance and home working are
 paid; NI, PAYE, pension, holiday and cycle-to-work are taken off. Holiday pay is the term
 that catches an eye check out — it is holiday <em>bought</em>, so it belongs with the deductions,
@@ -679,6 +690,7 @@ budget<span style="color: #666">/</span>
   import_phase5<span style="color: #666">.</span>py      salary profile, rates, targets, card billing
   seed_pension<span style="color: #666">.</span>py       one<span style="color: #666">-</span>off <span style="color: #007020; font-weight: bold">import</span><span style="color: #BBB"> </span><span style="color: #0E84B5; font-weight: bold">of</span> the pension history
   seed_commitments<span style="color: #666">.</span>py   one<span style="color: #666">-</span>off load of the standing account commitments
+  merge_category_comments<span style="color: #666">.</span>py  folds the retired category comment into the comment
   config<span style="color: #666">.</span>py             <span style="color: #007020">all</span> filesystem paths
   models<span style="color: #666">.</span>py             SQLAlchemy schema
   db<span style="color: #666">.</span>py                 engine <span style="color: #007020; font-weight: bold">and</span> session

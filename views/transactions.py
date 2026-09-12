@@ -77,9 +77,7 @@ if categories:
 if classifications:
     view = view[view["classification"].isin(classifications)]
 if search:
-    haystack = (
-        view["comment"].fillna("") + " " + view["category_comment"].fillna("")
-    ).str.lower()
+    haystack = view["comment"].fillna("").str.lower()
     view = view[haystack.str.contains(search.lower(), regex=False)]
 
 # ------------------------------------------------------------------------------- summary
@@ -179,9 +177,7 @@ if pick_accounts:
         | selection["account_to"].isin(pick_accounts)
     ]
 if pick_search:
-    text = (
-        selection["comment"].fillna("") + " " + selection["category_comment"].fillna("")
-    ).str.lower()
+    text = selection["comment"].fillna("").str.lower()
     selection = selection[text.str.contains(pick_search.lower(), regex=False)]
 
 live = selection[~selection["deleted"]]

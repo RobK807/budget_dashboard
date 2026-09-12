@@ -117,12 +117,6 @@ class TestSpendTypeConsistency:
         assert validate(candidate(category="Other", type="Debit"), ref).ok
 
 
-class TestComments:
-    def test_category_comment_without_a_category_is_rejected(self, ref):  # Input!E10
-        c = candidate(category=None, category_comment="something")
-        assert any("without a category" in e for e in validate(c, ref).errors)
-
-
 class TestWarnings:
     def test_missing_category_warns_but_does_not_block(self, ref):
         result = validate(candidate(category=None), ref)

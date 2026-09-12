@@ -229,6 +229,7 @@ python -m budget.import_phase4  # reload projections, salary, cards, cycling
 python -m budget.import_phase5  # seed salary profile, rates, targets, card billing
 python -m budget.seed_pension   # bring the pension history in, once per machine
 python -m budget.seed_commitments  # load the standing payments behind each account target
+python -m budget.merge_category_comments  # fold the category comment into the comment
 python -m budget.migrate_xlsm --force   # rebuild the database from scratch
 ```
 
@@ -357,6 +358,17 @@ April. `repo.targets_in_force` takes the newest month at or before the one being
 takes it whole: a month's set replaces its predecessor rather than merging with it, so an
 account dropped from the list stays dropped. Months *before* the first set stay empty, since
 carrying backwards would invent a target for months already closed.
+
+**Two boxes for one sentence.** `txn.category_comment` sat beside `comment` and earned its
+keep nowhere: never shown as a column of its own, never grouped or totalled, and its only
+distinct behaviours were a rule saying it needed a category and an auto-fill that copied the
+comment into it. Of the rows that had one, the overwhelming majority repeated the comment
+word for word and none had a category comment without a comment — so it was never the only
+record of anything. A minority genuinely differed, usually as vendor against item ('Boots',
+'Shaving gel'), and `budget/merge_category_comments.py` folds those into the comment rather
+than dropping them. The column stays on the table, holding what it held, the same way
+`savings_target` did: an ALTER that drops a column cannot be undone from the sidecar, and the
+workbook importers still populate it when a rebuild reads column K.
 
 **A payslip either adds up or it does not.** Gross, the car allowance and home working are
 paid; NI, PAYE, pension, holiday and cycle-to-work are taken off. Holiday pay is the term
@@ -569,6 +581,7 @@ budget/
   import_phase5.py      salary profile, rates, targets, card billing
   seed_pension.py       one-off import of the pension history
   seed_commitments.py   one-off load of the standing account commitments
+  merge_category_comments.py  folds the retired category comment into the comment
   config.py             all filesystem paths
   models.py             SQLAlchemy schema
   db.py                 engine and session
