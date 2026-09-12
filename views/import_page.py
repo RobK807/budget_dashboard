@@ -22,10 +22,19 @@ data = ui.page_header(
     "Import", "Paste or upload many transactions, check them, then commit as one batch."
 )
 
-accounts = ui.alphabetical(data["accounts"]["name"])
 categories = ui.alphabetical(data["categories"]["name"])
 classifications = ui.alphabetical(data["classifications"]["name"])
 current_period = data["periods"][-1]
+
+# Closed accounts are left off every picker here. Nothing being imported now can belong to
+# one -- an import is this month's statements -- so they are only length in a dropdown that
+# is used on every row. A transaction genuinely dated inside a closed account's life still
+# goes in through **Add**, which offers the full list and validates the date against it.
+open_accounts = data["accounts"][
+    [repo.live_in(row, current_period) for _, row in data["accounts"].iterrows()]
+]
+accounts = ui.alphabetical(open_accounts["name"])
+closed_count = len(data["accounts"]) - len(open_accounts)
 
 tab_bank, tab_paste, tab_upload = st.tabs(
     ["Bank files", "Paste / edit", "Upload CSV"]
@@ -429,7 +438,10 @@ if candidates:
     st.caption(
         "Enter each account's real balance and confirm the import lands on it. Leave a "
         "target blank to skip that account. Credit-card balances are debt owed, so spending "
-        "increases them."
+        "increases them. 'Last recorded' is the newest movement already held for that "
+        "account — a balance will not match a current statement if it stops months back, "
+        "and the gap is the reason rather than the import."
+        + (f" {closed_count} closed account(s) are not listed." if closed_count else "")
     )
 
     verification = repo.import_verification(
@@ -471,13 +483,19 @@ if candidates:
     signature = hashlib.md5("|".join(editable["account"]).encode()).hexdigest()[:8]
 
     checked = st.data_editor(
-        editable[["account", "current", "in", "out", "projected", "Target"]],
+        editable[
+            ["account", "last_seen", "current", "in", "out", "projected", "Target"]
+        ],
         width="stretch",
         hide_index=True,
         key=f"balance_check_{signature}",
-        disabled=["account", "current", "in", "out", "projected"],
+        disabled=["account", "last_seen", "current", "in", "out", "projected"],
         column_config={
             "account": st.column_config.TextColumn("Account"),
+            "last_seen": st.column_config.DateColumn(
+                "Last recorded", format="DD/MM/YYYY",
+                help="The newest movement already held for this account.",
+            ),
             "current": st.column_config.NumberColumn("Current", format=ui.MONEY_FORMAT),
             "in": st.column_config.NumberColumn("In", format=ui.MONEY_FORMAT),
             "out": st.column_config.NumberColumn("Out", format=ui.MONEY_FORMAT),

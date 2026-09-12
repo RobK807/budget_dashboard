@@ -597,7 +597,10 @@ def currency_columns(*names: str) -> dict:
     }
 
 
-def money_axis(fig, axis: str = "y", label: str | None = None, mask: bool = False):
+def money_axis(
+    fig, axis: str = "y", label: str | None = None, mask: bool = False,
+    from_zero: bool = False,
+):
     """Thousands separators on a chart's value axis and in its hover text.
 
     Plotly's default tick format is SI-prefixed, so £10,000 is drawn as '10.00000k' -- a
@@ -607,10 +610,18 @@ def money_axis(fig, axis: str = "y", label: str | None = None, mask: bool = Fals
     `mask` is the privacy switch: the shape of the line stays, the numbers beside it go. Both
     halves are needed -- dropping the tick labels alone leaves every point readable by
     hovering it, which on a chart of net pay is the whole figure.
+
+    `from_zero` anchors the axis at the origin. Plotly fits the axis to the data, so a
+    balance moving between 40,000 and 42,000 is drawn as a line climbing off the floor of
+    the chart -- a 5% change that reads as a dramatic one. Worth setting wherever the
+    distance from zero is part of what the figure means, which is true of a balance and not
+    of a month-on-month change.
     """
     settings = {"tickformat": ",.2f", "hoverformat": ",.2f"}
     if label is not None:
         settings["title_text"] = label
+    if from_zero:
+        settings["rangemode"] = "tozero"
     if mask:
         settings["showticklabels"] = False
         fig.update_layout(hovermode=False)

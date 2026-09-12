@@ -186,7 +186,7 @@ with left:
         labels={"value": "Balance (£)", "variable": ""},
     )
     fig.update_layout(hovermode="x unified", legend_title_text="", margin=dict(t=10))
-    st.plotly_chart(ui.money_axis(fig), width="stretch")
+    st.plotly_chart(ui.money_axis(fig, from_zero=True), width="stretch")
 
 with right:
     st.subheader("Net cashflow by month")

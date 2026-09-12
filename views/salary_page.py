@@ -242,6 +242,29 @@ elif not paid_months.empty:
             f"{len(paid_months)} payslip(s) — worth checking which month diverges below."
         )
 
+# Whether each payslip adds up on its own terms, which is a different question from whether
+# it matches the model. A month can agree with the model to the penny and still have a figure
+# typed wrong, because the model never reads most of these fields back.
+unbalanced = repo.payslips_out_of_balance(payslips)
+if not unbalanced.empty:
+    if PRIVATE:
+        st.warning(
+            f"{len(unbalanced)} payslip(s) do not add up — earnings less deductions does "
+            "not come to the stated net. Turn privacy off to see which."
+        )
+    else:
+        st.warning(
+            f"{len(unbalanced)} payslip(s) do not add up: "
+            + "; ".join(
+                f"**{repo.period_label(r['period'])}** states {ui.money(r['stated'])} "
+                f"against {ui.money(r['computed'])} computed "
+                f"({ui.money(r['difference'])})"
+                for _, r in unbalanced.iterrows()
+            )
+            + ". Earnings are gross, car allowance and home working; deductions are NI, "
+            "PAYE, pension, holiday bought and cycle to work."
+        )
+
 st.divider()
 
 tab_compare, tab_cumulative, tab_inputs, tab_bands, tab_spend = st.tabs(
@@ -507,16 +530,33 @@ with tab_compare:
                     outcome = reference.remove_payslip(session, entry_period)
                 ui.show_outcome(outcome, "the payslip removal")
 
-            consistency = (
-                Decimal(str(in_ni)) + Decimal(str(in_holiday)) + Decimal(str(in_paye))
-                + Decimal(str(in_net))
-            )
-            if in_gross and abs(consistency - Decimal(str(in_gross))) > Decimal("1"):
-                st.caption(
-                    f"NI + holiday pay + PAYE + net comes to {ui.money(consistency)} against "
-                    f"a gross of {ui.money(in_gross)}, which is the check that the row adds "
-                    "up."
-                )
+            # Does the row add up? Gross, car and home working are paid; NI, PAYE, pension
+            # and holiday bought are taken off. The previous check compared four of those
+            # nine against gross, which no real payslip satisfies -- it fired on sixteen of
+            # the seventeen recorded, so it read as noise and said nothing when a figure
+            # genuinely was wrong.
+            entered = {
+                "gross": Decimal(str(in_gross)), "car_allowance": Decimal(str(in_car)),
+                "additional": Decimal(str(in_additional)), "ni": Decimal(str(in_ni)),
+                "paye": Decimal(str(in_paye)), "benefits": Decimal(str(in_benefits)),
+                "holiday_pay": Decimal(str(in_holiday)), "cycle_to_work": Decimal("0"),
+                "net": Decimal(str(in_net)),
+            }
+            if in_gross and in_net:
+                difference = repo.payslip_balance(pd.Series(entered))
+                computed = Decimal(str(in_net)) - difference
+                if difference:
+                    st.warning(
+                        f"These figures do not add up. Gross, car allowance and home "
+                        f"working less NI, PAYE, pension and holiday pay comes to "
+                        f"{ui.money(computed)}, against a stated net of "
+                        f"{ui.money(in_net)} — a difference of {ui.money(abs(difference))}. "
+                        "Saving is still allowed; check the payslip first."
+                    )
+                else:
+                    st.success(
+                        f"Adds up: earnings less deductions comes to {ui.money(computed)}."
+                    )
 
 # ---------------------------------------------------------------- tax year to date
 

@@ -349,6 +349,23 @@ walks the **whole** run of periods however short a window the chart draws. Trimm
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.
 
+**A target is a standing instruction, not a fact about one month.** `account_target` is
+stored per month, and reading it per month meant a month nobody had opened in Settings had
+no targets at all — which read as 'nothing is expected of these accounts' rather than
+'nobody has typed this month in yet'. September showed four blanks on a set unchanged since
+April. `repo.targets_in_force` takes the newest month at or before the one being shown, and
+takes it whole: a month's set replaces its predecessor rather than merging with it, so an
+account dropped from the list stays dropped. Months *before* the first set stay empty, since
+carrying backwards would invent a target for months already closed.
+
+**A payslip either adds up or it does not.** Gross, the car allowance and home working are
+paid; NI, PAYE, pension, holiday and cycle-to-work are taken off. Holiday pay is the term
+that catches an eye check out — it is holiday *bought*, so it belongs with the deductions,
+and the previous check compared four of those nine figures against gross. No real payslip
+satisfies that, so it fired on sixteen of the seventeen recorded and said nothing when one
+genuinely was wrong. `repo.payslip_balance` uses the whole identity, which sixteen of the
+seventeen meet to the penny; the seventeenth has a gross entered £152.55 short.
+
 **An account target says how much, and cannot say when.** £2,642.85 of a First Direct target
 leaves on the 1st, so a balance that covers the month comfortably can still be short on the
 day that matters. `AccountCommitment` holds the parts a target is made of — an item, an

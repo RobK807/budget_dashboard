@@ -1432,15 +1432,20 @@ with tab_general:
     st.subheader("Account targets")
     st.caption(
         "How much an account should hold in a month, shown against its balance on the "
-        "Summary page. Each month keeps its own."
+        "Summary page. A target carries forward until another replaces it, so a month you "
+        "have not visited uses the most recent set rather than nothing."
     )
 
     target_period = ui.month_select(
         "Month", data["all_periods"], key="account_target_period",
     )
     stored_targets = data["account_targets"]
-    here = stored_targets[stored_targets["period"] == target_period]
+    # Seeded with whatever applies to the month rather than with zeros. Typing over an
+    # inherited figure is the common edit; re-keying four unchanged ones to correct a fifth
+    # was not, and a grid of zeros invited saving them by accident.
+    here, inherited_from = repo.targets_in_force(stored_targets, target_period)
     by_account_id = dict(zip(here["account_id"], here["amount"])) if not here.empty else {}
+    carried = inherited_from is not None and inherited_from != target_period
 
     bank_accounts = data["accounts"][data["accounts"]["type"] == "bank"]
     target_frame = repo.sort_human(
@@ -1456,6 +1461,14 @@ with tab_general:
         ),
         by="account",
     )
+
+    if carried:
+        st.info(
+            f"{repo.period_label(target_period)} has no targets of its own, so these are "
+            f"carried forward from {repo.period_label(inherited_from)} — which is what the "
+            "Summary page shows for it. Saving writes them against "
+            f"{repo.period_label(target_period)}, which only matters if you change one."
+        )
 
     edited_account_targets = st.data_editor(
         target_frame,

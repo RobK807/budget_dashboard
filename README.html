@@ -422,6 +422,21 @@ still carries a seed or a target, flagged <code>Closed</code>, and omitted once 
 walks the <strong>whole</strong> run of periods however short a window the chart draws. Trimming the walk
 instead restarts the cumulative target part way through, which reports the pot as far further
 ahead than it is and looks entirely plausible on the chart. The caller filters the result.</p>
+<p><strong>A target is a standing instruction, not a fact about one month.</strong> <code>account_target</code> is
+stored per month, and reading it per month meant a month nobody had opened in Settings had
+no targets at all — which read as 'nothing is expected of these accounts' rather than
+'nobody has typed this month in yet'. September showed four blanks on a set unchanged since
+April. <code>repo.targets_in_force</code> takes the newest month at or before the one being shown, and
+takes it whole: a month's set replaces its predecessor rather than merging with it, so an
+account dropped from the list stays dropped. Months <em>before</em> the first set stay empty, since
+carrying backwards would invent a target for months already closed.</p>
+<p><strong>A payslip either adds up or it does not.</strong> Gross, the car allowance and home working are
+paid; NI, PAYE, pension, holiday and cycle-to-work are taken off. Holiday pay is the term
+that catches an eye check out — it is holiday <em>bought</em>, so it belongs with the deductions,
+and the previous check compared four of those nine figures against gross. No real payslip
+satisfies that, so it fired on sixteen of the seventeen recorded and said nothing when one
+genuinely was wrong. <code>repo.payslip_balance</code> uses the whole identity, which sixteen of the
+seventeen meet to the penny; the seventeenth has a gross entered £152.55 short.</p>
 <p><strong>An account target says how much, and cannot say when.</strong> £2,642.85 of a First Direct target
 leaves on the 1st, so a balance that covers the month comfortably can still be short on the
 day that matters. <code>AccountCommitment</code> holds the parts a target is made of — an item, an
@@ -675,7 +690,7 @@ budget<span style="color: #666">/</span>
   ui<span style="color: #666">.</span>py                 shared Streamlit helpers
 tests<span style="color: #666">/</span>
 </code></pre></div>
-<p class="generated">Generated from <code>README.md</code> on 27 August 2026
+<p class="generated">Generated from <code>README.md</code> on 12 September 2026
  — <code>python -m budget.render_docs</code> to refresh.</p>
 </body>
 </html>

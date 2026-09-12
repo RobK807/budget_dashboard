@@ -427,7 +427,7 @@ def rolled_forward_openings(
     )
 
 
-def _live_in(acct, period: str) -> bool:
+def live_in(acct, period: str) -> bool:
     """Whether an account was open at any point in a month.
 
     Both ends are inclusive of the month: an account opened on the 20th, or closed on the
@@ -463,7 +463,7 @@ def account_balances(
     rows = []
     for _, acct in accounts.iterrows():
         mine = period_postings[period_postings["account"] == acct["name"]]
-        if not _live_in(acct, period) and mine.empty and not opening.get(acct["name"]):
+        if not live_in(acct, period) and mine.empty and not opening.get(acct["name"]):
             # An account that had not opened yet, or had already closed, and has nothing to
             # show for the month either way. Before the 25-26 backfill every account ran the
             # whole of the only year there was, so this never arose; now five accounts closed
@@ -510,7 +510,15 @@ def account_balances(
                 "earmarked": _flag(acct.get("exclude_from_savings")),
             }
         )
-    return pd.DataFrame(rows)
+    # Columns declared, so a month where every account was filtered out still returns a
+    # frame that can be indexed. Without them pandas builds a frame with no columns at all,
+    # and every caller's `.set_index("account")` raises rather than finding nothing.
+    return pd.DataFrame(
+        rows,
+        columns=["account", "type", "opening", "paid_in", "paid_out", "transfer_in",
+                 "transfer_out", "total_in", "total_out", "movement", "closing",
+                 "is_savings", "is_investment", "is_isa", "earmarked"],
+    )
 
 
 def _flag(value) -> bool:
@@ -653,6 +661,68 @@ def load_payslips(session: Session) -> pd.DataFrame:
         {c: getattr(p, c) for c in columns} for p in session.scalars(select(Payslip))
     ]
     return pd.DataFrame(rows, columns=columns)
+
+
+# What a payslip adds up to. Gross, the car allowance and home working are paid; everything
+# else is taken off. Holiday pay sits with the deductions because it is holiday *bought* --
+# salary sacrificed for days, like the cycle-to-work scheme beside it -- which is the one
+# term that is not obvious from the name and the one an eye check gets wrong.
+PAYSLIP_EARNINGS = ("gross", "car_allowance", "additional")
+PAYSLIP_DEDUCTIONS = ("ni", "paye", "benefits", "holiday_pay", "cycle_to_work")
+
+
+def payslip_balance(payslip) -> Decimal:
+    """Stated net less computed net. Zero means the row adds up.
+
+    Verified against every payslip recorded: sixteen of the seventeen balance to the penny,
+    which is what makes this worth flagging rather than a rule of thumb -- a payslip that
+    does not balance has a figure typed wrong, not an unusual month.
+    """
+    def amount(field: str) -> Decimal:
+        value = payslip.get(field)
+        if value is None or pd.isna(value):
+            return Decimal("0")
+        return Decimal(str(value))
+
+    computed = sum(
+        (amount(f) for f in PAYSLIP_EARNINGS), Decimal("0")
+    ) - sum((amount(f) for f in PAYSLIP_DEDUCTIONS), Decimal("0"))
+    return amount("net") - computed
+
+
+def payslips_out_of_balance(payslips: pd.DataFrame) -> pd.DataFrame:
+    """Every recorded payslip whose figures do not reconcile, worst first.
+
+    Only rows with both a gross and a net: a month carrying pension and home working for the
+    model but no payslip yet is not an error, and would otherwise be reported as the whole
+    of its net missing.
+    """
+    columns = ["period", "stated", "computed", "difference"]
+    if payslips.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for _, payslip in payslips.iterrows():
+        gross, net = payslip.get("gross"), payslip.get("net")
+        if gross is None or pd.isna(gross) or net is None or pd.isna(net):
+            continue
+        difference = payslip_balance(payslip)
+        if difference:
+            stated = Decimal(str(net))
+            rows.append(
+                {
+                    "period": payslip["period"],
+                    "stated": stated,
+                    "computed": stated - difference,
+                    "difference": difference,
+                }
+            )
+    frame = pd.DataFrame(rows, columns=columns)
+    if frame.empty:
+        return frame
+    return frame.reindex(
+        frame["difference"].abs().sort_values(ascending=False).index
+    ).reset_index(drop=True)
 
 
 # Stored as percentages (models.SalaryAssumption); the arithmetic in tax.py wants fractions.
@@ -1145,12 +1215,38 @@ def import_verification(
     accounts: pd.DataFrame,
     period: str,
 ) -> pd.DataFrame:
-    """Current balance, the import's effect, and the resulting projection per account."""
+    """Current balance, the import's effect, and the resulting projection per account.
+
+    Closed accounts are left out. A balance check is a question about what an account holds
+    *now*, and one that was shut last year holds nothing and cannot be reconciled against a
+    statement -- it only lengthens the list that has to be read to find the account being
+    imported. An account the import itself touches is kept regardless, so a row posted to a
+    closed account is still visible rather than silently dropped from the check.
+
+    `last_seen` is the date of the newest movement already recorded against the account. It
+    is the column that says whether a balance is worth comparing: one last touched in March
+    will not match today's statement, and the reason is the gap rather than the import.
+    """
     balances = account_balances(postings, openings, period, accounts).set_index("account")
     impact = candidate_impact(candidates, accounts).set_index("account")
 
+    if postings.empty:
+        latest: dict[str, dt.date] = {}
+    else:
+        latest = (
+            postings.groupby("account")["date"].max().map(as_date).to_dict()
+        )
+
     rows = []
-    for name in accounts["name"]:
+    for _, account in accounts.iterrows():
+        name = account["name"]
+        touched = (
+            impact["net"].get(name, Decimal("0")) != 0
+            or impact["in"].get(name, Decimal("0")) != 0
+            or impact["out"].get(name, Decimal("0")) != 0
+        )
+        if not live_in(account, period) and not touched:
+            continue
         current = balances["closing"].get(name, Decimal("0"))
         change = impact["net"].get(name, Decimal("0"))
         rows.append(
@@ -1160,12 +1256,14 @@ def import_verification(
                 "in": impact["in"].get(name, Decimal("0")),
                 "out": impact["out"].get(name, Decimal("0")),
                 "projected": current + change,
-                "affected": impact["net"].get(name, Decimal("0")) != 0
-                or impact["in"].get(name, Decimal("0")) != 0
-                or impact["out"].get(name, Decimal("0")) != 0,
+                "last_seen": latest.get(name),
+                "affected": touched,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=["account", "current", "in", "out", "projected", "last_seen", "affected"],
+    )
 
 
 def monthly_series(
@@ -1441,7 +1539,7 @@ def _live_months(accounts: pd.DataFrame, periods: list[str]) -> dict[str, set[st
     """
     live: dict[str, set[str]] = {}
     for _, account in accounts.iterrows():
-        live[account["name"]] = {p for p in periods if _live_in(account, p)}
+        live[account["name"]] = {p for p in periods if live_in(account, p)}
     return live
 
 
@@ -1999,6 +2097,31 @@ def card_outstanding(
 # -------------------------------------------------------------------- account targets
 
 
+def targets_in_force(targets: pd.DataFrame, period: str) -> tuple[pd.DataFrame, str | None]:
+    """The targets that apply to a month, and the month they were actually set in.
+
+    A target is a standing instruction -- 'this account should hold 2,800' -- not a fact
+    about one month, so it carries forward until another replaces it. Matching on the exact
+    period made every month that had not been visited hold no targets at all, which read as
+    'nothing is expected of these accounts' rather than 'nobody has typed this month in
+    yet'. September showed four blanks on a set that had not changed since April.
+
+    The newest month at or before `period` wins, and it is taken whole: a month's set
+    replaces its predecessor rather than merging with it, so an account dropped from the
+    list is genuinely dropped and does not linger from a month further back.
+
+    Months *before* the first set stay empty, which is right -- there was no instruction
+    then, and inventing one backwards would put a target on months already closed.
+    """
+    if targets.empty:
+        return targets, None
+    earlier = sorted({p for p in targets["period"] if p <= period})
+    if not earlier:
+        return targets.iloc[0:0], None
+    in_force = earlier[-1]
+    return targets[targets["period"] == in_force], in_force
+
+
 def account_target_table(
     balances: pd.DataFrame, targets: pd.DataFrame, accounts: pd.DataFrame, period: str
 ) -> pd.DataFrame:
@@ -2006,8 +2129,10 @@ def account_target_table(
 
     'Current' is the account's closing balance, which matches the workbook's hand-entered
     column exactly for all four accounts in July.
+
+    The target itself is whichever set is in force for the month -- see `targets_in_force`.
     """
-    mine = targets[targets["period"] == period] if not targets.empty else pd.DataFrame()
+    mine, _ = targets_in_force(targets, period)
     if mine.empty:
         return pd.DataFrame(columns=["account", "target", "current", "required"])
 
@@ -2101,7 +2226,7 @@ def account_commitment_table(
         open_now = set()
         for _, account in accounts.iterrows():
             starts[account["name"]] = commitment_start_day(account)
-            if _live_in(account, period):
+            if live_in(account, period):
                 open_now.add(account["name"])
         live = commitments[commitments["account"].isin(open_now)]
     if live.empty:
@@ -2152,7 +2277,9 @@ def commitments_against_targets(
     """
     columns = ["account", "items", "itemised", "target", "difference"]
     listed = account_commitment_table(commitments, period, accounts)
-    mine = targets[targets["period"] == period] if not targets.empty else pd.DataFrame()
+    # The set in force, not the set typed into this month, so the comparison matches what
+    # the table above it shows.
+    mine, _ = targets_in_force(targets, period)
 
     by_id = accounts.set_index("id")["name"].to_dict() if not accounts.empty else {}
     target_by_account = {
@@ -2551,7 +2678,7 @@ def savings_by_account(
         # A seed belongs to the months its pot existed in. Outside them it is not a target
         # the account was ever asked to meet, and counting it reports a shortfall against
         # something that had not opened yet or has already been closed.
-        live = _live_in(row, period)
+        live = live_in(row, period)
         seed = seeds.get(name, Decimal("0")) if live else Decimal("0")
         target_eom = seed + planned(name, only_this_month=False)
         if held is None and not target_eom and not live:
@@ -2641,7 +2768,7 @@ def savings_account_history(
         # Same rule as everywhere else: the seed applies only while the pot is open, so the
         # line reads zero before it existed and after it was closed.
         target_eom = (
-            (seed + to_date) if _live_in(known.iloc[0], period) else to_date
+            (seed + to_date) if live_in(known.iloc[0], period) else to_date
         )
         rows.append(
             {
